@@ -1,0 +1,8 @@
+name = "unischedule-worker"
+main = "cloudflare-worker.js"
+compatibility_date = "2024-09-23"
+
+# Cloudflare KV binding for v3 Blind Server architecture
+[[kv_namespaces]]
+binding = "APP_DATA"
+# id = "<YOUR_APP_DATA_KV_NAMESPACE_ID>"
