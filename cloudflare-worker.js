@@ -388,6 +388,34 @@ export async function blindId(env, tgId) {
     .join('');
 }
 
+export async function encryptChatId(chatId, pepper) {
+  const enc = new TextEncoder();
+  const pepperStr = String(pepper || "default_samgtu_v3_pepper_32bytes_!");
+  const keyMaterial = await crypto.subtle.digest("SHA-256", enc.encode(pepperStr));
+  const key = await crypto.subtle.importKey("raw", keyMaterial, { name: "AES-GCM" }, false, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = enc.encode(String(chatId));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
+  const encHex = Array.from(new Uint8Array(ciphertext)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
+  return { enc: encHex, iv: ivHex };
+}
+
+export async function decryptChatId(encHex, ivHex, pepper) {
+  try {
+    const enc = new TextEncoder();
+    const pepperStr = String(pepper || "default_samgtu_v3_pepper_32bytes_!");
+    const keyMaterial = await crypto.subtle.digest("SHA-256", enc.encode(pepperStr));
+    const key = await crypto.subtle.importKey("raw", keyMaterial, { name: "AES-GCM" }, false, ["decrypt"]);
+    const iv = new Uint8Array(ivHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []);
+    const ciphertext = new Uint8Array(encHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []);
+    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    return null;
+  }
+}
+
 export function extractInitDataFromRequest(request) {
   const customHeader = request.headers.get("X-Telegram-Init-Data");
   if (customHeader) return customHeader.trim();
@@ -1407,6 +1435,196 @@ export default {
         });
       }
 
+      // 0b. Bug Report Bot Relay Endpoint (POST /report)
+      if (url.pathname === "/report" && request.method === "POST") {
+        const initDataStr = extractInitDataFromRequest(request);
+        if (!initDataStr) {
+          return new Response(JSON.stringify({ error: "Unauthorized: Missing Telegram initData" }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN, { isTestMode });
+        if (!verifyResult.ok) {
+          return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        const user = verifyResult.user;
+        if (!user || !user.id) {
+          return new Response(JSON.stringify({ error: "Missing user in Telegram initData" }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        if (!env || !env.APP_DATA) {
+          return new Response(JSON.stringify({ error: "Cloudflare KV APP_DATA namespace is not bound" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        const userBlindId = await blindId(env, user.id);
+        const rlKey = `rl:report:${userBlindId}`;
+        const attemptsRaw = await env.APP_DATA.get(rlKey);
+        const attempts = attemptsRaw ? parseInt(attemptsRaw, 10) : 0;
+        if (attempts >= 5) {
+          return new Response(JSON.stringify({ error: "Too many reports. Rate limit exceeded (max 5 per hour)." }), {
+            status: 429,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        let body;
+        try {
+          body = await request.json();
+        } catch {
+          return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        const text = String(body?.text || "").trim().slice(0, 2000);
+        if (!text) {
+          return new Response(JSON.stringify({ error: "Report text is required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        let diagStr = "";
+        if (body?.diag !== undefined && body?.diag !== null) {
+          diagStr = typeof body.diag === "string" ? body.diag : JSON.stringify(body.diag, null, 2);
+          diagStr = diagStr.slice(0, 4000);
+        }
+
+        const wantReply = Boolean(body?.wantReply);
+        const DEV_CHAT_ID = env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID || CHANNEL_ID);
+        if (!DEV_CHAT_ID) {
+          return new Response(JSON.stringify({ error: "Owner chat ID is not configured" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        let devMessageText = `📩 Новое обращение от пользователя:\n\n${text}`;
+        if (diagStr) {
+          devMessageText += `\n\n📊 Диагностика:\n${diagStr}`;
+        }
+        if (wantReply) {
+          devMessageText += `\n\n💬 Пользователь ожидает ответ. Ответьте через Reply на это сообщение.`;
+        }
+
+        let sentMessageId = null;
+        if (BOT_TOKEN) {
+          const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chat_id: DEV_CHAT_ID,
+              text: devMessageText
+            })
+          });
+          const tgJson = await tgRes.json().catch(() => ({}));
+          if (tgJson && tgJson.ok && tgJson.result && tgJson.result.message_id) {
+            sentMessageId = tgJson.result.message_id;
+          }
+        }
+        if (!sentMessageId && isTestMode) {
+          sentMessageId = 12345;
+        }
+
+        if (wantReply && sentMessageId) {
+          const encData = await encryptChatId(user.id, env.ID_PEPPER);
+          await env.APP_DATA.put(`rm:${sentMessageId}`, JSON.stringify(encData), {
+            expirationTtl: 2592000 // 30 days
+          });
+        }
+
+        await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 3600 });
+
+        return new Response(JSON.stringify({ ok: true, sent: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      // 0c. Telegram Bot Webhook Endpoint (POST /tg/webhook or /tg/webhook/*)
+      if ((url.pathname === "/tg/webhook" || url.pathname.startsWith("/tg/webhook/")) && request.method === "POST") {
+        const expectedSecret = env && (env.TG_WEBHOOK_SECRET || env.TELEGRAM_WEBHOOK_SECRET || env.APP_SECRET);
+        const headerSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+        const pathSecret = url.pathname.startsWith("/tg/webhook/")
+          ? url.pathname.slice("/tg/webhook/".length).replace(/^\/+|\/+$/g, "")
+          : null;
+
+        if (expectedSecret) {
+          if (headerSecret !== expectedSecret && pathSecret !== expectedSecret) {
+            return new Response(JSON.stringify({ error: "Unauthorized: Invalid webhook secret" }), {
+              status: 401,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+        } else if (!isTestMode) {
+          return new Response(JSON.stringify({ error: "Unauthorized: Webhook secret not configured" }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        let update;
+        try {
+          update = await request.json();
+        } catch {
+          return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        const msg = update?.message;
+        const DEV_CHAT_ID = env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID || CHANNEL_ID);
+
+        if (msg && msg.from && String(msg.from.id) === String(DEV_CHAT_ID) && msg.reply_to_message) {
+          const replyMsgId = msg.reply_to_message.message_id;
+          if (env && env.APP_DATA) {
+            const rawEnc = await env.APP_DATA.get(`rm:${replyMsgId}`);
+            if (rawEnc) {
+              let encData = null;
+              try {
+                encData = JSON.parse(rawEnc);
+              } catch {}
+              if (encData && encData.enc && encData.iv) {
+                const studentChatId = await decryptChatId(encData.enc, encData.iv, env.ID_PEPPER);
+                if (studentChatId) {
+                  const replyText = msg.text || "";
+                  const textToSend = `💬 Ответ разработчика на ваше обращение:\n\n${replyText}`;
+                  if (BOT_TOKEN) {
+                    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        chat_id: studentChatId,
+                        text: textToSend
+                      })
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
       // 1. Cloud Storage Sync (Schedule, Homework, Attendance) via Cloudflare KV with per-group isolation
       if (url.pathname.startsWith("/sync/")) {
         const type = url.pathname.replace("/sync/", "").replace(/^\/+|\/+$/g, "");
@@ -1415,16 +1633,6 @@ export default {
             status: 404,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
-        }
-
-        // Require X-App-Key for non-attendance sync (fail-closed)
-        if (type !== "attendance") {
-          if (!(await requireAppKey(request, APP_SECRET))) {
-            return new Response(JSON.stringify({ error: "Unauthorized: Invalid or missing X-App-Key" }), {
-              status: 401,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
         }
 
         if (!env || !env.APP_DATA) {
@@ -1503,6 +1711,26 @@ export default {
 
         // PUT or POST save data to Cloudflare KV with per-group isolation
         if (request.method === "PUT" || request.method === "POST") {
+          const hasAppKey = type !== "attendance" ? await requireAppKey(request, APP_SECRET) : false;
+          let userBlindId = null;
+
+          if (type !== "attendance" && !hasAppKey) {
+            if (!initDataHeader) {
+              return new Response(JSON.stringify({ error: "Unauthorized: Missing X-App-Key or Telegram initData" }), {
+                status: 401,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+            const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
+            if (!verifyResult.ok || !verifyResult.user?.id) {
+              return new Response(JSON.stringify({ error: verifyResult.error || "Unauthorized: Invalid Telegram initData" }), {
+                status: 401,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+            userBlindId = await blindId(env, verifyResult.user.id);
+          }
+
           const rawText = await request.text();
           let parsed;
           try {
@@ -1529,6 +1757,28 @@ export default {
               status: 400,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
             });
+          }
+
+          if (type !== "attendance" && !hasAppKey) {
+            const isAdmin = Boolean(env && env.ADMIN_BLIND_ID && userBlindId === env.ADMIN_BLIND_ID);
+            let isStaff = false;
+            if (groupId) {
+              const groupRaw = await env.APP_DATA.get("g:" + groupId);
+              if (groupRaw) {
+                try {
+                  const groupObj = JSON.parse(groupRaw);
+                  if (Array.isArray(groupObj.staff) && groupObj.staff.includes(userBlindId)) {
+                    isStaff = true;
+                  }
+                } catch {}
+              }
+            }
+            if (!isAdmin && !isStaff) {
+              return new Response(JSON.stringify({ error: "Forbidden: Write permission requires verified staff or admin role" }), {
+                status: 403,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
           }
 
           if (type === "attendance" && initDataHeader) {

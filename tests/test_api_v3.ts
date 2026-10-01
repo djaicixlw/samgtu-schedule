@@ -8,7 +8,9 @@ import worker, {
   blindId,
   sha256Hex,
   createTelegramInitData,
-  pbkdf2
+  pbkdf2,
+  encryptChatId,
+  decryptChatId
 } from '../cloudflare-worker.js';
 
 let passed = 0;
@@ -455,6 +457,227 @@ assert(!groupAfterSlotDelete.slots.includes('SLOT-B2'), 'Slot SLOT-B2 removed fr
 
 const monthAfterSlotDelete = JSON.parse((await mockAppData.get(`a:${testGid}:${testMonth}`))!);
 assert(monthAfterSlotDelete.slots['SLOT-B2'] === undefined, 'Marks for deleted slot removed from month attendance');
+
+// ------------------------------------------------------------
+// 12. AES-256-GCM Encryption & Decryption (A5-4)
+// ------------------------------------------------------------
+console.log('\n--- 12. AES-256-GCM Chat ID Encryption & Decryption ---');
+const testChatId = 123456789;
+const encResult1 = await encryptChatId(testChatId, TEST_PEPPER);
+assert(typeof encResult1.enc === 'string' && encResult1.enc.length > 0, 'encryptChatId returns hex ciphertext');
+assert(typeof encResult1.iv === 'string' && encResult1.iv.length === 24, 'encryptChatId returns 12-byte hex IV');
+
+const decrypted1 = await decryptChatId(encResult1.enc, encResult1.iv, TEST_PEPPER);
+assert(decrypted1 === String(testChatId), 'decryptChatId correctly recovers original chatId');
+
+// Decrypt with wrong pepper fails
+const wrongPepperDecrypted = await decryptChatId(encResult1.enc, encResult1.iv, 'wrong_pepper_key_for_test_fail!');
+assert(wrongPepperDecrypted === null, 'decryptChatId fails safely (returns null) with incorrect pepper');
+
+// Two encryptions of the same chatId use unique IVs (non-deterministic ciphertext)
+const encResult2 = await encryptChatId(testChatId, TEST_PEPPER);
+assert(encResult1.iv !== encResult2.iv, 'Two encryptions generate different random IVs');
+assert(encResult1.enc !== encResult2.enc, 'Two encryptions produce different ciphertexts');
+
+// ------------------------------------------------------------
+// 13. POST /report Bug Report Relay Endpoint (A5-4)
+// ------------------------------------------------------------
+console.log('\n--- 13. POST /report Bug Report Relay ---');
+
+// 13.1 Missing initData returns 401
+const unauthReport = await worker.fetch(new Request('https://worker.test/report', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ text: 'Error occurred' })
+}), mockEnv);
+assert(unauthReport.status === 401, 'POST /report without initData returns 401 Unauthorized');
+
+// 13.2 Empty text returns 400
+const emptyTextReport = await callWorker('/report', 'POST', student1InitData, { text: '' });
+assert(emptyTextReport.status === 400, 'POST /report with empty text returns 400 Bad Request');
+
+// 13.3 Successful report without wantReply
+let telegramCalls: any[] = [];
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (url: any, init?: any): Promise<any> => {
+  telegramCalls.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : null });
+  return new Response(JSON.stringify({ ok: true, result: { message_id: 77771 } }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+};
+
+const reportNoReply = await callWorker('/report', 'POST', student1InitData, {
+  text: 'Проблема с расписанием',
+  diag: { browser: 'Chrome', ver: '1.0' },
+  wantReply: false
+});
+assert(reportNoReply.status === 200, 'POST /report returns 200 OK');
+const repNoReplyBody = await reportNoReply.json();
+assert(repNoReplyBody.ok === true && repNoReplyBody.sent === true, 'POST /report response contains ok: true, sent: true');
+assert(!kvStore.has('rm:77771'), 'When wantReply is false, rm:message_id is NOT stored in KV');
+assert(telegramCalls.length === 1, 'Telegram sendMessage was called to notify developer');
+assert(telegramCalls[0].body.text.includes('Проблема с расписанием'), 'Telegram message body contains report text');
+
+// 13.4 Successful report with wantReply === true
+telegramCalls = [];
+globalThis.fetch = async (url: any, init?: any): Promise<any> => {
+  telegramCalls.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : null });
+  return new Response(JSON.stringify({ ok: true, result: { message_id: 88881 } }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+};
+
+const reportWithReply = await callWorker('/report', 'POST', student2InitData, {
+  text: 'Не отображается отметка',
+  diag: 'Android 14, WebApp',
+  wantReply: true
+});
+assert(reportWithReply.status === 200, 'POST /report with wantReply returns 200 OK');
+assert(kvStore.has('rm:88881'), 'rm:88881 is stored in KV for reply relay');
+const rmDataRaw = kvStore.get('rm:88881')!;
+const rmData = JSON.parse(rmDataRaw);
+assert(typeof rmData.enc === 'string' && typeof rmData.iv === 'string', 'rm:88881 stores AES-GCM encrypted payload');
+const decryptedStudentId = await decryptChatId(rmData.enc, rmData.iv, TEST_PEPPER);
+assert(decryptedStudentId === String(student2UserId), 'Decrypted chatId in rm:88881 accurately matches student2UserId');
+
+// 13.5 Rate limiter on POST /report (max 5 reports per hour)
+const spammerUserId = 9876;
+const spammerInitData = await makeInitData(spammerUserId, 'Spammer');
+for (let i = 1; i <= 4; i++) {
+  const res = await callWorker('/report', 'POST', spammerInitData, { text: `Report #${i}` });
+  assert(res.status === 200, `Report #${i} within rate limit returns 200`);
+}
+const report5 = await callWorker('/report', 'POST', spammerInitData, { text: 'Report #5' });
+assert(report5.status === 200, 'Report #5 at rate limit returns 200');
+
+// 6th report exceeds rate limit -> 429
+const report6 = await callWorker('/report', 'POST', spammerInitData, { text: 'Report #6 (over limit)' });
+assert(report6.status === 429, 'Report #6 returns 429 Too Many Requests');
+
+// ------------------------------------------------------------
+// 14. POST /tg/webhook Developer Reply Relay (A5-4)
+// ------------------------------------------------------------
+console.log('\n--- 14. POST /tg/webhook Developer Reply Relay ---');
+
+const devChatId = 11223344;
+const webhookEnv = {
+  ...mockEnv,
+  DEV_CHAT_ID: devChatId,
+  TG_WEBHOOK_SECRET: 'super-secret-webhook-token-42'
+};
+const postWebhook = (path: string, headers: any, body: any) =>
+  worker.fetch(new Request(`https://worker.test${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body)
+  }), webhookEnv);
+
+// 14.1 Webhook rejects unauthorized requests
+assert((await postWebhook('/tg/webhook', {}, {})).status === 401, 'Webhook without secret token returns 401 Unauthorized');
+assert((await postWebhook('/tg/webhook', { 'X-Telegram-Bot-Api-Secret-Token': 'wrong-secret' }, {})).status === 401, 'Webhook with wrong secret token returns 401 Unauthorized');
+
+// 14.2 Webhook accepts secret via header or secret path
+assert((await postWebhook('/tg/webhook', { 'X-Telegram-Bot-Api-Secret-Token': 'super-secret-webhook-token-42' }, { message: { text: 'Ignoring non-reply' } })).status === 200, 'Webhook with valid header returns 200 OK');
+assert((await postWebhook('/tg/webhook/super-secret-webhook-token-42', {}, { message: { text: 'Ignoring non-reply' } })).status === 200, 'Webhook with secret in URL path returns 200 OK');
+
+// 14.3 Developer replies to report (reply_to_message with rm:88881)
+telegramCalls = [];
+globalThis.fetch = async (url: any, init?: any): Promise<any> => {
+  telegramCalls.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : null });
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+};
+
+const devReplyPayload = {
+  update_id: 99991,
+  message: {
+    message_id: 555,
+    from: { id: devChatId, first_name: 'Developer' },
+    chat: { id: devChatId },
+    text: 'Ошибка исправлена в обновлении 3.1.2!',
+    reply_to_message: { message_id: 88881 }
+  }
+};
+
+const replyResponse = await postWebhook('/tg/webhook', { 'X-Telegram-Bot-Api-Secret-Token': 'super-secret-webhook-token-42' }, devReplyPayload);
+assert(replyResponse.status === 200, 'Developer reply via webhook returns 200 OK');
+assert(telegramCalls.length === 1, 'Bot sent reply message to student');
+assert(String(telegramCalls[0].body.chat_id) === String(student2UserId), 'Reply was directed to student2UserId');
+assert(telegramCalls[0].body.text.includes('💬 Ответ разработчика на ваше обращение:'), 'Message formatted with developer reply prefix');
+assert(telegramCalls[0].body.text.includes('Ошибка исправлена в обновлении 3.1.2!'), 'Message includes developer reply text');
+
+// 14.4 Reply from non-owner does not dispatch to student
+telegramCalls = [];
+const strangerReplyPayload = {
+  update_id: 99992,
+  message: {
+    message_id: 556,
+    from: { id: 66666, first_name: 'Imposter' },
+    text: 'Fake reply',
+    reply_to_message: { message_id: 88881 }
+  }
+};
+await postWebhook('/tg/webhook', { 'X-Telegram-Bot-Api-Secret-Token': 'super-secret-webhook-token-42' }, strangerReplyPayload);
+assert(telegramCalls.length === 0, 'Reply from non-DEV_CHAT_ID is ignored (no message sent)');
+
+// Restore global fetch
+globalThis.fetch = originalFetch;
+
+// ------------------------------------------------------------
+// 15. Staff Write Restrictions on Schedule & Homework (A5-5)
+// ------------------------------------------------------------
+console.log('\n--- 15. Staff Write Restrictions (A5-5) ---');
+
+const syncEnv = {
+  ...mockEnv,
+  APP_SECRET: 'ci-secret-key-999',
+  ADMIN_BLIND_ID: 'admin-master-blind-id-001'
+};
+
+const adminInitData = await makeInitData(777, 'Admin');
+const adminBlindIdCalculated = await blindId(syncEnv, 777);
+const syncEnvWithAdmin = { ...syncEnv, ADMIN_BLIND_ID: adminBlindIdCalculated };
+
+// Ensure test group exists in KV with elder as staff
+await mockAppData.put(`g:${testGid}`, JSON.stringify({ slots: ['SLOT-A1'], staff: [elderBlindId] }));
+
+const callSync = (method: string, endpoint: string, headers: any = {}, body?: any, env: any = syncEnv) =>
+  worker.fetch(new Request(`https://worker.test/sync/${endpoint}?groupId=${testGid}`, {
+    method,
+    headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...headers },
+    body: body !== undefined ? JSON.stringify(body) : undefined
+  }), env);
+
+// 15.1 Public GET /sync/homework and /sync/schedule without auth returns 200
+assert((await callSync('GET', 'homework')).status === 200, 'GET /sync/homework is open to all (200 OK)');
+assert((await callSync('GET', 'schedule')).status === 200, 'GET /sync/schedule is open to all (200 OK)');
+
+// 15.2 CI scripts with X-App-Key can write schedule and homework
+assert((await callSync('PUT', 'homework', { 'X-App-Key': 'ci-secret-key-999' }, { items: [] })).status === 200, 'PUT /sync/homework with valid X-App-Key succeeds (200 OK)');
+assert((await callSync('PUT', 'schedule', { 'X-App-Key': 'ci-secret-key-999' }, { scheduleOverrides: {} })).status === 200, 'PUT /sync/schedule with valid X-App-Key succeeds (200 OK)');
+
+// 15.3 Write without X-App-Key and without initData returns 401
+assert((await callSync('PUT', 'homework', {}, { items: [] })).status === 401, 'PUT /sync/homework without credentials returns 401 Unauthorized');
+
+// 15.4 Non-staff student attempting to write returns 403 Forbidden
+const studentPutHw = await callSync('PUT', 'homework', { 'X-Telegram-Init-Data': student1InitData }, { items: [] });
+assert(studentPutHw.status === 403, 'PUT /sync/homework by student returns 403 Forbidden');
+const studentHwBody = await studentPutHw.json();
+assert(studentHwBody.error === 'Forbidden: Write permission requires verified staff or admin role', 'Error message matches exact specification');
+
+assert((await callSync('POST', 'homework', { 'X-Telegram-Init-Data': student1InitData }, { items: [] })).status === 403, 'POST /sync/homework by student returns 403 Forbidden');
+assert((await callSync('PUT', 'schedule', { 'X-Telegram-Init-Data': student1InitData }, { scheduleOverrides: {} })).status === 403, 'PUT /sync/schedule by student returns 403 Forbidden');
+
+// 15.5 Verified group staff (elder) can write homework and schedule
+assert((await callSync('PUT', 'homework', { 'X-Telegram-Init-Data': elderInitData }, { items: [] })).status === 200, 'PUT /sync/homework by verified staff (elder) returns 200 OK');
+assert((await callSync('PUT', 'schedule', { 'X-Telegram-Init-Data': elderInitData }, { scheduleOverrides: {} })).status === 200, 'PUT /sync/schedule by verified staff (elder) returns 200 OK');
+
+// 15.6 Admin (ADMIN_BLIND_ID) can write homework and schedule
+assert((await callSync('PUT', 'homework', { 'X-Telegram-Init-Data': adminInitData }, { items: [] }, syncEnvWithAdmin)).status === 200, 'PUT /sync/homework by ADMIN_BLIND_ID returns 200 OK');
 
 // ============================================================
 // Summary

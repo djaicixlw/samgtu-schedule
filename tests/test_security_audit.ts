@@ -41,7 +41,8 @@ const mockEnv = {
   TELEGRAM_CHANNEL_ID: '-1002345678901',
   MAINTENANCE_MODE: 'true',
   MAINTENANCE_MESSAGE: 'Плановые регламентные работы',
-  MAINTENANCE_UNTIL: '15 минут'
+  MAINTENANCE_UNTIL: '15 минут',
+  APP_DATA: { get: async () => null, put: async () => {} }
 };
 
 // 1.1 Test PUT /sync/homework without X-App-Key (Should be 401 Unauthorized)
@@ -65,10 +66,10 @@ const badKeySyncReq = new Request('https://worker.test/sync/homework', {
 const badKeySyncRes = await worker.fetch(badKeySyncReq, mockEnv);
 assert(badKeySyncRes.status === 401, `PUT /sync/homework with forged X-App-Key returns 401 Unauthorized (got ${badKeySyncRes.status})`);
 
-// 1.2b Test GET /sync/homework without X-App-Key (KV lockdown)
+// 1.2b Test GET /sync/homework is publicly readable without X-App-Key (Open Read per A5-5)
 const unauthGetSyncReq = new Request('https://worker.test/sync/homework?groupId=ingt-310', { method: 'GET' });
 const unauthGetSyncRes = await worker.fetch(unauthGetSyncReq, mockEnv);
-assert(unauthGetSyncRes.status === 401, `GET /sync/homework without X-App-Key returns 401 Unauthorized (got ${unauthGetSyncRes.status})`);
+assert(unauthGetSyncRes.status === 200, `GET /sync/homework without X-App-Key is public (got ${unauthGetSyncRes.status})`);
 
 // 1.2c Test GET /admin/migrate-to-kv is permanently retired and returns 404
 const unauthMigrateReq = new Request('https://worker.test/admin/migrate-to-kv', { method: 'GET' });
