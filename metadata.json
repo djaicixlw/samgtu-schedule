@@ -1,0 +1,5 @@
+{
+  "name": "UniSchedule",
+  "description": "A minimalist, responsive university schedule viewer with dark mode support.",
+  "requestFramePermissions": []
+}

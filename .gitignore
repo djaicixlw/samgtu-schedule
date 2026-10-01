@@ -1,0 +1,56 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Android build artifacts
+android/.gradle
+android/build
+android/app/build
+android/capacitor-cordova-android-plugins/build
+android/capacitor-cordova-android-plugins/.gradle
+android/local.properties
+android/app/google-services.json
+*.apk
+*.keystore
+*.jks
+/screenshots/*.png
+
+# Environment variables and secrets
+.env
+.env.*
+*.env
+.env.local
+.dev.vars
+.wrangler/
+.scan-forbidden.local
+
+# Obsidian workspace state
+**/.obsidian/workspace*.json
+
+# Audit artifacts & scratch scripts
+add-on inf base/
+scratch/
+diag/
+assets/
+samgtu_schedule/
