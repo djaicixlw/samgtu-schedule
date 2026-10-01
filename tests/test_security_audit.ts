@@ -85,13 +85,15 @@ const invalidGroupReq = new Request('https://worker.test/sync/homework?groupId=b
 const invalidGroupRes = await worker.fetch(invalidGroupReq, invalidGroupEnv);
 assert(invalidGroupRes.status === 400, `GET /sync/homework with malformed groupId returns 400 Bad Request (got ${invalidGroupRes.status})`);
 
-// 1.3 Test POST /upload without X-App-Key
-const unauthUploadReq = new Request('https://worker.test/upload', {
+// 1.3 Test POST /upload endpoint (User bug reports from Web/Telegram)
+const uploadFormData = new FormData();
+uploadFormData.append('document', new Blob(['fake log']), 'diag.txt');
+uploadFormData.append('caption', 'Bug report test');
+const uploadRes = await worker.fetch(new Request('https://worker.test/upload', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' }
-});
-const unauthUploadRes = await worker.fetch(unauthUploadReq, mockEnv);
-assert(unauthUploadRes.status === 401, `POST /upload without X-App-Key returns 401 Unauthorized (got ${unauthUploadRes.status})`);
+  body: uploadFormData
+}), { ...mockEnv, TEST_MODE: 'true' });
+assert(uploadRes.status === 200, `POST /upload accepts bug reports from users (got ${uploadRes.status})`);
 
 // 1.4 Test POST /notify without X-App-Key
 const unauthNotifyReq = new Request('https://worker.test/notify', {
@@ -108,7 +110,7 @@ assert(await requireAppKey(new Request('https://worker.test', { headers: { 'X-Ap
 assert(await requireAppKey(new Request('https://worker.test', { headers: { 'X-App-Key': 'wrong' } }), 'secret') === false, 'requireAppKey rejects mismatched key');
 assert(await requireAppKey(new Request('https://worker.test', { headers: { 'X-App-Key': 'secret' } }), 'secret') === true, 'requireAppKey accepts matching key');
 
-// 1.1c Test Fail-Closed Gateway across all 4 protected endpoints when APP_SECRET is unset
+// 1.1c Test Fail-Closed Gateway across protected endpoints when APP_SECRET is unset
 const unsetEnv = { ...mockEnv, APP_SECRET: undefined, TEST_MODE: 'true' };
 const putHwRes = await worker.fetch(new Request('https://worker.test/sync/homework?groupId=ingt-310', {
   method: 'PUT',
@@ -117,12 +119,12 @@ const putHwRes = await worker.fetch(new Request('https://worker.test/sync/homewo
 }), unsetEnv);
 assert(putHwRes.status === 401, `PUT /sync/homework fails closed (401) when APP_SECRET is unset (got ${putHwRes.status})`);
 
-const uploadUnsetRes = await worker.fetch(new Request('https://worker.test/upload', {
-  method: 'POST',
+const syncScheduleUnsetRes = await worker.fetch(new Request('https://worker.test/sync/schedule?groupId=ingt-310', {
+  method: 'PUT',
   headers: { 'X-App-Key': 'any-key' },
-  body: new FormData()
+  body: JSON.stringify({ overrides: {} })
 }), unsetEnv);
-assert(uploadUnsetRes.status === 401, `POST /upload fails closed (401) when APP_SECRET is unset (got ${uploadUnsetRes.status})`);
+assert(syncScheduleUnsetRes.status === 401, `PUT /sync/schedule fails closed (401) when APP_SECRET is unset (got ${syncScheduleUnsetRes.status})`);
 
 const exportDocUnsetRes = await worker.fetch(new Request('https://worker.test/export-doc', {
   method: 'POST',

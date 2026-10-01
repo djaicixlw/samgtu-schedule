@@ -849,6 +849,7 @@ const App: React.FC = () => {
 
       if (authRes.role === 'admin') {
         setUserRole('admin');
+        localStorage.setItem('user_role', 'admin');
         setStarostaGroupId(null);
         localStorage.removeItem('starosta_group_id');
         toast.success('Активирован режим ГЛАВНОГО АДМИНИСТРАТОРА (все группы)');
@@ -856,6 +857,7 @@ const App: React.FC = () => {
       } else if (authRes.role === 'starosta' && authRes.targetGroupId) {
         setUserRole('starosta');
         setStarostaGroupId(authRes.targetGroupId);
+        localStorage.setItem('user_role', 'starosta');
         localStorage.setItem('starosta_group_id', authRes.targetGroupId);
         setCurrentGroupId(authRes.targetGroupId);
         localStorage.setItem('my_group_id', authRes.targetGroupId);
@@ -1820,7 +1822,7 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {userRole !== 'student' && (
+            {effectiveRole !== 'student' && (
               <button
                 onClick={handleLogout}
                 className="w-full flex items-center justify-center gap-2 py-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 font-semibold rounded-2xl hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors text-sm min-h-[44px]"

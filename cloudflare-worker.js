@@ -1843,20 +1843,9 @@ export default {
         }
       }
 
-      // 2. File Upload to Telegram Channel / Owner Relay
+      // 2. File Upload to Telegram Channel / Owner Relay (Bug Reports)
       if (url.pathname === "/upload" && request.method === "POST") {
-        const hasKey = await requireAppKey(request, APP_SECRET);
-        const initDataStr = extractInitDataFromRequest(request);
-        const hasValidInitData = initDataStr ? (await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN, { isTestMode })).ok : false;
-
-        if (!hasKey && !hasValidInitData) {
-          return new Response(JSON.stringify({ error: "Unauthorized: Invalid or missing X-App-Key or Telegram initData" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        if (!BOT_TOKEN) {
+        if (!BOT_TOKEN && !isTestMode) {
           return new Response(JSON.stringify({ error: "TELEGRAM_BOT_TOKEN is not configured" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1874,19 +1863,32 @@ export default {
 
         const formData = await request.formData();
         const targetChat = (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID)) || CHANNEL_ID;
+        if (!targetChat) {
+          return new Response(JSON.stringify({ error: "Telegram recipient chat is not configured (missing DEV_CHAT_ID / TELEGRAM_CHANNEL_ID)" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
         formData.set("chat_id", targetChat);
 
-        const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-          method: "POST",
-          body: formData,
-        });
-
-        const data = await tgRes.json();
-        if (tgRes.ok && data && data.ok) {
+        let data;
+        let resStatus = 200;
+        if (isTestMode) {
+          data = { ok: true, result: { message_id: 1234, document: { file_id: "mock_file_upload_123" } } };
           recordUploadSent(now);
+        } else {
+          const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+            method: "POST",
+            body: formData,
+          });
+          data = await tgRes.json();
+          resStatus = tgRes.status;
+          if (tgRes.ok && data && data.ok) {
+            recordUploadSent(now);
+          }
         }
         return new Response(JSON.stringify(data), {
-          status: tgRes.status,
+          status: resStatus,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }

@@ -338,6 +338,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
         formData.append('diagnostics', JSON.stringify(diagnostics));
 
         let uploadSucceeded = false;
+        let lastUploadError = '';
         try {
           const res = await fetch(`${WORKER_BASE}/upload`, {
             method: 'POST',
@@ -351,19 +352,20 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
           if (res.status === 429) {
             throw new Error('Слишком много запросов. Пожалуйста, подождите 15-30 секунд перед повторной отправкой.');
           }
-          if (res.ok) {
-            const data = await res.json();
-            if (data && data.ok) {
-              uploadSucceeded = true;
-            }
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data && data.ok) {
+            uploadSucceeded = true;
+          } else {
+            lastUploadError = data?.description || data?.error || `Ошибка сервера (${res.status})`;
           }
         } catch (workerErr: any) {
           if (workerErr.message?.includes('Слишком много запросов')) throw workerErr;
-          console.warn('[BugReport] Worker upload failed, falling back to direct Telegram API:', workerErr);
+          lastUploadError = workerErr?.message || String(workerErr);
+          console.warn('[BugReport] Worker upload failed:', workerErr);
         }
 
         if (!uploadSucceeded) {
-          throw new Error('Сервис отправки отчетов временно недоступен. Попробуйте позже.');
+          throw new Error(lastUploadError || 'Сервис отправки отчетов временно недоступен. Попробуйте позже.');
         }
       } else {
         // Single photo or multiple photos stitched into one album package
@@ -388,6 +390,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
         formData.append('diagnostics', JSON.stringify(diagnostics));
 
         let uploadSucceeded = false;
+        let lastUploadError = '';
         try {
           const res = await fetch(`${WORKER_BASE}/upload`, {
             method: 'POST',
@@ -401,19 +404,20 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
           if (res.status === 429) {
             throw new Error('Слишком много запросов. Пожалуйста, подождите 15-30 секунд перед повторной отправкой.');
           }
-          if (res.ok) {
-            const data = await res.json();
-            if (data && data.ok) {
-              uploadSucceeded = true;
-            }
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data && data.ok) {
+            uploadSucceeded = true;
+          } else {
+            lastUploadError = data?.description || data?.error || `Ошибка сервера (${res.status})`;
           }
         } catch (workerErr: any) {
           if (workerErr.message?.includes('Слишком много запросов')) throw workerErr;
-          console.warn('[BugReport] Worker upload failed, falling back to direct Telegram API:', workerErr);
+          lastUploadError = workerErr?.message || String(workerErr);
+          console.warn('[BugReport] Worker upload failed:', workerErr);
         }
- 
+
         if (!uploadSucceeded) {
-          throw new Error('Сервис отправки отчетов временно недоступен. Попробуйте позже.');
+          throw new Error(lastUploadError || 'Сервис отправки отчетов временно недоступен. Попробуйте позже.');
         }
 
         // Additionally send diagnostic dump companion JSON file
