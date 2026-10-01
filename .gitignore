@@ -52,6 +52,6 @@ android/app/google-services.json
 add-on inf base/
 scratch/
 diag/
+assets/
 samgtu_schedule/
-ARCHITECTURE.md
-BIG-PICTURE.md
+kv-group-codes.json
