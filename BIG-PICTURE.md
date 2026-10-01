@@ -38,18 +38,15 @@ _Measured 2026-10-01. Stages are dated where they stand; anything undated in thi
   - [x] A2-0: Валидация правок парсера СамГТУ.
   - [x] A5-1: Вынос PIN-хэшей в KV с PBKDF2 (100k) и safeEqual, rate limit на `/auth/pin`, генератор `scripts/make-group-code.mjs`.
   - [x] A5-2: Fail-closed шлюз `requireAppKey`, подписанные ссылки `/file` (10 мин), CORS без `*`, санитизация лимитов payload.
-- [x] **Волна W2: Базовая инфраструктура v3**:
-  - [x] A1-2: Удаление `android/`, `capacitor.config.json`, зависимостей `@capacitor/*`.
-  - [x] A5-3: Реализация эндпоинтов API v3 на Cloudflare Worker (`/v3/staff/claim`, `/slots`, `/invites`, `GET/PUT /v3/att`, `/student/link`, `GET/DELETE /v3/me`) и комплексный тест `tests/test_api_v3.ts`.
-- [x] **Точка переезда (Репозиторий)**:
-  - [x] Подготовка чистого дерева в `samgtu-schedule-clean` с коммитом автора `djaicixlw`.
-  - [x] Отправка коммитов в `https://github.com/djaicixlw/samgtu-schedule` (ветка `main` синхронизирована).
-- [ ] **Волна W2 (Завершение перехода на v3)**:
+- [x] **Волна W2 (Архитектура v3 «Слепой сервер» — 100% ВЫПОЛНЕНО)**:
+  - [x] A1-2: Удаление Android/Capacitor, `android/`, `capacitor.config.json`, пакетов `@capacitor/*`.
+  - [x] A5-3: Реализация бэкенда API v3 на Cloudflare Worker (`/v3/staff/claim`, `/slots`, `/invites`, `GET/PUT /v3/att`, `/student/link`, `GET/DELETE /v3/me`).
   - [x] A4-2: Клиентский слой `attendanceStorage.ts` (localAdapter + v3 sync), слоты, генерация инвайтов, экспорт без сервера, удаление ФИО из `STUDENTS_REGISTRY`.
-  - [x] A3-1: Экраны согласий (студент и староста), ввод инвайт-кода студентом, вкладка «Мои пропуски», кнопка отзыва согласия (`DELETE /v3/me`).
-  - [ ] A5-4: Бот-релей баг-репортов (`/report`, вебхук, AES-GCM шифрование связки) для ликвидации публичного канала.
-  - [ ] A5-5: Ограничение записи расписания и ДЗ только для проверенных старост (роль `staff`/`admin`).
-  - [ ] A3-3: Предзагрузка `semester.json` до первого рендера.
+  - [x] A3-1: Экраны согласий (`ConsentModal`), ввод инвайт-кода (`StudentLinkModal`), вкладка «Мои пропуски» (`MyAbsencesModal`), кнопка отзыва согласия (`DELETE /v3/me`).
+  - [x] A5-4: Бот-релей баг-репортов (`POST /report`, вебхук `POST /tg/webhook`, AES-256-GCM шифрование связки `rm:{message_id}`) для закрытия публичного канала.
+  - [x] A5-5: Ограничение записи расписания и ДЗ только для проверенных старост (`staff`) и админа, открытое чтение.
+  - [x] A3-3: Предзагрузка `semester.json` до первого рендера (`index.tsx`) с защитным таймаутом и тестом.
+  - [x] A2-1: Ночная синхронизация шлёт уведомления в личку владельцу (`DEV_CHAT_ID`) без публичного канала.
 
 ### Фаза 1: Оптимизация, Эргономика и Надежность Ядра — [100% ВЫПОЛНЕНО]
 - [x] Редизайн светлой темы: сланцевый фон `#eaeff5`, контраст WCAG AA (>4.5:1), объемные карточки.
