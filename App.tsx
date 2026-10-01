@@ -17,6 +17,7 @@ import { logger } from './utils/logger';
 import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuParser';
 import ScheduleState from './components/ScheduleState';
 import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason } from './utils/scheduleLoader';
+import { getLocalStudentLink } from './utils/attendanceStorage';
 import {
   LogIn, LogOut, Calendar, BookOpen, Bug, ClipboardCheck, Sun, Moon,
   GraduationCap, Users, RefreshCw, Shield, User as UserIcon, Key, UserCheck, ChevronDown,
@@ -32,6 +33,9 @@ const AdminPanel = React.lazy(() => import('./components/AdminPanel'));
 const BugReportModal = React.lazy(() => import('./components/BugReportModal'));
 const DebugLogsModal = React.lazy(() => import('./components/DebugLogsModal'));
 const MaintenanceScreen = React.lazy(() => import('./components/MaintenanceScreen'));
+const ConsentModal = React.lazy(() => import('./components/ConsentModal'));
+const StudentLinkModal = React.lazy(() => import('./components/StudentLinkModal'));
+const MyAbsencesModal = React.lazy(() => import('./components/MyAbsencesModal'));
 
 interface UserProfile {
   displayName?: string | null;
@@ -92,6 +96,30 @@ const App: React.FC = () => {
   const [isGroupSelectionModalOpen, setIsGroupSelectionModalOpen] = useState(() => {
     return !localStorage.getItem('my_group_id');
   });
+
+  // Blind Server v3 student modals state
+  const [isConsentModalOpen, setIsConsentModalOpen] = useState(false);
+  const [isStudentLinkModalOpen, setIsStudentLinkModalOpen] = useState(false);
+  const [isMyAbsencesModalOpen, setIsMyAbsencesModalOpen] = useState(false);
+
+  const handleOpenMyAbsences = () => {
+    const link = getLocalStudentLink();
+    if (link) {
+      setIsMyAbsencesModalOpen(true);
+    } else {
+      setIsConsentModalOpen(true);
+    }
+  };
+
+  const handleConsentGiven = () => {
+    setIsConsentModalOpen(false);
+    setIsStudentLinkModalOpen(true);
+  };
+
+  const handleLinkSuccess = () => {
+    setIsStudentLinkModalOpen(false);
+    setIsMyAbsencesModalOpen(true);
+  };
 
   // Multi-group & custom groups state with self-healing deduplication
   const [customGroups, setCustomGroups] = useState<GroupConfig[]>(() => {
@@ -1317,6 +1345,15 @@ const App: React.FC = () => {
 
             <div className="flex items-center gap-2">
               <button
+                onClick={handleOpenMyAbsences}
+                className="p-2 rounded-xl text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors"
+                title="Мои пропуски"
+                aria-label="Мои пропуски"
+              >
+                <GraduationCap className="w-4 h-4" />
+              </button>
+
+              <button
                 onClick={() => setIsBugReportModalOpen(true)}
                 className="p-2 rounded-xl text-slate-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
                 title="Сообщить об ошибке / Баг-репорт"
@@ -2017,6 +2054,39 @@ const App: React.FC = () => {
           <DebugLogsModal
             isOpen={isDebugLogsModalOpen}
             onClose={() => setIsDebugLogsModalOpen(false)}
+          />
+        </Suspense>
+      )}
+
+      {/* Student Consent Modal */}
+      {isConsentModalOpen && (
+        <Suspense fallback={null}>
+          <ConsentModal
+            isOpen={isConsentModalOpen}
+            onClose={() => setIsConsentModalOpen(false)}
+            onConsent={handleConsentGiven}
+          />
+        </Suspense>
+      )}
+
+      {/* Student Invite Code Link Modal */}
+      {isStudentLinkModalOpen && (
+        <Suspense fallback={null}>
+          <StudentLinkModal
+            isOpen={isStudentLinkModalOpen}
+            onClose={() => setIsStudentLinkModalOpen(false)}
+            onSuccess={handleLinkSuccess}
+          />
+        </Suspense>
+      )}
+
+      {/* Student My Absences Modal */}
+      {isMyAbsencesModalOpen && (
+        <Suspense fallback={null}>
+          <MyAbsencesModal
+            isOpen={isMyAbsencesModalOpen}
+            onClose={() => setIsMyAbsencesModalOpen(false)}
+            onUnlinked={() => setIsMyAbsencesModalOpen(false)}
           />
         </Suspense>
       )}
