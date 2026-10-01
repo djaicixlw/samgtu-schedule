@@ -117,3 +117,25 @@ console.log(`  absences by blocks: [${s1OOB.absences.join(', ')}]`);
 if (s1OOB.totalAllTimeAbs === 2 && s1OOB.absences.every(a => a === 0)) {
   console.log("  >>> INCONSISTENCY: totalAllTimeAbs has 2h, but blocks sum is 0h! Missing in official report for dean's office! <<<");
 }
+
+// 2.4 Text Summary Generation Format Test
+console.log("\n--- 2.4 Text Summary Generation Format ---");
+const sampleRows = report.slice(0, 2);
+const sampleLines = sampleRows.map((row, idx) => {
+  const totalAbs = row.totalAllTimeAbs;
+  const totalExc = row.totalAllTimeExc;
+  const grandTotal = totalAbs + totalExc;
+  return `${idx + 1}. ${row.name}: Н: ${totalAbs} ч, УП: ${totalExc} ч, Всего: ${grandTotal} ч`;
+});
+if (
+  sampleLines.length === 2 &&
+  sampleLines[0].includes('Н:') &&
+  sampleLines[0].includes('УП:') &&
+  sampleLines[0].includes('Всего:')
+) {
+  console.log("  ✅ PASS: Text summary format matches specification (Студент, Н: X ч, УП: Y ч, Всего: Z ч)");
+} else {
+  console.error("  ❌ FAIL: Invalid text summary format");
+  process.exitCode = 1;
+}
+

@@ -103,8 +103,8 @@ console.log('\n--- 7. Student Roster in STUDENTS_REGISTRY ---');
 const roster = STUDENTS_REGISTRY['htf-215'];
 check('STUDENTS_REGISTRY["htf-215"] exists', Array.isArray(roster));
 check('Roster contains exactly 31 students', roster?.length === 31, `${roster?.length} students`);
-check('First student is Абаджян Нарек Барсегович', roster?.[0]?.name === 'Абаджян Нарек Барсегович');
-check('Last student is Щербакова Вероника Сергеевна', roster?.[30]?.name === 'Щербакова Вероника Сергеевна');
+check('First student is Студент 1', roster?.[0]?.name === 'Студент 1');
+check('Last student is Студент 31', roster?.[30]?.name === 'Студент 31');
 check('Aliases point to same roster', 
   STUDENTS_REGISTRY['2-htf-115'] === roster && 
   STUDENTS_REGISTRY['htf-115'] === roster && 

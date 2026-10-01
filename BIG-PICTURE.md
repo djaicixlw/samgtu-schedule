@@ -1,47 +1,53 @@
 # Архитектурная карта проекта: Расписание СамГТУ (samgtu-schedule)
 
 <!-- open-steps:begin -->
-_Measured 2026-09-28. Stages are dated where they stand; anything undated in this file is not measured._
+_Measured 2026-10-01. Stages are dated where they stand; anything undated in this file is not measured._
 
 ## О продукте
-Автономное гибридное веб-приложение (PWA / Telegram Mini App / Android Capacitor) для студентов и старост Самарского государственного технического университета (СамГТУ). Обеспечивает мгновенный доступ к расписанию занятий в 4-недельном цикле с оффлайн-доступом, журнал посещаемости, трекер домашних заданий, систему защищенной синхронизации старост и автоматический мониторинг изменений расписания с официального сервера университета.
+Автономное веб-приложение (PWA / Telegram Mini App) для студентов и старост Самарского государственного технического университета (СамГТУ) на архитектуре v3 («Слепой сервер»). Обеспечивает мгновенный доступ к расписанию занятий в 4-недельном цикле с оффлайн-доступом, защищенный учет посещаемости без передачи персональных данных студентов (слоты, необратимый HMAC от Telegram ID, отзыв данных), трекер домашних заданий, и автоматический мониторинг изменений расписания с официального сервера университета. Нативный слой Android/Capacitor выведен из эксплуатации.
 
 ## Состав компонентов и подсистем
 
 | Компонент | Назначение | Расположение | Состояние |
 |---|---|---|---|
-| **Ядро и роутинг** | Инициализация Telegram WebApp SDK, темы без FOUC, Safe Areas TMA 8.0+, живой тайм-тикер useNow, навигация | `App.tsx`, `index.tsx`, `index.css`, `utils/useNow.ts` | live (26 Sep) |
-| **Реестр расписания** | On-Demand чанки расписаний (`public/schedules/*.json`), версионированный SWR-кэш v1 с фоновым обновлением, безопасная очистка кэша без потери посещаемости | `constants.ts`, `utils/scheduleLoader.ts`, `utils/scheduleSchema.ts`, `public/schedules/` | live (28 Sep) |
-| **Журнал посещаемости** | Учет присутствия/пропусков, расчет часов по блокам семестра, экспорт в Word, серверная Cloudflare KV синхронизация | `attendance.ts`, `components/AttendanceTracker.tsx`, `utils/rosterProvider.ts` | live (28 Sep) |
-| **Трекер ДЗ** | Ведение заданий, дедлайны, фильтры, статус выполнения, фоновая синхронизация | `components/HomeworkTracker.tsx` | live (26 Sep) |
-| **Карточка пары & модалка** | Отображение занятия, статусы отмены, смена аудиторий и преподавателей | `components/ClassCard.tsx`, `components/EditLessonModal.tsx` | live (26 Sep) |
-| **Облачный бэкенд** | Cloudflare Worker + Cloudflare KV (`APP_DATA`): раздельное хранение по `?groupId=`, DTO-санитайзеры, suppression тестового спама | `cloudflare-worker.js` | live (26 Sep) |
-| **Облачная синхронизация** | Клиентский слой синхронизации: энергоэффективный опрос (backoff, throttle, AbortController, фоновое засыпание) | `utils/cloudSync.ts`, `App.tsx` | live (26 Sep) |
-| **Безопасность и Auth** | Web Crypto SHA-256 валидация PIN старост и админа, изоляция гостевого режима (152-ФЗ) | `utils/auth.ts`, `App.tsx` | live (26 Sep) |
-| **Телеметрия сбоев** | Сбор метаданных крашей, дедупликация и отправка алертов в Telegram с глушением тестов (`TEST_MODE`) | `utils/telemetry.ts`, `components/ErrorBoundary.tsx` | live (26 Sep) |
-| **Логирование & Баг-репорты** | Внутриклиентский буфер логов (150 записей), двухконтурная отправка (Worker + прямой fallback) | `utils/logger.ts`, `components/BugReportModal.tsx` | live (26 Sep) |
-| **Ночная автосверка** | Парсинг официального API СамГТУ, Circuit Breaker, Telegram-дифф | `scripts/nightly_sync.ts`, `.github/workflows/daily-sync.yml` | live (26 Sep) |
-| **Дедупликация групп** | Канонический ключ группы, самоисцеление localStorage, строгая фильтрация | `utils/samgtuParser.ts`, `App.tsx` | live (26 Sep) |
-| **Тестовый комплекс** | Набор автоматических тестов регрессии, авторизации, DTO, расписаний (3400+ проверок) | `tests/` (25 тест-сьютов) | live (28 Sep) |
-| **База знаний Obsidian** | Интерактивная база знаний, ADR, схемы, графы связей и потоки данных | `samgtu_schedule/` (44 заметки) | live (28 Sep) |
+| **Ядро и роутинг** | Инициализация Telegram WebApp SDK, темы без FOUC, Safe Areas TMA 8.0+, живой тайм-тикер useNow, навигация | `App.tsx`, `index.tsx`, `index.css`, `utils/useNow.ts` | live (01 Oct) |
+| **Реестр расписания** | On-Demand чанки расписаний (`public/schedules/*.json`), версионированный SWR-кэш v1 с фоновым обновлением, безопасная очистка кэша без потери посещаемости | `constants.ts`, `utils/scheduleLoader.ts`, `utils/scheduleSchema.ts`, `public/schedules/` | live (01 Oct) |
+| **Журнал посещаемости (v3)** | Локальный ростер старосты, учет присутствия/пропусков, расчет часов по блокам, экспорт в Word, синхронизация через слоты | `attendance.ts`, `components/AttendanceTracker.tsx`, `utils/rosterProvider.ts` | live (01 Oct) |
+| **Трекер ДЗ** | Ведение заданий, дедлайны, фильтры, статус выполнения, фоновая синхронизация | `components/HomeworkTracker.tsx` | live (01 Oct) |
+| **Карточка пары & модалка** | Отображение занятия, статусы отмены, смена аудиторий и преподавателей | `components/ClassCard.tsx`, `components/EditLessonModal.tsx` | live (01 Oct) |
+| **Облачный бэкенд v3** | Cloudflare Worker + KV («Слепой сервер»): PBKDF2 (100k) + safeEqual, fail-closed шлюз `requireAppKey`, подписанные `/file`, эндпоинты `/v3/*` | `cloudflare-worker.js` | live (01 Oct) |
+| **Облачная синхронизация** | Клиентский слой синхронизации: энергоэффективный опрос (backoff, throttle, AbortController, фоновое засыпание) | `utils/cloudSync.ts`, `App.tsx` | live (01 Oct) |
+| **Безопасность и Auth v3** | 80-битные коды групп, PBKDF2, blindId через HMAC-SHA256, rate-limiting попыток подбора (429) | `cloudflare-worker.js`, `utils/auth.ts`, `scripts/make-group-code.mjs` | live (01 Oct) |
+| **Телеметрия сбоев** | Сбор метаданных крашей, дедупликация и отправка алертов в закрытый канал | `utils/telemetry.ts`, `components/ErrorBoundary.tsx` | live (01 Oct) |
+| **Логирование & Баг-репорты** | Внутриклиентский буфер логов (150 записей), двухконтурная отправка (Worker + прямой fallback) | `utils/logger.ts`, `components/BugReportModal.tsx` | live (01 Oct) |
+| **Ночная автосверка** | Парсинг официального API СамГТУ, Circuit Breaker, Telegram-дифф | `scripts/nightly_sync.ts`, `.github/workflows/daily-sync.yml` | live (01 Oct) |
+| **Дедупликация групп** | Канонический ключ группы, самоисцеление localStorage, строгая фильтрация | `utils/samgtuParser.ts`, `App.tsx` | live (01 Oct) |
+| **Тестовый комплекс** | Набор автоматических тестов регрессии, авторизации, DTO, расписаний, API v3 (79 ассертов v3) | `tests/` (26 тест-сьютов) | live (01 Oct) |
+| **База знаний Obsidian** | Интерактивная база знаний, ADR (ADR-007, 008, 009), схемы и дорожные карты | `samgtu_schedule/` | live (01 Oct) |
 
 ## Стоит вывести из эксплуатации (Worth retiring)
-ничего не найдено (nothing found)
+- Выведено: Нативный Android/Capacitor (`android/`, `capacitor.config.json`, пакеты `@capacitor/*`) — полностью удалены в задаче A1-2.
 
 ## Дорожная Карта и Очередь Задач (Бэклог)
 
-### 🚨 Текущий приоритет: Безопасность данных и 152-ФЗ (Security & Privacy Sprint)
-- [x] **Криптографическая авторизация Cloudflare Worker (A5-B2)**:
-  - Криптографическая валидация Telegram WebApp `initData` (HMAC-SHA256 по Web Crypto API)
-  - Серверная проверка PIN (`POST /auth/pin`) с сохранением сессий в Cloudflare KV на 30 дней
-  - Серверная изоляция посещаемости: запрет чтения/записи чужих групп (`403 Forbidden`), проверка ролей староста/админ
-  - Безопасная обратная совместимость для локальных тестов (`isTestMode`)
-- [ ] **Правовой контур 152-ФЗ и согласие пользователей**:
-  - Составление Политики конфиденциальности (`PRIVACY.md`) и Положения об обработке ПДн
-  - Модальное окно первого входа с ознакомлением и фиксацией согласия на обработку данных
-- [ ] **Личный кабинет студента в журнале посещаемости**:
-  - Авторизация студента через Telegram ID
-  - Изолированный просмотр *только своих* пропусков и отработок (студент не видит чужие фамилии и пропуски)
+### 🚨 Текущий спринт: Архитектура v3 («Слепой сервер») — Волны W0-W2
+- [x] **Волна W0 (Подготовка и контракт API v3)**: ротация секретов, очистка `auth:*`, фиксация `docs/API-v3-contract.md`, ADR-007/008/009.
+- [x] **Волна W1 (Hotfixes)**:
+  - [x] A1-1: Очистка сканера `check-dist.mjs` от PIN-литералов, ограничение хоста Vite.
+  - [x] A4-1: Санитизация заголовков экспорта Word (initData, без chat_id в body), защита `window.open`.
+  - [x] A2-0: Валидация правок парсера СамГТУ.
+  - [x] A5-1: Вынос PIN-хэшей в KV с PBKDF2 (100k) и safeEqual, rate limit на `/auth/pin`, генератор `scripts/make-group-code.mjs`.
+  - [x] A5-2: Fail-closed шлюз `requireAppKey`, подписанные ссылки `/file` (10 мин), CORS без `*`, санитизация лимитов payload.
+- [x] **Волна W2: Базовая инфраструктура v3**:
+  - [x] A1-2: Удаление `android/`, `capacitor.config.json`, зависимостей `@capacitor/*`.
+  - [x] A5-3: Реализация эндпоинтов API v3 на Cloudflare Worker (`/v3/staff/claim`, `/slots`, `/invites`, `GET/PUT /v3/att`, `/student/link`, `GET/DELETE /v3/me`) и комплексный тест `tests/test_api_v3.ts`.
+- [ ] **Точка переезда (Репозиторий)**:
+  - [x] Подготовка чистого дерева в `samgtu-schedule-clean` с коммитом автора `djaicixlw`.
+  - [ ] Отправка коммита в `https://github.com/djaicixlw/samgtu-schedule` (ожидает права доступа).
+- [ ] **Волна W2 (Клиентская часть v3)**:
+  - [ ] A4-2: Клиентский слой `attendanceStorage.ts` (localAdapter + v3 sync), слоты, генерация инвайтов, экспорт без сервера, удаление `STUDENTS_REGISTRY`.
+  - [ ] A3-1: Экраны согласий, привязка по коду приглашения, «Мои пропуски», удаление данных.
+  - [ ] A5-4: Бот-релей баг-репортов (`/report`, вебхук, шифрование связки).
 
 ### Фаза 1: Оптимизация, Эргономика и Надежность Ядра — [100% ВЫПОЛНЕНО]
 - [x] Редизайн светлой темы: сланцевый фон `#eaeff5`, контраст WCAG AA (>4.5:1), объемные карточки.

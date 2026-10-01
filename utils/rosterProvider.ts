@@ -1,6 +1,20 @@
 import { Student } from '../types';
 import { STUDENTS_REGISTRY } from '../attendance';
 import { fetchGroupCloudData, pushGroupCloudData } from './cloudSync';
+import { getLocalStudents } from './attendanceStorage';
+
+/**
+ * Synchronous group roster getter: reads from local storage via getLocalStudents(groupId),
+ * falling back to STUDENTS_REGISTRY only if local storage is empty.
+ */
+export function getGroupStudents(groupId: string): Student[] {
+  if (!groupId) return [];
+  const local = getLocalStudents(groupId);
+  if (local && local.length > 0) {
+    return local;
+  }
+  return STUDENTS_REGISTRY[groupId] ? [...STUDENTS_REGISTRY[groupId]] : [];
+}
 
 /**
  * 152-FZ Compliant Roster Abstraction Interface.
@@ -26,6 +40,13 @@ export interface RosterProvider {
  * and multi-device cloud synchronization.
  */
 export class LocalCloudRosterProvider implements RosterProvider {
+  /**
+   * Synchronous helper to read local roster with fallback
+   */
+  getGroupStudents(groupId: string): Student[] {
+    return getGroupStudents(groupId);
+  }
+
   /**
    * Cleans up legacy/stale student anomalies (e.g. historical duplicates or removed students).
    */
@@ -53,14 +74,9 @@ export class LocalCloudRosterProvider implements RosterProvider {
 
     // Step 1: Inspect local cache
     try {
-      if (typeof localStorage !== 'undefined') {
-        const local = localStorage.getItem(`students_${groupId}`);
-        if (local) {
-          const parsed = JSON.parse(local);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            return this.healRoster(groupId, parsed);
-          }
-        }
+      const local = getLocalStudents(groupId);
+      if (local && local.length > 0) {
+        return this.healRoster(groupId, local);
       }
     } catch (e) {
       console.warn(`[LocalCloudRosterProvider] Error reading local storage for ${groupId}:`, e);

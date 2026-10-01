@@ -125,37 +125,17 @@ assert(authInvalid.canEdit === false && authInvalid.userRole === 'student', "Inv
 
 // 1.3 ROSTER VERIFICATION (22 STUDENTS)
 console.log("\n--------------------------------------------------------------------------------");
-console.log("2. 22-STUDENT ROSTER VERIFICATION (Аверьянова -> Яблонская)");
+console.log("2. 22-STUDENT ROSTER VERIFICATION (Студент 1 -> Студент 22)");
 console.log("--------------------------------------------------------------------------------");
 
 const students = STUDENTS_REGISTRY['faid-310'];
 assert(Array.isArray(students), "STUDENTS_REGISTRY['faid-310'] exists as array");
 assert(students.length === 22, `Total students count is 22 (got: ${students.length})`);
 
-const expectedRoster = [
-  { id: 1, name: "Аверьянова Дарья" },
-  { id: 2, name: "Антоненко Георгий" },
-  { id: 3, name: "Баландина Валерия" },
-  { id: 4, name: "Бурханова Виктория" },
-  { id: 5, name: "Винк Полина" },
-  { id: 6, name: "Внучкова Мария" },
-  { id: 7, name: "Губарева Алёна" },
-  { id: 8, name: "Зацепина Полина" },
-  { id: 9, name: "Зубалова Мария" },
-  { id: 10, name: "Иванов Никита" },
-  { id: 11, name: "Кирина Варвара" },
-  { id: 12, name: "Левина Валерия" },
-  { id: 13, name: "Манасыпов Даниил" },
-  { id: 14, name: "Петрова Полина" },
-  { id: 15, name: "Пивоварова Дарья" },
-  { id: 16, name: "Сафонова Виктория" },
-  { id: 17, name: "Романова Дарья" },
-  { id: 18, name: "Селиванова Юлия" },
-  { id: 19, name: "Ушмаева Дарья" },
-  { id: 20, name: "Хведчик Вера" },
-  { id: 21, name: "Юрьева Ангелина" },
-  { id: 22, name: "Яблонская Полина" }
-];
+const expectedRoster = Array.from({ length: 22 }, (_, idx) => ({
+  id: idx + 1,
+  name: `Студент ${idx + 1}`
+}));
 
 expectedRoster.forEach((expected, index) => {
   const actual = students[index];
@@ -164,14 +144,14 @@ expectedRoster.forEach((expected, index) => {
 });
 
 // Check first and last student boundaries
-assert(students[0].name === "Аверьянова Дарья", "First student is Аверьянова Дарья");
-assert(students[students.length - 1].name === "Яблонская Полина", "Last student is Яблонская Полина");
+assert(students[0].name === "Студент 1", "First student is Студент 1");
+assert(students[students.length - 1].name === "Студент 22", "Last student is Студент 22");
 
 // Check backwards compatibility alias 'faid-110'
 const aliasRoster = STUDENTS_REGISTRY['faid-110'];
 assert(aliasRoster && aliasRoster.length === 22, "Alias STUDENTS_REGISTRY['faid-110'] contains all 22 students");
-assert(aliasRoster[0].name === "Аверьянова Дарья", "Alias first student matches");
-assert(aliasRoster[21].name === "Яблонская Полина", "Alias last student matches");
+assert(aliasRoster[0].name === "Студент 1", "Alias first student matches");
+assert(aliasRoster[21].name === "Студент 22", "Alias last student matches");
 
 // Check unique IDs
 const idSet = new Set(students.map(s => s.id));
@@ -436,7 +416,7 @@ const engine = new AttendanceEngine('faid-310');
 // 4.1 TEST SINGLE LESSON MARKING (markAttendance)
 console.log("\n--- 4.1 Single Lesson markAttendance ---");
 const firstLessonW1Mo = w1MoDay!.lessons[0]; // faid310-w1-mo-1
-// Student 1 (Аверьянова Дарья) marked absent
+// Student 1 marked absent
 engine.handleSetStudentStatus(dateW1Mo, firstLessonW1Mo, 1, 'absent', true);
 let rec1 = engine.getAttendance(dateW1Mo, firstLessonW1Mo.id);
 assert(rec1.absentStudentIds.includes(1), "Student 1 is in absentStudentIds for faid310-w1-mo-1");
@@ -455,7 +435,7 @@ assert(!rec1.absentStudentIds.includes(1) && !rec1.excusedStudentIds?.includes(1
 
 // 4.2 TEST FULL DAY STATUS: WEEK 1 MONDAY (5 lessons) -> 'absent'
 console.log("\n--- 4.2 Full Day Status: Week 1 Monday (5 lessons) ---");
-// Student 1 (Аверьянова) set to absent for the full day
+// Student 1 set to absent for the full day
 engine.handleSetFullDayStatus(dateW1Mo, w1MoDay!.lessons, 1, 'absent', true);
 
 for (const lesson of w1MoDay!.lessons) {

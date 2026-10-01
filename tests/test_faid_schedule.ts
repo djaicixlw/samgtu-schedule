@@ -28,30 +28,7 @@ const faidStudents = STUDENTS_REGISTRY['faid-310'];
 assert(Array.isArray(faidStudents), "STUDENTS_REGISTRY['faid-310'] exists and is an array");
 assert(faidStudents.length === 22, `Student count is 22 (got ${faidStudents?.length})`);
 
-const expectedStudents = [
-  "Аверьянова Дарья",
-  "Антоненко Георгий",
-  "Баландина Валерия",
-  "Бурханова Виктория",
-  "Винк Полина",
-  "Внучкова Мария",
-  "Губарева Алёна",
-  "Зацепина Полина",
-  "Зубалова Мария",
-  "Иванов Никита",
-  "Кирина Варвара",
-  "Левина Валерия",
-  "Манасыпов Даниил",
-  "Петрова Полина",
-  "Пивоварова Дарья",
-  "Сафонова Виктория",
-  "Романова Дарья",
-  "Селиванова Юлия",
-  "Ушмаева Дарья",
-  "Хведчик Вера",
-  "Юрьева Ангелина",
-  "Яблонская Полина"
-];
+const expectedStudents = Array.from({ length: 22 }, (_, idx) => `Студент ${idx + 1}`);
 
 expectedStudents.forEach((name, idx) => {
   const student = faidStudents[idx];

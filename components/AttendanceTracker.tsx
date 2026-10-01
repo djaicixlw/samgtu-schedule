@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { ClipboardCheck, Download, FileText, Table as TableIcon } from 'lucide-react';
+import { ClipboardCheck, Download, FileText, Table as TableIcon, Copy } from 'lucide-react';
 import { STUDENTS_REGISTRY, useAttendance, BLOCKS, getSemesterWeek, getDayName, getSamaraISODate } from '../attendance';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES } from '../constants';
 import { Lesson, Student, GroupConfig } from '../types';
 import { toast } from 'sonner';
 import { fetchGroupCloudData } from '../utils/cloudSync';
+import { getLocalStudents } from '../utils/attendanceStorage';
 
 interface AttendanceTrackerProps {
   isAuthenticated: boolean;
@@ -34,21 +35,27 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   const canEdit = normalizedRole === 'admin' || normalizedRole === 'starosta';
 
   const getHealedStudents = (groupId: string, parsed: Student[]): Student[] => {
-    if (!Array.isArray(parsed)) return STUDENTS_REGISTRY[groupId] || [];
+    if (!Array.isArray(parsed)) {
+      const local = getLocalStudents(groupId);
+      return local.length > 0 ? local : (STUDENTS_REGISTRY[groupId] || []);
+    }
     if (groupId === 'ingt-310') {
-      // If cached array still contains removed student Pronin or wrong count, heal with official registry
-      if (parsed.length !== 16 || parsed.some(s => s.name?.includes('Пронин'))) {
+      if (parsed.length !== 16) {
+        const local = getLocalStudents('ingt-310');
+        const fallback = local.length === 16 ? local : (STUDENTS_REGISTRY['ingt-310'] || []);
         try {
-          localStorage.setItem(`students_ingt-310`, JSON.stringify(STUDENTS_REGISTRY['ingt-310']));
+          localStorage.setItem(`students_ingt-310`, JSON.stringify(fallback));
         } catch (e) {}
-        return STUDENTS_REGISTRY['ingt-310'];
+        return fallback;
       }
     } else if (groupId === 'faid-310' || groupId === 'faid-110') {
       if (parsed.length !== 22) {
+        const local = getLocalStudents(groupId);
+        const fallback = local.length === 22 ? local : (STUDENTS_REGISTRY['faid-310'] || []);
         try {
-          localStorage.setItem(`students_${groupId}`, JSON.stringify(STUDENTS_REGISTRY['faid-310']));
+          localStorage.setItem(`students_${groupId}`, JSON.stringify(fallback));
         } catch (e) {}
-        return STUDENTS_REGISTRY['faid-310'];
+        return fallback;
       }
     }
     return parsed;
@@ -56,13 +63,10 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
 
   const loadInitialStudents = (groupId: string): Student[] => {
     if (!groupId) return [];
-    try {
-      const saved = localStorage.getItem(`students_${groupId}`);
-      if (saved) {
-        const parsed: Student[] = JSON.parse(saved);
-        return getHealedStudents(groupId, parsed);
-      }
-    } catch (e) {}
+    const local = getLocalStudents(groupId);
+    if (local.length > 0) {
+      return getHealedStudents(groupId, local);
+    }
     return STUDENTS_REGISTRY[groupId] || [];
   };
 
@@ -227,6 +231,38 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
   };
 
+  const handleCopyTextSummary = async () => {
+    if (students.length === 0) {
+      toast.error('Список студентов пуст');
+      return;
+    }
+
+    const groupConfig = AVAILABLE_GROUPS.find(g => g.id === currentGroupId);
+    const groupName = groupConfig?.name || currentGroupId;
+
+    const lines: string[] = [
+      `Сводка по пропускам — Группа ${groupName}`,
+      `Дата: ${new Date().toLocaleDateString('ru-RU')}`,
+      ''
+    ];
+
+    reportData.forEach((row, idx) => {
+      const totalAbs = row.totalAllTimeAbs;
+      const totalExc = row.totalAllTimeExc;
+      const grandTotal = totalAbs + totalExc;
+      lines.push(`${idx + 1}. ${row.name}: Н: ${totalAbs} ч, УП: ${totalExc} ч, Всего: ${grandTotal} ч`);
+    });
+
+    const summaryText = lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(summaryText);
+      toast.success('Сводка по пропускам скопирована в буфер обмена');
+    } catch (err) {
+      console.error('Failed to copy text summary:', err);
+      toast.error('Не удалось скопировать сводку в буфер');
+    }
+  };
+
   // Pre-calculate statistics for the summary table
   const reportData = React.useMemo(() => {
     return students.map(student => {
@@ -269,14 +305,25 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={handleExportWord}
-          disabled={isExporting}
-          className="flex items-center justify-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-2xl transition-all shadow-xs w-full sm:w-auto cursor-pointer disabled:opacity-60"
-        >
-          <Download className="w-4 h-4" />
-          <span>{isExporting ? 'Формирование...' : 'Выгрузить Word (.docx)'}</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={handleCopyTextSummary}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs rounded-2xl transition-all shadow-xs flex-1 sm:flex-initial cursor-pointer"
+            title="Скопировать сводку по пропускам в буфер обмена"
+          >
+            <Copy className="w-4 h-4" />
+            <span>Скопировать сводку текстом</span>
+          </button>
+
+          <button
+            onClick={handleExportWord}
+            disabled={isExporting}
+            className="flex items-center justify-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-2xl transition-all shadow-xs flex-1 sm:flex-initial cursor-pointer disabled:opacity-60"
+          >
+            <Download className="w-4 h-4" />
+            <span>{isExporting ? 'Формирование...' : 'Выгрузить Word (.docx)'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Mode Navigation Tabs */}
@@ -506,14 +553,24 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
               <h3 className="font-bold text-base text-slate-900 dark:text-white">Сводка пропусков по 4 блокам</h3>
               <p className="text-xs text-slate-400 mt-0.5">Официальная отчетность для отправки в деканат в 20-х числах</p>
             </div>
-            <button
-              onClick={handleExportWord}
-              disabled={isExporting}
-              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm"
-            >
-              <Download className="w-4 h-4" />
-              <span>{isExporting ? 'Формирование...' : 'Скачать Word (.docx)'}</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={handleCopyTextSummary}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer"
+                title="Скопировать сводку текстом"
+              >
+                <Copy className="w-4 h-4" />
+                <span>Скопировать сводку текстом</span>
+              </button>
+              <button
+                onClick={handleExportWord}
+                disabled={isExporting}
+                className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm"
+              >
+                <Download className="w-4 h-4" />
+                <span>{isExporting ? 'Формирование...' : 'Скачать Word (.docx)'}</span>
+              </button>
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -550,9 +607,19 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       {/* TAB 3: PAIR DETAILS TABLE */}
       {activeTab === 'details' && (
         <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/90 dark:border-slate-800 overflow-hidden p-6 space-y-4 shadow-xs">
-          <div className="flex justify-between items-center">
-            <h3 className="font-bold text-base text-slate-900 dark:text-white">Сводная таблица по всем занятиям</h3>
-            <span className="text-xs text-slate-400">Всего студентов: {students.length}</span>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div>
+              <h3 className="font-bold text-base text-slate-900 dark:text-white">Сводная таблица по всем занятиям</h3>
+              <span className="text-xs text-slate-400">Всего студентов: {students.length}</span>
+            </div>
+            <button
+              onClick={handleCopyTextSummary}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer"
+              title="Скопировать сводку текстом"
+            >
+              <Copy className="w-4 h-4" />
+              <span>Скопировать сводку текстом</span>
+            </button>
           </div>
 
           <div className="overflow-x-auto">

@@ -29,9 +29,7 @@ export interface GroupConfig {
 export interface Student {
   id: number;
   name: string;
-  email?: string;
-  phone?: string;
-  subgroup?: number;
+  slot?: string;
 }
 
 export type Registry<T> = Record<string, T>;

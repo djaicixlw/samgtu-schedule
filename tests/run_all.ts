@@ -23,6 +23,7 @@ await import('./test_security_audit');
 await import('./test_auth_hashes');
 await import('./test_initdata_auth');
 await import('./test_api_v3');
+await import('./test_attendance_storage');
 await import('./test_group_dedup_and_ingt3');
 await import('./test_roster_cloud_sync');
 await import('./test_roster_provider');
