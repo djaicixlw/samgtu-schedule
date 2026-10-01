@@ -1,0 +1,125 @@
+{
+  "1": [
+    {
+      "dayName": "Понедельник",
+      "lessons": []
+    },
+    {
+      "dayName": "Вторник",
+      "lessons": []
+    },
+    {
+      "dayName": "Среда",
+      "lessons": []
+    },
+    {
+      "dayName": "Четверг",
+      "lessons": []
+    },
+    {
+      "dayName": "Пятница",
+      "lessons": []
+    },
+    {
+      "dayName": "Суббота",
+      "lessons": []
+    }
+  ],
+  "2": [
+    {
+      "dayName": "Понедельник",
+      "lessons": []
+    },
+    {
+      "dayName": "Вторник",
+      "lessons": []
+    },
+    {
+      "dayName": "Среда",
+      "lessons": []
+    },
+    {
+      "dayName": "Четверг",
+      "lessons": []
+    },
+    {
+      "dayName": "Пятница",
+      "lessons": []
+    },
+    {
+      "dayName": "Суббота",
+      "lessons": []
+    }
+  ],
+  "3": [
+    {
+      "dayName": "Понедельник",
+      "lessons": []
+    },
+    {
+      "dayName": "Вторник",
+      "lessons": []
+    },
+    {
+      "dayName": "Среда",
+      "lessons": []
+    },
+    {
+      "dayName": "Четверг",
+      "lessons": []
+    },
+    {
+      "dayName": "Пятница",
+      "lessons": []
+    },
+    {
+      "dayName": "Суббота",
+      "lessons": []
+    }
+  ],
+  "4": [
+    {
+      "dayName": "Понедельник",
+      "lessons": [
+        {
+          "id": "25ингт-252м-w4-mo-1",
+          "timeStart": "17:25",
+          "timeEnd": "19:00",
+          "subject": "Контрольно-надзорная деятельность в нефтегазовом комплексе",
+          "type": "Лекции",
+          "location": "Корпус № 9, 208",
+          "teacher": ""
+        },
+        {
+          "id": "25ингт-252м-w4-mo-2",
+          "timeStart": "19:10",
+          "timeEnd": "20:45",
+          "subject": "Контрольно-надзорная деятельность в нефтегазовом комплексе",
+          "type": "Лекции",
+          "location": "Корпус № 9, 208",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Вторник",
+      "lessons": []
+    },
+    {
+      "dayName": "Среда",
+      "lessons": []
+    },
+    {
+      "dayName": "Четверг",
+      "lessons": []
+    },
+    {
+      "dayName": "Пятница",
+      "lessons": []
+    },
+    {
+      "dayName": "Суббота",
+      "lessons": []
+    }
+  ]
+}
