@@ -1843,10 +1843,14 @@ export default {
         }
       }
 
-      // 2. File Upload to Telegram Channel
+      // 2. File Upload to Telegram Channel / Owner Relay
       if (url.pathname === "/upload" && request.method === "POST") {
-        if (!(await requireAppKey(request, APP_SECRET))) {
-          return new Response(JSON.stringify({ error: "Unauthorized: Invalid or missing X-App-Key" }), {
+        const hasKey = await requireAppKey(request, APP_SECRET);
+        const initDataStr = extractInitDataFromRequest(request);
+        const hasValidInitData = initDataStr ? (await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN, { isTestMode })).ok : false;
+
+        if (!hasKey && !hasValidInitData) {
+          return new Response(JSON.stringify({ error: "Unauthorized: Invalid or missing X-App-Key or Telegram initData" }), {
             status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -1869,7 +1873,8 @@ export default {
         }
 
         const formData = await request.formData();
-        formData.set("chat_id", CHANNEL_ID);
+        const targetChat = (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID)) || CHANNEL_ID;
+        formData.set("chat_id", targetChat);
 
         const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
           method: "POST",

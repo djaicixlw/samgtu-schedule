@@ -76,12 +76,12 @@ const App: React.FC = () => {
   
   // Default role is 'student' for unauthenticated users
   const [userRole, setUserRole] = useState<UserRole>(() => {
-    return (localStorage.getItem('user_role') as UserRole) || 'student';
+    return (localStorage.getItem('user_role') as UserRole) || (localStorage.getItem('auth_role') as UserRole) || 'student';
   });
 
   // Track which group this starosta has authority over
   const [starostaGroupId, setStarostaGroupId] = useState<string | null>(() => {
-    return localStorage.getItem('starosta_group_id') || null;
+    return localStorage.getItem('starosta_group_id') || localStorage.getItem('auth_group') || null;
   });
 
   const [isAuthReady, setIsAuthReady] = useState(true);
@@ -137,9 +137,14 @@ const App: React.FC = () => {
       const res = await claimStaffRole(currentGroupId, clean);
       if (res.ok) {
         toast.success('Права старосты подтверждены через Telegram!');
-        localStorage.setItem('auth_role', 'starosta');
-        localStorage.setItem('auth_group', currentGroupId);
         setUserRole('starosta');
+        setStarostaGroupId(currentGroupId);
+        localStorage.setItem('user_role', 'starosta');
+        localStorage.setItem('auth_role', 'starosta');
+        localStorage.setItem('starosta_group_id', currentGroupId);
+        localStorage.setItem('auth_group', currentGroupId);
+        localStorage.setItem('my_group_id', currentGroupId);
+        setBoundGroupId(currentGroupId);
         setGroupCodeInput('');
       } else {
         toast.error(res.error || 'Неверный код группы');
@@ -290,7 +295,8 @@ const App: React.FC = () => {
   const effectiveRole: UserRole = useMemo(() => {
     if (userRole === 'admin') return 'admin';
     if (userRole === 'starosta') {
-      if (starostaGroupId && currentGroupId === starostaGroupId) {
+      const activeGroup = starostaGroupId || localStorage.getItem('starosta_group_id') || localStorage.getItem('auth_group');
+      if (activeGroup && currentGroupId.toLowerCase() === activeGroup.toLowerCase()) {
         return 'starosta';
       }
       return 'student';
@@ -869,7 +875,9 @@ const App: React.FC = () => {
     try {
       localStorage.removeItem('user_role');
       localStorage.setItem('user_role', 'student');
+      localStorage.removeItem('auth_role');
       localStorage.removeItem('starosta_group_id');
+      localStorage.removeItem('auth_group');
       sessionStorage.removeItem('admin_maintenance_bypass');
     } catch (e) {}
     setActiveTab('schedule');
@@ -1615,7 +1623,7 @@ const App: React.FC = () => {
                 <UserIcon className="w-8 h-8" />
               </div>
               <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                {user ? user.displayName || user.email : `Студент ${currentGroupConfig.name}`}
+                {user ? user.displayName || user.email : (effectiveRole === 'starosta' ? `Староста ${currentGroupConfig.name}` : (effectiveRole === 'admin' ? 'Администратор' : `Студент ${currentGroupConfig.name}`))}
               </h2>
               {effectiveRole !== 'student' && (
                 <div className="flex items-center justify-between p-3.5 bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-900/40 rounded-2xl text-left">
