@@ -1709,21 +1709,16 @@ const App: React.FC = () => {
               </button>
             </div>
 
-            {/* Student Attendance & My Absences (Blind Server v3) */}
+            {/* Student Attendance & My Absences */}
             <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
-                  <UserCheck className="w-4 h-4 text-indigo-500" />
-                  <span>Посещаемость и мои пропуски</span>
-                </div>
-                <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 rounded-md">
-                  v3 «Слепой сервер»
-                </span>
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
+                <UserCheck className="w-4 h-4 text-indigo-500" />
+                <span>Посещаемость и мои пропуски</span>
               </div>
               <p className="text-[11px] text-slate-400">
                 {getLocalStudentLink()
-                  ? `Ваш аккаунт привязан к группе ${getLocalStudentLink()?.gid.toUpperCase()} (слот ${getLocalStudentLink()?.slot}). Личные данные и ФИО на сервер не передаются.`
-                  : 'Подключите учет посещаемости по одноразовому 10-значному коду от старосты группы.'}
+                  ? `Учет подключен для группы ${getLocalStudentLink()?.gid.toUpperCase()}. Ваши имя и фамилия на сервер не передаются.`
+                  : 'Подключите личный просмотр пропущенных пар по коду от старосты группы.'}
               </p>
               <div className="flex flex-col gap-2">
                 <button
@@ -1738,24 +1733,19 @@ const App: React.FC = () => {
 
             {/* Privacy Policy Card */}
             <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
-                  <Shield className="w-4 h-4 text-indigo-500" />
-                  <span>Политика конфиденциальности</span>
-                </div>
-                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-700/50 px-2 py-0.5 rounded-md">
-                  152-ФЗ
-                </span>
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
+                <Shield className="w-4 h-4 text-indigo-500" />
+                <span>Конфиденциальность</span>
               </div>
               <p className="text-[11px] text-slate-400">
-                Обезличивание, криптографическая защита данных и условия хранения по ст. 9 152-ФЗ.
+                Как защищены ваши данные, почему сервер не знает фамилий и как удалить свои сведения в один клик.
               </p>
               <button
                 onClick={() => setIsPrivacyModalOpen(true)}
                 className="w-full py-2.5 px-4 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold text-xs rounded-xl transition-all shadow-sm min-h-[44px] flex items-center justify-center gap-2"
               >
                 <Shield className="w-3.5 h-3.5 text-indigo-500" />
-                Читать политику конфиденциальности v3
+                Политика конфиденциальности
               </button>
             </div>
 
@@ -1787,20 +1777,20 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* Starosta v3 Group Code Login */}
+            {/* Starosta Group Code Login */}
             {userRole === 'student' && (
               <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
                     <Key className="w-4 h-4 text-indigo-500" />
-                    <span>Вход для старосты (Код группы v3)</span>
+                    <span>Вход для старосты</span>
                   </div>
                   <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-md">
                     Староста
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Введите 80-битный код группы для подтверждения прав старосты через Telegram InitData.
+                  Введите секретный код группы от куратора для подтверждения прав старосты.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input
