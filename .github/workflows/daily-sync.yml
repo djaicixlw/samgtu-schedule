@@ -34,7 +34,7 @@ jobs:
       - name: Run Nightly Schedule Sync & Audit
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          DEV_CHAT_ID: ${{ secrets.DEV_CHAT_ID || secrets.TELEGRAM_DEV_CHAT_ID || secrets.TELEGRAM_CHANNEL_ID }}
           AUTO_APPLY: 'true'
         run: npx tsx scripts/nightly_sync.ts --apply
 

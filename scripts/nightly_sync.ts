@@ -46,16 +46,16 @@ export interface GroupDiff {
  */
 export async function sendTelegramNotification(messageText: string): Promise<boolean> {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  const channelId = process.env.TELEGRAM_CHANNEL_ID || '-1002345678901';
+  const targetChatId = process.env.DEV_CHAT_ID || process.env.TELEGRAM_DEV_CHAT_ID || process.env.TELEGRAM_CHANNEL_ID;
 
-  if (!botToken) {
-    console.log('[Telegram Notification Skipped] TELEGRAM_BOT_TOKEN is not set in environment.');
+  if (!botToken || !targetChatId) {
+    console.log('[Telegram Notification Skipped] TELEGRAM_BOT_TOKEN or DEV_CHAT_ID is not set in environment.');
     return false;
   }
 
   return new Promise<boolean>((resolve) => {
     const payload = JSON.stringify({
-      chat_id: channelId,
+      chat_id: targetChatId,
       text: messageText,
       parse_mode: 'HTML'
     });
