@@ -22,6 +22,11 @@ import {
   publishInvitesWithServer,
   fetchMonthAttendanceV3,
   saveMonthAttendanceV3,
+  linkStudentWithInvite,
+  fetchMyAttendanceV3,
+  unlinkStudentV3,
+  getLocalStudentLink,
+  clearLocalStudentLink,
   setAttendanceApiBase,
   getTelegramInitData
 } from '../utils/attendanceStorage';
@@ -329,6 +334,100 @@ try {
   const conflictRes = await saveMonthAttendanceV3('test-api-group', '2026-10', 3, {}, []);
   check('saveMonthAttendanceV3 detects conflict', conflictRes.ok === false && conflictRes.conflict === true);
   check('saveMonthAttendanceV3 returns current version on conflict', conflictRes.ver === 5);
+
+  // 7.7 linkStudentWithInvite success & localStorage persistence
+  clearLocalStudentLink();
+  check('getLocalStudentLink is initially null', getLocalStudentLink() === null);
+
+  mockResponseHandler = () => new Response(JSON.stringify({
+    ok: true,
+    gid: 'ingt-310',
+    slot: 'SLOT-A1'
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const linkRes = await linkStudentWithInvite('k7p2-9xqm4t', 1);
+  check('linkStudentWithInvite returns ok: true', linkRes.ok === true && linkRes.gid === 'ingt-310' && linkRes.slot === 'SLOT-A1');
+  check('linkStudentWithInvite uses POST /v3/student/link', Boolean(lastInterceptedRequest?.method === 'POST' && lastInterceptedRequest.url.endsWith('/v3/student/link')));
+  check('linkStudentWithInvite uppercases code', lastInterceptedRequest?.body?.code === 'K7P2-9XQM4T' && lastInterceptedRequest?.body?.consentVer === 1);
+  check('linkStudentWithInvite passed X-Telegram-Init-Data', Boolean(lastInterceptedRequest?.headers['X-Telegram-Init-Data']));
+
+  const storedLink = getLocalStudentLink();
+  check('linkStudentWithInvite saved link to localStorage', Boolean(
+    storedLink &&
+    storedLink.gid === 'ingt-310' &&
+    storedLink.slot === 'SLOT-A1' &&
+    storedLink.consentVer === 1 &&
+    typeof storedLink.linkedAt === 'number'
+  ));
+
+  // 7.8 linkStudentWithInvite 404 error handling
+  mockResponseHandler = () => new Response(JSON.stringify({ error: 'Invalid or expired invite code' }), {
+    status: 404,
+    headers: { 'Content-Type': 'application/json' }
+  });
+  const link404 = await linkStudentWithInvite('EXPIRED-CODE', 1);
+  check('linkStudentWithInvite handles 404 with Russian error message', link404.ok === false && link404.error === 'Неверный или истекший код приглашения');
+
+  // 7.9 linkStudentWithInvite 429 error handling
+  mockResponseHandler = () => new Response(JSON.stringify({ error: 'Too many attempts' }), {
+    status: 429,
+    headers: { 'Content-Type': 'application/json' }
+  });
+  const link429 = await linkStudentWithInvite('RATE-LIMIT', 1);
+  check('linkStudentWithInvite handles 429 with Russian error message', link429.ok === false && link429.error === 'Слишком много попыток, подождите 15 минут');
+
+  // 7.10 fetchMyAttendanceV3
+  mockResponseHandler = () => new Response(JSON.stringify({
+    ok: true,
+    linked: true,
+    gid: 'ingt-310',
+    slot: 'SLOT-A1',
+    consentVer: 1,
+    consentAt: 1727788800000,
+    marks: { '10-02.1': 'e', '10-02.2': 'u' },
+    cancelled: ['10-02.3']
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const myAtt = await fetchMyAttendanceV3();
+  check('fetchMyAttendanceV3 returns student marks and cancelled lessons', Boolean(
+    myAtt.ok === true &&
+    myAtt.linked === true &&
+    myAtt.gid === 'ingt-310' &&
+    myAtt.slot === 'SLOT-A1' &&
+    myAtt.marks?.['10-02.1'] === 'e' &&
+    myAtt.marks?.['10-02.2'] === 'u' &&
+    myAtt.cancelled?.[0] === '10-02.3'
+  ));
+  check('fetchMyAttendanceV3 uses GET /v3/me', Boolean(lastInterceptedRequest?.method === 'GET' && lastInterceptedRequest.url.endsWith('/v3/me')));
+
+  // Test fetchMyAttendanceV3 with month parameter
+  await fetchMyAttendanceV3('2026-10');
+  check('fetchMyAttendanceV3 passes month parameter if provided', Boolean(
+    lastInterceptedRequest?.url.includes('/v3/me?month=2026-10')
+  ));
+
+  // 7.11 unlinkStudentV3
+  mockResponseHandler = () => new Response(JSON.stringify({ ok: true, deleted: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const unlinkRes = await unlinkStudentV3();
+  check('unlinkStudentV3 returns ok: true, deleted: true', unlinkRes.ok === true && unlinkRes.deleted === true);
+  check('unlinkStudentV3 uses DELETE /v3/me', Boolean(lastInterceptedRequest?.method === 'DELETE' && lastInterceptedRequest.url.includes('/v3/me')));
+  check('unlinkStudentV3 clears localStorage link', getLocalStudentLink() === null);
+
+  // 7.12 clearLocalStudentLink helper
+  localStorage.setItem('v3_student_linked', JSON.stringify({ gid: 'g1', slot: 's1', linkedAt: 123, consentVer: 1 }));
+  check('getLocalStudentLink reads manually set link', getLocalStudentLink()?.gid === 'g1');
+  clearLocalStudentLink();
+  check('clearLocalStudentLink clears localStorage', getLocalStudentLink() === null);
 
 } finally {
   globalThis.fetch = originalFetch;

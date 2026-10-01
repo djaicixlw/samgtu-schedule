@@ -384,3 +384,171 @@ export async function saveMonthAttendanceV3(
     return { ok: false, error: err?.message || 'Network error' };
   }
 }
+
+export interface LocalStudentLink {
+  gid: string;
+  slot: string;
+  linkedAt: number;
+  consentVer: number;
+}
+
+/**
+ * Get local student link information from localStorage.
+ */
+export function getLocalStudentLink(): LocalStudentLink | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem('v3_student_linked');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          typeof parsed.gid === 'string' &&
+          typeof parsed.slot === 'string'
+        ) {
+          return {
+            gid: parsed.gid,
+            slot: parsed.slot,
+            linkedAt: typeof parsed.linkedAt === 'number' ? parsed.linkedAt : Date.now(),
+            consentVer: typeof parsed.consentVer === 'number' ? parsed.consentVer : 1
+          };
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to get local student link:', e);
+  }
+  return null;
+}
+
+/**
+ * Clear local student link information from localStorage.
+ */
+export function clearLocalStudentLink(): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('v3_student_linked');
+    }
+  } catch (e) {
+    console.error('Failed to clear local student link:', e);
+  }
+}
+
+/**
+ * Link current student with invite code on Cloudflare Worker (Blind Server).
+ * POST /v3/student/link
+ */
+export async function linkStudentWithInvite(
+  code: string,
+  consentVer: number = 1
+): Promise<{ ok: boolean; gid?: string; slot?: string; error?: string }> {
+  try {
+    if (!code || typeof code !== 'string' || !code.trim()) {
+      return { ok: false, error: 'Неверный или истекший код приглашения' };
+    }
+    const base = getAttendanceApiBase();
+    const res = await fetch(`${base}/v3/student/link`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ code: code.trim().toUpperCase(), consentVer })
+    });
+    const json = await res.json().catch(() => ({}));
+    if (res.status === 404) {
+      return { ok: false, error: 'Неверный или истекший код приглашения' };
+    }
+    if (res.status === 429) {
+      return { ok: false, error: 'Слишком много попыток, подождите 15 минут' };
+    }
+    if (!res.ok) {
+      return { ok: false, error: json.error || `HTTP ${res.status}` };
+    }
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(
+          'v3_student_linked',
+          JSON.stringify({
+            gid: json.gid,
+            slot: json.slot,
+            linkedAt: Date.now(),
+            consentVer
+          })
+        );
+      }
+    } catch (e) {
+      console.error('Failed to save student link to localStorage:', e);
+    }
+    return { ok: true, gid: json.gid, slot: json.slot };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Network error' };
+  }
+}
+
+/**
+ * Fetch current student's attendance records and status from Cloudflare Worker.
+ * GET /v3/me
+ */
+export async function fetchMyAttendanceV3(month?: string): Promise<{
+  ok: boolean;
+  linked: boolean;
+  gid?: string;
+  slot?: string;
+  marks?: Record<string, 'e' | 'u'>;
+  cancelled?: string[];
+  error?: string;
+}> {
+  try {
+    const base = getAttendanceApiBase();
+    const url = month
+      ? `${base}/v3/me?month=${encodeURIComponent(month)}`
+      : `${base}/v3/me`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: getAuthHeaders()
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, linked: false, error: json.error || `HTTP ${res.status}` };
+    }
+    return {
+      ok: true,
+      linked: Boolean(json.linked),
+      gid: json.gid,
+      slot: json.slot,
+      marks: json.marks,
+      cancelled: json.cancelled
+    };
+  } catch (err: any) {
+    return { ok: false, linked: false, error: err?.message || 'Network error' };
+  }
+}
+
+/**
+ * Unlink student from group and delete remote slot data on Cloudflare Worker.
+ * DELETE /v3/me
+ */
+export async function unlinkStudentV3(month?: string): Promise<{
+  ok: boolean;
+  deleted: boolean;
+  error?: string;
+}> {
+  try {
+    const base = getAttendanceApiBase();
+    const url = month
+      ? `${base}/v3/me?month=${encodeURIComponent(month)}`
+      : `${base}/v3/me`;
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: getAuthHeaders()
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, deleted: false, error: json.error || `HTTP ${res.status}` };
+    }
+    clearLocalStudentLink();
+    return { ok: true, deleted: Boolean(json.deleted) };
+  } catch (err: any) {
+    return { ok: false, deleted: false, error: err?.message || 'Network error' };
+  }
+}
+
