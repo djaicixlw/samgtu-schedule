@@ -30,6 +30,7 @@ await import('./test_roster_provider');
 await import('./test_attendance_word_export_verification');
 await import('./test_tma_resilience_e2e');
 await import('./test_sunday_week_rollover_regression');
+await import('./test_semester_preload');
 const { runHomeworkLifecycleStressTest } = await import('./test_homework_lifecycle_stress');
 await runHomeworkLifecycleStressTest();
 console.log("\n=================================================");
