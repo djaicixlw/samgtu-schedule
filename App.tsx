@@ -129,13 +129,21 @@ const App: React.FC = () => {
   const handleClaimGroupCode = async () => {
     const clean = groupCodeInput.trim().toUpperCase();
     if (!clean) {
-      toast.error('Введите код группы');
+      toast.error('Введите код группы или администратора');
       return;
     }
     setIsClaimingStaff(true);
     try {
       const res = await claimStaffRole(currentGroupId, clean);
       if (res.ok) {
+        if (res.role === 'admin') {
+          toast.success('Права администратора подтверждены!');
+          setUserRole('admin');
+          localStorage.setItem('user_role', 'admin');
+          localStorage.setItem('auth_role', 'admin');
+          setGroupCodeInput('');
+          return;
+        }
         toast.success('Права старосты подтверждены через Telegram!');
         setUserRole('starosta');
         setStarostaGroupId(currentGroupId);
@@ -147,7 +155,7 @@ const App: React.FC = () => {
         setBoundGroupId(currentGroupId);
         setGroupCodeInput('');
       } else {
-        toast.error(res.error || 'Неверный код группы');
+        toast.error(res.error || 'Неверный код группы или администратора');
       }
     } catch (e: any) {
       toast.error(e?.message || 'Ошибка сети');
@@ -1793,14 +1801,14 @@ const App: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
                     <Key className="w-4 h-4 text-indigo-500" />
-                    <span>Вход для старосты</span>
+                    <span>Вход для старосты и администратора</span>
                   </div>
                   <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-md">
-                    Староста
+                    Доступ
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Введите секретный код группы от куратора для подтверждения прав старосты.
+                  Введите секретный код группы или код администратора для подтверждения прав.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input

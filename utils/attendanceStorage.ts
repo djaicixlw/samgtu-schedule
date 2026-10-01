@@ -1,4 +1,5 @@
 import { Student } from '../types';
+import type { AttendanceRecord } from '../attendance';
 
 export const WORKER_BASE = 'https://floral-union-26d1.alexeyberezin2.workers.dev';
 export const CROCKFORD_BASE32_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -447,11 +448,12 @@ export async function linkStudentWithInvite(
     if (!code || typeof code !== 'string' || !code.trim()) {
       return { ok: false, error: 'Неверный или истекший код приглашения' };
     }
+    const cleanCode = code.trim().toUpperCase();
     const base = getAttendanceApiBase();
     const res = await fetch(`${base}/v3/student/link`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ code: code.trim().toUpperCase(), consentVer })
+      body: JSON.stringify({ code: cleanCode, consentVer })
     });
     const json = await res.json().catch(() => ({}));
     if (res.status === 404) {
@@ -553,13 +555,13 @@ export async function unlinkStudentV3(month?: string): Promise<{
 }
 
 /**
- * Claim starosta staff role for a group using the 80-bit group code.
+ * Claim starosta staff or admin role using the 80-bit code.
  * POST /v3/staff/claim
  */
 export async function claimStaffRole(
   gid: string,
   code: string
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; role?: 'admin' | 'starosta'; error?: string }> {
   try {
     const base = getAttendanceApiBase();
     const res = await fetch(`${base}/v3/staff/claim`, {
@@ -575,11 +577,109 @@ export async function claimStaffRole(
       return { ok: false, error: 'Слишком много попыток ввода кода. Подождите 15 минут.' };
     }
     if (!res.ok) {
-      return { ok: false, error: json.error || 'Неверный код группы' };
+      return { ok: false, error: json.error || 'Неверный код группы или администратора' };
     }
-    return { ok: true };
+    return { ok: true, role: json.role || 'starosta' };
   } catch (err: any) {
     return { ok: false, error: err?.message || 'Ошибка сети' };
+  }
+}
+
+/**
+ * Synchronize local attendance records with Cloudflare Worker API v3 (Blind Server).
+ * Maps local students to anonymous slots and pushes monthly slices via PUT /v3/att.
+ */
+export async function syncAttendanceRecordsToV3(
+  groupId: string,
+  records?: AttendanceRecord[]
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const gid = groupId.trim().toLowerCase();
+    let students = getLocalStudents(gid);
+    if (!students || students.length === 0) {
+      return { ok: true };
+    }
+
+    students = ensureGroupSlots(gid, students);
+
+    // Register slots with server if needed
+    const slots = students.map(s => s.slot).filter(Boolean) as string[];
+    if (slots.length > 0) {
+      await registerSlotsWithServer(gid, slots).catch(() => {});
+    }
+
+    let recs = records;
+    if (!recs) {
+      try {
+        const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(`attendance_${gid}`) : null;
+        if (saved) recs = JSON.parse(saved);
+      } catch {}
+    }
+    if (!recs || recs.length === 0) return { ok: true };
+
+    // Group records by month (YYYY-MM)
+    const byMonth = new Map<string, AttendanceRecord[]>();
+    for (const r of recs) {
+      if (!r || !r.date) continue;
+      const m = r.date.slice(0, 7); // "YYYY-MM"
+      const list = byMonth.get(m) || [];
+      list.push(r);
+      byMonth.set(m, list);
+    }
+
+    const slotMap = new Map<number, string>();
+    students.forEach(s => {
+      if (s.slot) slotMap.set(s.id, s.slot);
+    });
+
+    for (const [month, monthRecs] of byMonth.entries()) {
+      const fetchRes = await fetchMonthAttendanceV3(gid, month);
+      const baseVer = (fetchRes.ok && fetchRes.data?.ver) ? fetchRes.data.ver : 0;
+      const currentSlots = (fetchRes.ok && fetchRes.data?.slots) ? fetchRes.data.slots : {};
+      const currentCancelled: string[] = (fetchRes.ok && Array.isArray(fetchRes.data?.cancelled)) ? fetchRes.data.cancelled : [];
+
+      const patch: Record<string, Record<string, 'e' | 'u' | null>> = {};
+      const cancelSet = new Set<string>(currentCancelled);
+
+      // Initialize patch objects for known slots
+      slots.forEach(slot => {
+        patch[slot] = {};
+      });
+
+      for (const rec of monthRecs) {
+        const pairMatch = (rec.lessonId || '').match(/(\d+)$/);
+        const pairNum = pairMatch ? pairMatch[1] : '1';
+        const mmdd = rec.date.slice(5);
+        const lessonKey = `${mmdd}.${pairNum}`;
+
+        if (rec.isCancelled) {
+          cancelSet.add(lessonKey);
+        } else {
+          cancelSet.delete(lessonKey);
+        }
+
+        const absentIds = new Set(rec.absentStudentIds || []);
+        const excusedIds = new Set(rec.excusedStudentIds || []);
+
+        for (const [studentId, slot] of slotMap.entries()) {
+          if (absentIds.has(studentId)) {
+            patch[slot][lessonKey] = 'e';
+          } else if (excusedIds.has(studentId)) {
+            patch[slot][lessonKey] = 'u';
+          } else {
+            if (currentSlots[slot] && currentSlots[slot][lessonKey]) {
+              patch[slot][lessonKey] = null;
+            }
+          }
+        }
+      }
+
+      await saveMonthAttendanceV3(gid, month, baseVer, patch, Array.from(cancelSet));
+    }
+
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Sync failed' };
   }
 }
 

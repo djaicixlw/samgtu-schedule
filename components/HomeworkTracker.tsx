@@ -208,9 +208,13 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       formData.append('document', file, file.name);
       formData.append('caption', `[${groupName}] 📚 ДЗ: ${file.name} #${groupTag}`);
 
+      const tg = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp) || null;
+      const initData = tg?.initData || '';
+
       const res = await fetch(`${TG_WORKER_URL}/upload`, {
         method: 'POST',
         headers: {
+          ...(initData ? { 'X-Telegram-Init-Data': initData } : {}),
           ...(import.meta.env.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {})
         },
         body: formData

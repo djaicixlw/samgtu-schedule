@@ -5,7 +5,7 @@ import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES } from '../constants';
 import { Lesson, Student, GroupConfig } from '../types';
 import { toast } from 'sonner';
 import { fetchGroupCloudData } from '../utils/cloudSync';
-import { getLocalStudents } from '../utils/attendanceStorage';
+import { getLocalStudents, syncAttendanceRecordsToV3 } from '../utils/attendanceStorage';
 
 interface AttendanceTrackerProps {
   isAuthenticated: boolean;
@@ -97,6 +97,13 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     };
   }, [currentGroupId, refreshTrigger]);
 
+  // Initial and reactive background sync with V3 Blind Server for starosta/admin
+  useEffect(() => {
+    if (canEdit && currentGroupId) {
+      syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
+    }
+  }, [canEdit, currentGroupId, refreshTrigger]);
+
   const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedDate(e.target.value);
     setSelectedLesson(null);
@@ -133,6 +140,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
 
     markAttendance(selectedDate, selectedLesson.id, newAbsentIds, newExcusedIds, record.isCancelled);
+    syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
   };
 
   const handleSetFullDayStatus = (studentId: number, status: 'absent' | 'excused') => {
@@ -175,6 +183,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
 
     if (updates.length > 0) {
       markBatchAttendance(updates);
+      syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
       toast.success(`Статус "${status === 'absent' ? 'Н' : 'УП'}" установлен на все пары дня`);
     }
   };
@@ -184,6 +193,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     if (!canEdit) return;
     const record = getAttendance(selectedDate, lessonId);
     markAttendance(selectedDate, lessonId, record.absentStudentIds, record.excusedStudentIds, !record.isCancelled);
+    syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
   };
 
   // Export official Word (.docx) document

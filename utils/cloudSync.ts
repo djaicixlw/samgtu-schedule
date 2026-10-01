@@ -226,7 +226,7 @@ const putJson = async (url: string, body: any, timeoutMs = 7000) => {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
         ...(import.meta.env?.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {}),
-        ...(isAttendance ? { 'X-Telegram-Init-Data': initData } : {})
+        ...(initData ? { 'X-Telegram-Init-Data': initData } : {})
       },
       body: JSON.stringify(body)
     });
@@ -356,7 +356,25 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
           }))
           .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
 
-        try { localStorage.setItem(`homework_${groupId}`, JSON.stringify(cloudHomework)); } catch (e) {}
+        // Protect local items: merge cloud homework with existing non-deleted local items so unsaved items are never wiped
+        let existingLocal: HomeworkItem[] = [];
+        try {
+          const stored = localStorage.getItem(`homework_${groupId}`);
+          if (stored) existingLocal = JSON.parse(stored);
+        } catch (e) {}
+
+        const itemMap = new Map<string, HomeworkItem>();
+        cloudHomework.forEach(item => itemMap.set(item.id, item));
+        existingLocal.forEach(item => {
+          if (item && item.id && !deletedSet.has(item.id) && !itemMap.has(item.id)) {
+            itemMap.set(item.id, item);
+          }
+        });
+        const safeMergedHomework = Array.from(itemMap.values())
+          .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+        cloudHomework = safeMergedHomework;
+
+        try { localStorage.setItem(`homework_${groupId}`, JSON.stringify(safeMergedHomework)); } catch (e) {}
       }
     }
 

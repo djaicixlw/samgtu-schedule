@@ -823,7 +823,58 @@ export default {
           }
 
           const { gid, code } = body || {};
-          if (!gid || !code || typeof gid !== 'string' || typeof code !== 'string') {
+          if (!code || typeof code !== 'string') {
+            return new Response(JSON.stringify({ error: "Missing or invalid code" }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
+          const rawCode = code.trim().toUpperCase();
+          const stripped = rawCode.replace(/[^0-9A-Z]/g, '');
+          const formatted = stripped.length === 16
+            ? `${stripped.slice(0,4)}-${stripped.slice(4,8)}-${stripped.slice(8,12)}-${stripped.slice(12,16)}`
+            : rawCode;
+          const candidates = Array.from(new Set([rawCode, formatted, stripped]));
+
+          // 1. Check if code matches global admin (g:admin or env.ADMIN_CODE_HASH)
+          const adminRaw = await env.APP_DATA.get("g:admin");
+          let adminData = null;
+          if (adminRaw) {
+            try { adminData = JSON.parse(adminRaw); } catch {}
+          } else if (env && env.ADMIN_CODE_HASH) {
+            adminData = {
+              codeSalt: env.ADMIN_CODE_SALT || "",
+              codeHash: env.ADMIN_CODE_HASH,
+              staff: []
+            };
+          }
+
+          if (adminData && adminData.codeSalt && adminData.codeHash) {
+            let isAdminMatch = false;
+            for (const cand of candidates) {
+              const calcHash = await pbkdf2(cand, adminData.codeSalt);
+              if (await safeEqual(calcHash, adminData.codeHash)) {
+                isAdminMatch = true;
+                break;
+              }
+            }
+
+            if (isAdminMatch) {
+              if (gid) await env.APP_DATA.delete(`rl:claim:${gid}`);
+              adminData.staff = Array.isArray(adminData.staff) ? adminData.staff : [];
+              if (userBlindId && !adminData.staff.includes(userBlindId)) {
+                adminData.staff.push(userBlindId);
+                await env.APP_DATA.put("g:admin", JSON.stringify(adminData));
+              }
+              return new Response(JSON.stringify({ ok: true, role: "admin" }), {
+                status: 200,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+          }
+
+          if (!gid || typeof gid !== 'string') {
             return new Response(JSON.stringify({ error: "Missing or invalid gid or code" }), {
               status: 400,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -840,7 +891,7 @@ export default {
             });
           }
 
-          const groupRaw = await env.APP_DATA.get("g:" + gid);
+          const groupRaw = await env.APP_DATA.get("g:" + gid.toLowerCase());
           if (!groupRaw) {
             await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
             return new Response(JSON.stringify({ error: "Group not found" }), {
@@ -867,8 +918,15 @@ export default {
             });
           }
 
-          const calcHash = await pbkdf2(code, groupData.codeSalt);
-          const isValid = await safeEqual(calcHash, groupData.codeHash);
+          let isValid = false;
+          for (const cand of candidates) {
+            const calcHash = await pbkdf2(cand, groupData.codeSalt);
+            if (await safeEqual(calcHash, groupData.codeHash)) {
+              isValid = true;
+              break;
+            }
+          }
+
           if (!isValid) {
             await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
             return new Response(JSON.stringify({ error: "Invalid group code" }), {
@@ -882,9 +940,9 @@ export default {
           if (!groupData.staff.includes(userBlindId)) {
             groupData.staff.push(userBlindId);
           }
-          await env.APP_DATA.put("g:" + gid, JSON.stringify(groupData));
+          await env.APP_DATA.put("g:" + gid.toLowerCase(), JSON.stringify(groupData));
 
-          return new Response(JSON.stringify({ ok: true }), {
+          return new Response(JSON.stringify({ ok: true, role: "starosta" }), {
             status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -1228,9 +1286,17 @@ export default {
             });
           }
 
-          const cleanCode = code.trim().toUpperCase();
-          const codeHash = (await sha256Hex(cleanCode)).toLowerCase();
-          const invRaw = await env.APP_DATA.get("inv:" + codeHash);
+          const rawCode = code.trim().toUpperCase();
+          const cleanCode = rawCode.replace(/[^0-9A-Z]/g, '');
+          const cleanHash = (await sha256Hex(cleanCode)).toLowerCase();
+          const rawHash = (await sha256Hex(rawCode)).toLowerCase();
+
+          let invRaw = await env.APP_DATA.get("inv:" + cleanHash);
+          let matchedHash = cleanHash;
+          if (!invRaw && rawHash !== cleanHash) {
+            invRaw = await env.APP_DATA.get("inv:" + rawHash);
+            matchedHash = rawHash;
+          }
           if (!invRaw) {
             await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
             return new Response(JSON.stringify({ error: "Invalid or expired invite code" }), {
@@ -1251,7 +1317,7 @@ export default {
           }
 
           await env.APP_DATA.delete(rlKey);
-          await env.APP_DATA.delete("inv:" + codeHash);
+          await env.APP_DATA.delete("inv:" + matchedHash);
 
           const userData = {
             gid: invData.gid,
@@ -1295,21 +1361,44 @@ export default {
           }
 
           const now = new Date(Date.now() + 4 * 60 * 60 * 1000);
-          const defaultMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-          const targetMonth = url.searchParams.get("month") || url.searchParams.get("from") || defaultMonth;
+          const explicitMonth = url.searchParams.get("month") || url.searchParams.get("from");
 
-          const attRaw = await env.APP_DATA.get(`a:${userData.gid}:${targetMonth}`);
-          let monthSlots = {};
-          let cancelled = [];
-          if (attRaw) {
-            try {
-              const parsed = JSON.parse(attRaw);
-              monthSlots = (parsed.slots && typeof parsed.slots === 'object') ? parsed.slots : {};
-              cancelled = Array.isArray(parsed.cancelled) ? parsed.cancelled : [];
-            } catch {}
+          let targetMonths = [];
+          if (explicitMonth) {
+            targetMonths = [explicitMonth];
+          } else {
+            // Aggregate all active months of current semester
+            const y = now.getUTCFullYear();
+            const m = now.getUTCMonth() + 1;
+            if (m >= 8) {
+              for (let mon = 8; mon <= 12; mon++) {
+                targetMonths.push(`${y}-${String(mon).padStart(2, '0')}`);
+              }
+            } else {
+              for (let mon = 2; mon <= 7; mon++) {
+                targetMonths.push(`${y}-${String(mon).padStart(2, '0')}`);
+              }
+            }
           }
 
-          const slotMarks = monthSlots[userData.slot] || {};
+          const aggregatedMarks = {};
+          const aggregatedCancelled = new Set();
+
+          for (const m of targetMonths) {
+            const attRaw = await env.APP_DATA.get(`a:${userData.gid}:${m}`);
+            if (attRaw) {
+              try {
+                const parsed = JSON.parse(attRaw);
+                const slots = (parsed.slots && typeof parsed.slots === 'object') ? parsed.slots : {};
+                const userMarks = slots[userData.slot] || {};
+                Object.assign(aggregatedMarks, userMarks);
+                if (Array.isArray(parsed.cancelled)) {
+                  parsed.cancelled.forEach(c => aggregatedCancelled.add(c));
+                }
+              } catch {}
+            }
+          }
+
           return new Response(JSON.stringify({
             ok: true,
             linked: true,
@@ -1317,8 +1406,8 @@ export default {
             slot: userData.slot,
             consentVer: userData.consentVer,
             consentAt: userData.consentAt,
-            marks: slotMarks,
-            cancelled
+            marks: aggregatedMarks,
+            cancelled: Array.from(aggregatedCancelled)
           }), {
             status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1760,10 +1849,21 @@ export default {
           }
 
           if (type !== "attendance" && !hasAppKey) {
-            const isAdmin = Boolean(env && env.ADMIN_BLIND_ID && userBlindId === env.ADMIN_BLIND_ID);
+            let isAdmin = Boolean(env && env.ADMIN_BLIND_ID && userBlindId === env.ADMIN_BLIND_ID);
+            if (!isAdmin) {
+              const adminRaw = await env.APP_DATA.get("g:admin");
+              if (adminRaw) {
+                try {
+                  const adminObj = JSON.parse(adminRaw);
+                  if (Array.isArray(adminObj.staff) && adminObj.staff.includes(userBlindId)) {
+                    isAdmin = true;
+                  }
+                } catch {}
+              }
+            }
             let isStaff = false;
             if (groupId) {
-              const groupRaw = await env.APP_DATA.get("g:" + groupId);
+              const groupRaw = await env.APP_DATA.get("g:" + groupId.toLowerCase());
               if (groupRaw) {
                 try {
                   const groupObj = JSON.parse(groupRaw);
@@ -1862,9 +1962,16 @@ export default {
         }
 
         const formData = await request.formData();
-        const targetChat = (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID)) || CHANNEL_ID;
+        let targetChat = (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID)) || CHANNEL_ID;
+        const initDataHeader = extractInitDataFromRequest(request);
+        if (!targetChat && initDataHeader) {
+          const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
+          if (verifyResult.ok && verifyResult.user?.id) {
+            targetChat = verifyResult.user.id;
+          }
+        }
         if (!targetChat) {
-          return new Response(JSON.stringify({ error: "Telegram recipient chat is not configured (missing DEV_CHAT_ID / TELEGRAM_CHANNEL_ID)" }), {
+          return new Response(JSON.stringify({ error: "Telegram recipient chat is not configured (missing DEV_CHAT_ID / TELEGRAM_CHANNEL_ID in Worker settings)" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });

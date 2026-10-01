@@ -29,7 +29,7 @@ const StudentLinkModal: React.FC<StudentLinkModalProps> = ({
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const cleanCode = code.trim().toUpperCase();
+    const cleanCode = code.trim().toUpperCase().replace(/[^0-9A-Z]/g, '');
     if (!cleanCode) {
       setErrorMessage('Пожалуйста, введите код приглашения');
       return;
