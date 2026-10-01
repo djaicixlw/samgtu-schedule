@@ -40,7 +40,8 @@ const mockAppData = {
 const mockEnv = {
   TELEGRAM_BOT_TOKEN: TEST_BOT_TOKEN,
   ID_PEPPER: TEST_PEPPER,
-  APP_DATA: mockAppData
+  APP_DATA: mockAppData,
+  DEV_CHAT_ID: '987654321'
 };
 
 async function makeInitData(userId: number, firstName: string = 'User') {

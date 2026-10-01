@@ -17,7 +17,7 @@ import { logger } from './utils/logger';
 import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuParser';
 import ScheduleState from './components/ScheduleState';
 import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason } from './utils/scheduleLoader';
-import { getLocalStudentLink } from './utils/attendanceStorage';
+import { getLocalStudentLink, claimStaffRole } from './utils/attendanceStorage';
 import {
   LogIn, LogOut, Calendar, BookOpen, Bug, ClipboardCheck, Sun, Moon,
   GraduationCap, Users, RefreshCw, Shield, User as UserIcon, Key, UserCheck, ChevronDown,
@@ -36,6 +36,7 @@ const MaintenanceScreen = React.lazy(() => import('./components/MaintenanceScree
 const ConsentModal = React.lazy(() => import('./components/ConsentModal'));
 const StudentLinkModal = React.lazy(() => import('./components/StudentLinkModal'));
 const MyAbsencesModal = React.lazy(() => import('./components/MyAbsencesModal'));
+const PrivacyPolicyModal = React.lazy(() => import('./components/PrivacyPolicyModal'));
 
 interface UserProfile {
   displayName?: string | null;
@@ -119,6 +120,35 @@ const App: React.FC = () => {
   const handleLinkSuccess = () => {
     setIsStudentLinkModalOpen(false);
     setIsMyAbsencesModalOpen(true);
+  };
+
+  const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState(false);
+  const [groupCodeInput, setGroupCodeInput] = useState('');
+  const [isClaimingStaff, setIsClaimingStaff] = useState(false);
+
+  const handleClaimGroupCode = async () => {
+    const clean = groupCodeInput.trim().toUpperCase();
+    if (!clean) {
+      toast.error('Введите код группы');
+      return;
+    }
+    setIsClaimingStaff(true);
+    try {
+      const res = await claimStaffRole(currentGroupId, clean);
+      if (res.ok) {
+        toast.success('Права старосты подтверждены через Telegram!');
+        localStorage.setItem('auth_role', 'starosta');
+        localStorage.setItem('auth_group', currentGroupId);
+        setUserRole('starosta');
+        setGroupCodeInput('');
+      } else {
+        toast.error(res.error || 'Неверный код группы');
+      }
+    } catch (e: any) {
+      toast.error(e?.message || 'Ошибка сети');
+    } finally {
+      setIsClaimingStaff(false);
+    }
   };
 
   // Multi-group & custom groups state with self-healing deduplication
@@ -1670,23 +1700,63 @@ const App: React.FC = () => {
               <p className="text-[11px] text-slate-400">
                 Заметили неточность в расписании или ошибку в работе приложения? Отправьте отчет со скриншотом.
               </p>
-              <div className="flex flex-col sm:flex-row gap-2">
-                <button
-                  onClick={() => setIsBugReportModalOpen(true)}
-                  className="flex-1 py-2.5 px-4 bg-red-50 hover:bg-red-100 dark:bg-red-950/40 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 font-bold text-xs rounded-xl border border-red-200 dark:border-red-900/40 transition-all flex items-center justify-center gap-1.5 min-h-[44px]"
-                >
-                  <Bug className="w-3.5 h-3.5" />
-                  Сообщить об ошибке
-                </button>
-                <a
-                  href="https://t.me/A_le_BL"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="py-2.5 px-4 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 font-bold text-xs rounded-xl border border-slate-200 dark:border-slate-700 transition-all flex items-center justify-center gap-1.5 min-h-[44px] shadow-sm"
-                >
-                  Связь: @A_le_BL
-                </a>
+              <button
+                onClick={() => setIsBugReportModalOpen(true)}
+                className="w-full py-2.5 px-4 bg-red-50 hover:bg-red-100 dark:bg-red-950/40 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 font-bold text-xs rounded-xl border border-red-200 dark:border-red-900/40 transition-all flex items-center justify-center gap-1.5 min-h-[44px]"
+              >
+                <Bug className="w-3.5 h-3.5" />
+                Сообщить об ошибке разработчику
+              </button>
+            </div>
+
+            {/* Student Attendance & My Absences (Blind Server v3) */}
+            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
+                  <UserCheck className="w-4 h-4 text-indigo-500" />
+                  <span>Посещаемость и мои пропуски</span>
+                </div>
+                <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 rounded-md">
+                  v3 «Слепой сервер»
+                </span>
               </div>
+              <p className="text-[11px] text-slate-400">
+                {getLocalStudentLink()
+                  ? `Ваш аккаунт привязан к группе ${getLocalStudentLink()?.gid.toUpperCase()} (слот ${getLocalStudentLink()?.slot}). Личные данные и ФИО на сервер не передаются.`
+                  : 'Подключите учет посещаемости по одноразовому 10-значному коду от старосты группы.'}
+              </p>
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={handleOpenMyAbsences}
+                  className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm min-h-[44px] flex items-center justify-center gap-2"
+                >
+                  <GraduationCap className="w-4 h-4" />
+                  {getLocalStudentLink() ? 'Открыть мои пропуски' : 'Подключить учет пропусков по коду'}
+                </button>
+              </div>
+            </div>
+
+            {/* Privacy Policy Card */}
+            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
+                  <Shield className="w-4 h-4 text-indigo-500" />
+                  <span>Политика конфиденциальности</span>
+                </div>
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-700/50 px-2 py-0.5 rounded-md">
+                  152-ФЗ
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Обезличивание, криптографическая защита данных и условия хранения по ст. 9 152-ФЗ.
+              </p>
+              <button
+                onClick={() => setIsPrivacyModalOpen(true)}
+                className="w-full py-2.5 px-4 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold text-xs rounded-xl transition-all shadow-sm min-h-[44px] flex items-center justify-center gap-2"
+              >
+                <Shield className="w-3.5 h-3.5 text-indigo-500" />
+                Читать политику конфиденциальности v3
+              </button>
             </div>
 
             {/* Diagnostics & In-App Console Card - Only visible to Admin */}
@@ -1717,31 +1787,40 @@ const App: React.FC = () => {
               </div>
             )}
 
-{/* Quick PIN Login Form */}
-            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
-                <Key className="w-4 h-4 text-indigo-500" />
-                <span>Авторизация по PIN-коду</span>
+            {/* Starosta v3 Group Code Login */}
+            {userRole === 'student' && (
+              <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
+                    <Key className="w-4 h-4 text-indigo-500" />
+                    <span>Вход для старосты (Код группы v3)</span>
+                  </div>
+                  <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-md">
+                    Староста
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Введите 80-битный код группы для подтверждения прав старосты через Telegram InitData.
+                </p>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={groupCodeInput}
+                    onChange={(e) => setGroupCodeInput(e.target.value.toUpperCase())}
+                    onKeyDown={(e) => e.key === 'Enter' && handleClaimGroupCode()}
+                    placeholder="XXXX-XXXX-XXXX-XXXX"
+                    className="flex-1 px-3 py-2.5 text-xs font-mono rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white uppercase tracking-wider focus:outline-none min-h-[44px]"
+                  />
+                  <button
+                    onClick={handleClaimGroupCode}
+                    disabled={isClaimingStaff}
+                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold text-xs rounded-xl transition-all shadow-sm shrink-0 min-h-[44px]"
+                  >
+                    {isClaimingStaff ? 'Проверка...' : 'Войти'}
+                  </button>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  inputMode="text"
-                  maxLength={16}
-                  value={quickPin}
-                  onChange={(e) => setQuickPin(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleQuickPinLogin()}
-                  placeholder="Введите PIN-код"
-                  className="flex-1 px-3 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none min-h-[44px]"
-                />
-                <button
-                  onClick={handleQuickPinLogin}
-                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-xl transition-all shadow-sm shrink-0 min-h-[44px]"
-                >
-                  Войти
-                </button>
-              </div>
-            </div>
+            )}
 
             {userRole !== 'student' && (
               <button
@@ -2087,6 +2166,16 @@ const App: React.FC = () => {
             isOpen={isMyAbsencesModalOpen}
             onClose={() => setIsMyAbsencesModalOpen(false)}
             onUnlinked={() => setIsMyAbsencesModalOpen(false)}
+          />
+        </Suspense>
+      )}
+
+      {/* Privacy Policy Modal */}
+      {isPrivacyModalOpen && (
+        <Suspense fallback={null}>
+          <PrivacyPolicyModal
+            isOpen={isPrivacyModalOpen}
+            onClose={() => setIsPrivacyModalOpen(false)}
           />
         </Suspense>
       )}

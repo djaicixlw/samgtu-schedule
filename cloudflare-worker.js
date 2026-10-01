@@ -609,7 +609,7 @@ export default {
     const isTestMode = Boolean(env && (env.TEST_MODE === 'true' || env.TEST_MODE === true || env.TELEGRAM_BOT_TOKEN === 'mock' || env.TELEGRAM_BOT_TOKEN === 'test'));
     const TELEGRAM_BOT_TOKEN = (env && env.TELEGRAM_BOT_TOKEN) ? env.TELEGRAM_BOT_TOKEN : "";
     const BOT_TOKEN = isTestMode ? "" : TELEGRAM_BOT_TOKEN;
-    const CHANNEL_ID = (env && env.TELEGRAM_CHANNEL_ID) ? env.TELEGRAM_CHANNEL_ID : "@raspisanie_samgtu";
+    const CHANNEL_ID = (env && env.TELEGRAM_CHANNEL_ID) ? env.TELEGRAM_CHANNEL_ID : "";
 
     const APP_SECRET = (env && (env.APP_SECRET || env.X_APP_KEY)) ? (env.APP_SECRET || env.X_APP_KEY) : null;
 

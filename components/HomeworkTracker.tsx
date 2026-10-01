@@ -230,7 +230,6 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       const fileId = doc?.file_id;
 
       const streamUrl = `${TG_WORKER_URL}/file?file_id=${fileId}`;
-      const tgPostUrl = `https://t.me/raspisanie_samgtu/${messageId}`;
       const sizeFormatted = file.size > 1024 * 1024 
         ? (file.size / (1024 * 1024)).toFixed(1) + ' МБ'
         : (file.size / 1024).toFixed(0) + ' КБ';
@@ -240,7 +239,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
         {
           name: file.name,
           url: streamUrl,
-          tgUrl: tgPostUrl,
+          tgUrl: streamUrl,
           type: file.type.startsWith('image/') ? 'image' : 'file',
           size: sizeFormatted
         }
@@ -459,16 +458,6 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
             <p className="text-xs text-slate-400">
               Задания и файлы для группы <span className="font-semibold text-slate-700 dark:text-slate-300">{groupName}</span>
             </p>
-            <a
-              href="https://t.me/raspisanie_samgtu"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 px-2 py-0.5 rounded-lg transition-colors"
-              title="Открыть канал СамГТУ в Telegram"
-            >
-              <span>#{groupTag} в @raspisanie_samgtu</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
           </div>
         </div>
 

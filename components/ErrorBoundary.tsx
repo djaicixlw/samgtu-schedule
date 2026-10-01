@@ -91,16 +91,6 @@ export class ErrorBoundary extends Component<Props, State> {
                 <Trash2 className="w-3.5 h-3.5" />
                 Сбросить кэш и перезагрузить
               </button>
-
-              <a
-                href="https://t.me/A_le_BL"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-indigo-400 font-semibold text-xs rounded-xl border border-slate-700 transition-colors flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" />
-                Связаться с разработчиком (@A_le_BL)
-              </a>
             </div>
           </div>
         </div>

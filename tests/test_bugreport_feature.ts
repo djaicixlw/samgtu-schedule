@@ -44,19 +44,19 @@ check('Direct upload via WORKER_BASE /upload', modalContent.includes('WORKER_BAS
 check('Fallback document created when no screenshot attached', modalContent.includes('new Blob') && modalContent.includes('report_'));
 check('Rate limit 429 handled with friendly wait advice', modalContent.includes('429') && modalContent.includes('Слишком много запросов') && modalContent.includes('подождите'));
 
-// 4. Check Developer Contact Info
-console.log('\n--- 4. Developer Contact Info ---');
-check('Developer username @A_le_BL present in modal', modalContent.includes('@A_le_BL'));
-check('Telegram link https://t.me/A_le_BL present in modal', modalContent.includes('https://t.me/A_le_BL'));
+// 4. Check Developer Privacy & Zero Leaks
+console.log('\n--- 4. Developer Privacy & Zero Leaks ---');
+check('Developer personal handle @A_le_BL NOT in modal (zero leak)', !modalContent.includes('@A_le_BL'));
+check('Direct personal link https://t.me/A_le_BL NOT in modal (zero leak)', !modalContent.includes('https://t.me/A_le_BL'));
 
-// 5. Check App.tsx integration
+// 5. Check App.tsx Integration
 console.log('\n--- 5. App.tsx Integration ---');
 const appPath = path.join(projectDir, 'App.tsx');
 const appContent = fs.readFileSync(appPath, 'utf8');
 check('BugReportModal imported in App.tsx', appContent.includes("./components/BugReportModal"));
 check('Header bug report button exists', appContent.includes('title="Сообщить об ошибке / Баг-репорт"'));
 check('Profile tab bug report card exists', appContent.includes('Поддержка и баг-репорт'));
-check('Profile tab direct developer contact @A_le_BL exists', appContent.includes('https://t.me/A_le_BL') && appContent.includes('@A_le_BL'));
+check('Profile tab direct developer contact @A_le_BL NOT in App.tsx (zero leak)', !appContent.includes('@A_le_BL'));
 check('BugReportModal mounted at bottom of App.tsx', appContent.includes('<BugReportModal'));
 
 console.log('\n================================================================');

@@ -447,7 +447,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
 
     } catch (err: any) {
       console.error('Bug report error:', err);
-      toast.error(`Не удалось отправить отчет: ${err.message || 'Ошибка сети'}. Вы можете написать напрямую @A_le_BL`);
+      toast.error(`Не удалось отправить отчет: ${err.message || 'Ошибка сети'}. Повторите попытку позже.`);
     } finally {
       setIsSubmitting(false);
     }
@@ -498,29 +498,6 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
             </div>
           ) : (
             <>
-              {/* Developer Direct Contact Banner */}
-              <div className="bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/60 p-3.5 rounded-2xl flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
-                    <MessageSquare className="w-4 h-4" />
-                  </div>
-                  <div className="text-xs">
-                    <div className="font-bold text-slate-900 dark:text-white">Связь с разработчиком</div>
-                    <div className="text-slate-500 dark:text-slate-400">
-                      Telegram: <span className="font-semibold text-indigo-600 dark:text-indigo-400">@A_le_BL</span>
-                    </div>
-                  </div>
-                </div>
-                <a
-                  href="https://t.me/A_le_BL"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3 py-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 text-xs font-bold rounded-xl border border-indigo-200 dark:border-indigo-800 flex items-center gap-1 transition-colors shrink-0 shadow-sm"
-                >
-                  Написать <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-
               {/* Course & Group Row */}
               <div className="grid grid-cols-2 gap-3">
                 <div>

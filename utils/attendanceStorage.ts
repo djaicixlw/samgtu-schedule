@@ -552,3 +552,35 @@ export async function unlinkStudentV3(month?: string): Promise<{
   }
 }
 
+/**
+ * Claim starosta staff role for a group using the 80-bit group code.
+ * POST /v3/staff/claim
+ */
+export async function claimStaffRole(
+  gid: string,
+  code: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const base = getAttendanceApiBase();
+    const res = await fetch(`${base}/v3/staff/claim`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        gid: gid.trim().toLowerCase(),
+        code: code.trim().toUpperCase()
+      })
+    });
+    const json = await res.json().catch(() => ({}));
+    if (res.status === 429) {
+      return { ok: false, error: 'Слишком много попыток ввода кода. Подождите 15 минут.' };
+    }
+    if (!res.ok) {
+      return { ok: false, error: json.error || 'Неверный код группы' };
+    }
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Ошибка сети' };
+  }
+}
+
+
