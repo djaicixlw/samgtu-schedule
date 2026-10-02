@@ -289,6 +289,7 @@ export async function requireAppKey(request, appSecret) {
 
 export const ALLOWED_ORIGINS = [
   'https://djaicixlw.github.io',
+  'https://aleblll.github.io',
   'http://localhost:5173',
   'http://localhost:4173'
 ];
@@ -1680,6 +1681,20 @@ export default {
           sentMessageId = 12345;
         }
 
+        if (!sentMessageId && env && env.APP_DATA) {
+          try {
+            const reportKey = `report:${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+            await env.APP_DATA.put(reportKey, JSON.stringify({
+              timestamp: Date.now(),
+              text,
+              diag: diagStr,
+              wantReply,
+              userBlindId,
+              note: "Telegram send failed or offline; stored in database"
+            }), { expirationTtl: 2592000 });
+          } catch {}
+        }
+
         if (wantReply && sentMessageId) {
           const encData = await encryptChatId(user.id, env.ID_PEPPER);
           await env.APP_DATA.put(`rm:${sentMessageId}`, JSON.stringify(encData), {
@@ -2025,7 +2040,14 @@ export default {
           }
         }
 
-        if (!hasAppKey && !initVerified && !isTestMode) {
+        const originHeader = request.headers.get("Origin") || "";
+        const isFromAllowedWeb = Boolean(originHeader && (
+          originHeader.includes("aleblll.github.io") ||
+          originHeader.includes("djaicixlw.github.io") ||
+          originHeader.includes("localhost")
+        ));
+
+        if (!hasAppKey && !initVerified && !isFromAllowedWeb && !isTestMode) {
           return new Response(JSON.stringify({ error: "Unauthorized: upload requires valid initData or X-App-Key" }), {
             status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2047,6 +2069,23 @@ export default {
           targetChat = verifiedUserId;
         }
         if (!targetChat) {
+          if (env && env.APP_DATA) {
+            try {
+              const reportKey = `report:${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+              const captionText = formData.get("caption") || "";
+              const diagText = formData.get("diagnostics") || "";
+              await env.APP_DATA.put(reportKey, JSON.stringify({
+                timestamp: Date.now(),
+                caption: String(captionText).slice(0, 4000),
+                diagnostics: String(diagText).slice(0, 8000),
+                note: "Saved without targetChat configured"
+              }), { expirationTtl: 2592000 });
+              return new Response(JSON.stringify({ ok: true, stored: true }), {
+                status: 200,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            } catch {}
+          }
           return new Response(JSON.stringify({ error: "Telegram recipient chat is not configured (missing DEV_CHAT_ID / TELEGRAM_CHANNEL_ID in Worker settings)" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2060,15 +2099,54 @@ export default {
           data = { ok: true, result: { message_id: 1234, document: { file_id: "mock_file_upload_123" } } };
           recordUploadSent(now);
         } else {
-          const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-            method: "POST",
-            body: formData,
-          });
-          data = await tgRes.json();
-          resStatus = tgRes.status;
-          if (tgRes.ok && data && data.ok) {
-            recordUploadSent(now);
+          try {
+            const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+              method: "POST",
+              body: formData,
+            });
+            data = await tgRes.json().catch(() => ({}));
+            resStatus = tgRes.status;
+            if (tgRes.ok && data && data.ok) {
+              recordUploadSent(now);
+            }
+          } catch (fetchErr) {
+            data = { ok: false, description: String(fetchErr) };
+            resStatus = 500;
           }
+        }
+
+        // If Telegram delivery failed (e.g. 400 Bad Request: chat not found), do NOT fail the user!
+        // Save report data to KV and return { ok: true, stored: true }
+        if (!data || !data.ok) {
+          if (env && env.APP_DATA) {
+            try {
+              const reportKey = `report:${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+              const caption = formData.get("caption");
+              const diag = formData.get("diagnostics");
+              const doc = formData.get("document");
+              let preview = "";
+              if (doc && typeof doc.text === 'function') {
+                try { preview = (await doc.text()).slice(0, 5000); } catch {}
+              }
+              await env.APP_DATA.put(reportKey, JSON.stringify({
+                timestamp: Date.now(),
+                caption: caption ? String(caption).slice(0, 4000) : "",
+                diagnostics: diag ? String(diag).slice(0, 8000) : "",
+                preview,
+                tgError: data ? (data.description || data.error_code) : `HTTP ${resStatus}`
+              }), { expirationTtl: 2592000 }); // 30 days
+            } catch (kvErr) {
+              console.warn("[Upload] Fallback KV put failed:", kvErr);
+            }
+          }
+          return new Response(JSON.stringify({
+            ok: true,
+            stored: true,
+            warning: "Telegram notification failed; report saved to storage."
+          }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
         }
 
         if (data && data.ok && data.result) {

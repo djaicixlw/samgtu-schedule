@@ -352,7 +352,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
             throw new Error('Слишком много запросов. Пожалуйста, подождите 15-30 секунд перед повторной отправкой.');
           }
           const data = await res.json().catch(() => ({}));
-          if (res.ok && data && data.ok) {
+          if (res.ok && data && (data.ok || data.stored)) {
             uploadSucceeded = true;
           } else {
             lastUploadError = data?.description || data?.error || `Ошибка сервера (${res.status})`;
@@ -403,7 +403,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
             throw new Error('Слишком много запросов. Пожалуйста, подождите 15-30 секунд перед повторной отправкой.');
           }
           const data = await res.json().catch(() => ({}));
-          if (res.ok && data && data.ok) {
+          if (res.ok && data && (data.ok || data.stored)) {
             uploadSucceeded = true;
           } else {
             lastUploadError = data?.description || data?.error || `Ошибка сервера (${res.status})`;

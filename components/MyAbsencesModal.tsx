@@ -107,10 +107,10 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
   }, [isOpen, loadData]);
 
   // Compute parsed absence items & statistics
-  const { absenceList, totalHours, uHours, eHours, totalPairs, uPairs, ePairs } = useMemo(() => {
+  const { absenceList, totalHours, unexcusedHours, excusedHours, totalPairs, unexcusedPairs, excusedPairs } = useMemo(() => {
     const list: AbsenceEntry[] = [];
-    let uCount = 0;
-    let eCount = 0;
+    let unexcusedCount = 0; // 'u' = unexcused / неуважительная (Н)
+    let excusedCount = 0;   // 'e' = excused / уважительная (УП)
 
     Object.entries(marks).forEach(([key, type]) => {
       const dotIndex = key.lastIndexOf('.');
@@ -118,19 +118,19 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
       const pairNum = dotIndex !== -1 ? key.substring(dotIndex + 1) : '1';
 
       list.push({ rawKey: key, dateStr, pairNum, type });
-      if (type === 'u') uCount++;
-      if (type === 'e') eCount++;
+      if (type === 'u') unexcusedCount++;
+      else if (type === 'e') excusedCount++;
     });
 
-    const totPairs = uCount + eCount;
+    const totPairs = unexcusedCount + excusedCount;
     return {
       absenceList: list,
       totalHours: totPairs * 2,
-      uHours: uCount * 2,
-      eHours: eCount * 2,
+      unexcusedHours: unexcusedCount * 2,
+      excusedHours: excusedCount * 2,
       totalPairs: totPairs,
-      uPairs: uCount,
-      ePairs: eCount
+      unexcusedPairs: unexcusedCount,
+      excusedPairs: excusedCount
     };
   }, [marks]);
 
@@ -266,10 +266,10 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
                 <div className="bg-rose-50/70 dark:bg-rose-950/30 p-3 rounded-2xl border border-rose-200/70 dark:border-rose-900/40 text-center">
                   <div className="text-[10px] uppercase font-bold text-rose-600 dark:text-rose-400">Н (неуваж.)</div>
                   <div className="text-xl font-extrabold text-rose-700 dark:text-rose-300 mt-0.5">
-                    {uHours} <span className="text-xs font-semibold text-rose-400">ч</span>
+                    {unexcusedHours} <span className="text-xs font-semibold text-rose-400">ч</span>
                   </div>
                   <div className="text-[10px] text-rose-500/80 dark:text-rose-400/80 mt-0.5 font-medium">
-                    {uPairs} пар
+                    {unexcusedPairs} пар
                   </div>
                 </div>
 
@@ -277,10 +277,10 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
                 <div className="bg-amber-50/70 dark:bg-amber-950/30 p-3 rounded-2xl border border-amber-200/70 dark:border-amber-900/40 text-center">
                   <div className="text-[10px] uppercase font-bold text-amber-600 dark:text-amber-400">УП (уваж.)</div>
                   <div className="text-xl font-extrabold text-amber-700 dark:text-amber-300 mt-0.5">
-                    {eHours} <span className="text-xs font-semibold text-amber-400">ч</span>
+                    {excusedHours} <span className="text-xs font-semibold text-amber-400">ч</span>
                   </div>
                   <div className="text-[10px] text-amber-500/80 dark:text-amber-400/80 mt-0.5 font-medium">
-                    {ePairs} пар
+                    {excusedPairs} пар
                   </div>
                 </div>
               </div>
