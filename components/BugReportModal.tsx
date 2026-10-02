@@ -343,7 +343,6 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
           const res = await fetch(`${WORKER_BASE}/upload`, {
             method: 'POST',
             headers: {
-              ...(import.meta.env.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {}),
               ...((window as any).Telegram?.WebApp?.initData ? { 'X-Telegram-Init-Data': (window as any).Telegram.WebApp.initData } : {})
             },
             body: formData
@@ -395,7 +394,6 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
           const res = await fetch(`${WORKER_BASE}/upload`, {
             method: 'POST',
             headers: {
-              ...(import.meta.env.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {}),
               ...((window as any).Telegram?.WebApp?.initData ? { 'X-Telegram-Init-Data': (window as any).Telegram.WebApp.initData } : {})
             },
             body: formData
@@ -432,7 +430,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
           await fetch(`${WORKER_BASE}/upload`, {
             method: 'POST',
             headers: {
-              ...(import.meta.env.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {})
+              ...((window as any).Telegram?.WebApp?.initData ? { 'X-Telegram-Init-Data': (window as any).Telegram.WebApp.initData } : {})
             },
             body: diagFormData
           }).catch(() => {});

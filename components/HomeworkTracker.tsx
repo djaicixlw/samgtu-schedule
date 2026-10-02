@@ -214,8 +214,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       const res = await fetch(`${TG_WORKER_URL}/upload`, {
         method: 'POST',
         headers: {
-          ...(initData ? { 'X-Telegram-Init-Data': initData } : {}),
-          ...(import.meta.env.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {})
+          ...(initData ? { 'X-Telegram-Init-Data': initData } : {})
         },
         body: formData
       });
@@ -233,7 +232,9 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       const messageId = json.result.message_id;
       const fileId = doc?.file_id;
 
-      const streamUrl = `${TG_WORKER_URL}/file?file_id=${fileId}`;
+      const streamUrl = json.direct_url || (json.sig && json.exp
+        ? `${TG_WORKER_URL}/file?file_id=${fileId}&exp=${json.exp}&sig=${json.sig}&download=1`
+        : `${TG_WORKER_URL}/file?file_id=${fileId}`);
       const sizeFormatted = file.size > 1024 * 1024 
         ? (file.size / (1024 * 1024)).toFixed(1) + ' МБ'
         : (file.size / 1024).toFixed(0) + ' КБ';

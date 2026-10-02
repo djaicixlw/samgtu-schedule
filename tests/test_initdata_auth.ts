@@ -43,6 +43,7 @@ const mockAppData = {
 
 const mockEnv = {
   TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+  ID_PEPPER: 'test_pepper_mock_32bytes_value_!',
   APP_DATA: mockAppData
 };
 
@@ -407,16 +408,24 @@ const adminOtherGroupReq = new Request('https://worker.test/sync/attendance?grou
 const adminOtherGroupRes = await worker.fetch(adminOtherGroupReq, mockEnv);
 assert(adminOtherGroupRes.status === 200, `Admin accessing faid-310 returns 200 OK (got ${adminOtherGroupRes.status})`);
 
-// 3.11 Backwards compatibility in local test mode (isTestMode = true)
+// 3.11 Local test mode strictly enforces access control on attendance
 const localTestEnv = {
   ...mockEnv,
-  TEST_MODE: 'true'
+  TEST_MODE: 'true',
+  APP_SECRET: 'test_local_secret'
 };
-const legacyLocalReq = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {
+const unauthLocalReq = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {
   method: 'GET'
 });
-const legacyLocalRes = await worker.fetch(legacyLocalReq, localTestEnv);
-assert(legacyLocalRes.status === 200, `Legacy local test without initData header succeeds in test mode (got ${legacyLocalRes.status})`);
+const unauthLocalRes = await worker.fetch(unauthLocalReq, localTestEnv);
+assert(unauthLocalRes.status === 403, `Local test without credentials returns 403 Forbidden (got ${unauthLocalRes.status})`);
+
+const authLocalReq = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {
+  method: 'GET',
+  headers: { 'X-App-Key': 'test_local_secret' }
+});
+const authLocalRes = await worker.fetch(authLocalReq, localTestEnv);
+assert(authLocalRes.status === 200, `Local test with X-App-Key returns 200 OK (got ${authLocalRes.status})`);
 
 // ------------------------------------------------------------
 // SUMMARY

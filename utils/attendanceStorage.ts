@@ -663,9 +663,9 @@ export async function syncAttendanceRecordsToV3(
 
         for (const [studentId, slot] of slotMap.entries()) {
           if (absentIds.has(studentId)) {
-            patch[slot][lessonKey] = 'e';
+            patch[slot][lessonKey] = 'u'; // 'u' = unexcused / неуважительная (Н)
           } else if (excusedIds.has(studentId)) {
-            patch[slot][lessonKey] = 'u';
+            patch[slot][lessonKey] = 'e'; // 'e' = excused / уважительная (УП)
           } else {
             if (currentSlots[slot] && currentSlots[slot][lessonKey]) {
               patch[slot][lessonKey] = null;

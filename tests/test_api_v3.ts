@@ -80,6 +80,14 @@ console.log('============================================================\n');
 // 1. Helper function: blindId and sha256Hex
 // ------------------------------------------------------------
 console.log('--- 1. Crypto & Helper Functions ---');
+let pepperErrorThrown = false;
+try {
+  await blindId({}, 12345);
+} catch (e: any) {
+  pepperErrorThrown = e.message.includes('ID_PEPPER is not configured');
+}
+assert(pepperErrorThrown, 'blindId throws fail-closed error when ID_PEPPER is missing in env');
+
 const elderUserId = 9001;
 const student1UserId = 9101;
 const student2UserId = 9102;
@@ -95,9 +103,10 @@ assert(/^[0-9a-f]{64}$/.test(elderBlindId), 'blindId is valid lowercase hex');
 assert(elderBlindId === elderBlindId2, 'blindId is deterministic for same tgId and pepper');
 assert(elderBlindId !== student1BlindId, 'blindId is unique for different tgIds');
 
-const defaultPepperBlindId = await blindId({}, elderUserId);
-assert(typeof defaultPepperBlindId === 'string' && defaultPepperBlindId.length === 64, 'blindId works with default pepper');
-assert(defaultPepperBlindId !== elderBlindId, 'different pepper produces different blindId');
+const otherPepperEnv = { ID_PEPPER: 'another_custom_pepper_value_32b_!' };
+const otherPepperBlindId = await blindId(otherPepperEnv, elderUserId);
+assert(typeof otherPepperBlindId === 'string' && otherPepperBlindId.length === 64, 'blindId works with custom pepper');
+assert(otherPepperBlindId !== elderBlindId, 'different pepper produces different blindId');
 
 const testHash = await sha256Hex('SAMPLE-CODE');
 assert(/^[0-9a-f]{64}$/.test(testHash), 'sha256Hex returns 64-char lowercase hex');

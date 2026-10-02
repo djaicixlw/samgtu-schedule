@@ -948,12 +948,8 @@ const App: React.FC = () => {
       delete merged.note;
     }
 
-    // Handle cancellation state cleanly in override
-    if (updatedLesson.isCancelled === false) {
-      delete merged.isCancelled;
-    } else if (updatedLesson.isCancelled === true) {
-      merged.isCancelled = true;
-    }
+    // Cancellation is always date-specific and stored in attendanceRecords for the selected date (not global across all weeks)
+    delete merged.isCancelled;
 
     const updated = {
       ...scheduleOverrides,
@@ -1209,7 +1205,7 @@ const App: React.FC = () => {
           ...lesson,
           ...override,
           teacher: resolvedTeacher,
-          isCancelled: isCancelledInAttendance || !!override.isCancelled,
+          isCancelled: isCancelledInAttendance,
           isHidden: !!override.isHidden
         };
       }).filter(Boolean);

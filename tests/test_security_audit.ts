@@ -141,9 +141,9 @@ const notifyUnsetRes = await worker.fetch(new Request('https://worker.test/notif
 assert(notifyUnsetRes.status === 401, `POST /notify fails closed (401) when APP_SECRET is unset (got ${notifyUnsetRes.status})`);
 
 // 1.1d Test CORS Origin Whitelist and Vary: Origin
-const allowedOriginReq = new Request('https://worker.test/status', { headers: { Origin: 'https://aleblll.github.io' } });
+const allowedOriginReq = new Request('https://worker.test/status', { headers: { Origin: 'https://djaicixlw.github.io' } });
 const allowedOriginRes = await worker.fetch(allowedOriginReq, mockEnv);
-assert(allowedOriginRes.headers.get('Access-Control-Allow-Origin') === 'https://aleblll.github.io', 'CORS returns whitelisted origin');
+assert(allowedOriginRes.headers.get('Access-Control-Allow-Origin') === 'https://djaicixlw.github.io', 'CORS returns whitelisted origin');
 assert(allowedOriginRes.headers.get('Vary') === 'Origin', 'CORS includes Vary: Origin header');
 
 const evilOriginReq = new Request('https://worker.test/status', { headers: { Origin: 'https://malicious-attacker.com' } });

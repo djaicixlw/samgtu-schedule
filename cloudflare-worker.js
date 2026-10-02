@@ -155,6 +155,9 @@ export function sanitizeSyncPayload(type, rawData) {
     if (Array.isArray(rawData.records)) {
       res.records = rawData.records.slice(0, 500).map(r => sanitizeAttendanceRecord(r)).filter(Boolean);
     }
+    if (Array.isArray(rawData.students)) {
+      res.students = rawData.students.slice(0, 100).map(s => sanitizeStudent(s)).filter(Boolean);
+    }
     return res;
   }
 
@@ -286,7 +289,6 @@ export async function requireAppKey(request, appSecret) {
 
 export const ALLOWED_ORIGINS = [
   'https://djaicixlw.github.io',
-  'https://aleblll.github.io',
   'http://localhost:5173',
   'http://localhost:4173'
 ];
@@ -373,7 +375,10 @@ export async function sha256Hex(str) {
 }
 
 export async function blindId(env, tgId) {
-  const pepper = (env && env.ID_PEPPER) ? env.ID_PEPPER : "default_samgtu_v3_pepper_32bytes_!";
+  const pepper = env?.ID_PEPPER;
+  if (!pepper || typeof pepper !== 'string') {
+    throw new Error("Server configuration error: ID_PEPPER is not configured");
+  }
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -389,9 +394,11 @@ export async function blindId(env, tgId) {
 }
 
 export async function encryptChatId(chatId, pepper) {
+  if (!pepper || typeof pepper !== 'string') {
+    throw new Error("Server configuration error: ID_PEPPER is not configured for encryption");
+  }
   const enc = new TextEncoder();
-  const pepperStr = String(pepper || "default_samgtu_v3_pepper_32bytes_!");
-  const keyMaterial = await crypto.subtle.digest("SHA-256", enc.encode(pepperStr));
+  const keyMaterial = await crypto.subtle.digest("SHA-256", enc.encode(pepper));
   const key = await crypto.subtle.importKey("raw", keyMaterial, { name: "AES-GCM" }, false, ["encrypt"]);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = enc.encode(String(chatId));
@@ -402,10 +409,10 @@ export async function encryptChatId(chatId, pepper) {
 }
 
 export async function decryptChatId(encHex, ivHex, pepper) {
+  if (!pepper || typeof pepper !== 'string') return null;
   try {
     const enc = new TextEncoder();
-    const pepperStr = String(pepper || "default_samgtu_v3_pepper_32bytes_!");
-    const keyMaterial = await crypto.subtle.digest("SHA-256", enc.encode(pepperStr));
+    const keyMaterial = await crypto.subtle.digest("SHA-256", enc.encode(pepper));
     const key = await crypto.subtle.importKey("raw", keyMaterial, { name: "AES-GCM" }, false, ["decrypt"]);
     const iv = new Uint8Array(ivHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []);
     const ciphertext = new Uint8Array(encHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []);
@@ -484,7 +491,7 @@ export async function verifyTelegramInitData(initDataStr, botToken, options = {}
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
 
-    if (calculatedHash.toLowerCase() !== hash.toLowerCase()) {
+    if (!(await safeEqual(calculatedHash.toLowerCase(), hash.toLowerCase()))) {
       return { ok: false, error: 'Invalid HMAC signature (tampered data)' };
     }
 
@@ -837,6 +844,18 @@ export default {
             : rawCode;
           const candidates = Array.from(new Set([rawCode, formatted, stripped]));
 
+          const isGroupClaim = Boolean(gid && typeof gid === 'string' && gid.trim() && gid.toLowerCase() !== 'admin');
+          const rlKey = isGroupClaim ? `rl:claim:${gid.trim().toLowerCase()}` : `rl:claim:admin:${userBlindId}`;
+
+          const attemptsRaw = await env.APP_DATA.get(rlKey);
+          const attempts = attemptsRaw ? parseInt(attemptsRaw, 10) : 0;
+          if (attempts >= 5) {
+            return new Response(JSON.stringify({ error: "Too many attempts. Please try again later." }), {
+              status: 429,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
           // 1. Check if code matches global admin (g:admin or env.ADMIN_CODE_HASH)
           const adminRaw = await env.APP_DATA.get("g:admin");
           let adminData = null;
@@ -861,7 +880,7 @@ export default {
             }
 
             if (isAdminMatch) {
-              if (gid) await env.APP_DATA.delete(`rl:claim:${gid}`);
+              await env.APP_DATA.delete(rlKey);
               adminData.staff = Array.isArray(adminData.staff) ? adminData.staff : [];
               if (userBlindId && !adminData.staff.includes(userBlindId)) {
                 adminData.staff.push(userBlindId);
@@ -875,18 +894,9 @@ export default {
           }
 
           if (!gid || typeof gid !== 'string') {
-            return new Response(JSON.stringify({ error: "Missing or invalid gid or code" }), {
-              status: 400,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          const rlKey = `rl:claim:${gid}`;
-          const attemptsRaw = await env.APP_DATA.get(rlKey);
-          const attempts = attemptsRaw ? parseInt(attemptsRaw, 10) : 0;
-          if (attempts >= 5) {
-            return new Response(JSON.stringify({ error: "Too many attempts. Please try again later." }), {
-              status: 429,
+            await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
+            return new Response(JSON.stringify({ error: "Invalid claim code or missing gid" }), {
+              status: 401,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
             });
           }
@@ -1432,20 +1442,41 @@ export default {
           await env.APP_DATA.delete("u:" + userBlindId);
 
           if (userData && userData.gid && userData.slot) {
+            const targetMonths = new Set();
+            if (url.searchParams.get("month")) {
+              targetMonths.add(url.searchParams.get("month"));
+            }
             const now = new Date(Date.now() + 4 * 60 * 60 * 1000);
-            const defaultMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-            const targetMonth = url.searchParams.get("month") || defaultMonth;
-            const attKey = `a:${userData.gid}:${targetMonth}`;
-            const attRaw = await env.APP_DATA.get(attKey);
-            if (attRaw) {
+            const y = now.getUTCFullYear();
+            for (let m = 1; m <= 12; m++) {
+              targetMonths.add(`${y}-${String(m).padStart(2, '0')}`);
+              targetMonths.add(`${y - 1}-${String(m).padStart(2, '0')}`);
+            }
+            if (typeof env.APP_DATA.list === 'function') {
               try {
-                const parsed = JSON.parse(attRaw);
-                if (parsed.slots && parsed.slots[userData.slot]) {
-                  delete parsed.slots[userData.slot];
-                  parsed.ver = (parsed.ver || 0) + 1;
-                  await env.APP_DATA.put(attKey, JSON.stringify(parsed), { expirationTtl: 17280000 });
+                const listRes = await env.APP_DATA.list({ prefix: `a:${userData.gid}:` });
+                if (listRes && Array.isArray(listRes.keys)) {
+                  for (const k of listRes.keys) {
+                    const mMatch = k.name.replace(`a:${userData.gid}:`, '');
+                    if (mMatch) targetMonths.add(mMatch);
+                  }
                 }
               } catch {}
+            }
+
+            for (const monthStr of targetMonths) {
+              const attKey = `a:${userData.gid}:${monthStr}`;
+              const attRaw = await env.APP_DATA.get(attKey);
+              if (attRaw) {
+                try {
+                  const parsed = JSON.parse(attRaw);
+                  if (parsed.slots && parsed.slots[userData.slot]) {
+                    delete parsed.slots[userData.slot];
+                    parsed.ver = (parsed.ver || 0) + 1;
+                    await env.APP_DATA.put(attKey, JSON.stringify(parsed), { expirationTtl: 17280000 });
+                  }
+                } catch {}
+              }
             }
           }
 
@@ -1496,20 +1527,41 @@ export default {
             await env.APP_DATA.put("g:" + gid, JSON.stringify(groupData));
           }
 
+          const targetMonths = new Set();
+          if (url.searchParams.get("month")) {
+            targetMonths.add(url.searchParams.get("month"));
+          }
           const now = new Date(Date.now() + 4 * 60 * 60 * 1000);
-          const defaultMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-          const targetMonth = url.searchParams.get("month") || defaultMonth;
-          const attKey = `a:${gid}:${targetMonth}`;
-          const attRaw = await env.APP_DATA.get(attKey);
-          if (attRaw) {
+          const y = now.getUTCFullYear();
+          for (let m = 1; m <= 12; m++) {
+            targetMonths.add(`${y}-${String(m).padStart(2, '0')}`);
+            targetMonths.add(`${y - 1}-${String(m).padStart(2, '0')}`);
+          }
+          if (typeof env.APP_DATA.list === 'function') {
             try {
-              const parsed = JSON.parse(attRaw);
-              if (parsed.slots && parsed.slots[slotId]) {
-                delete parsed.slots[slotId];
-                parsed.ver = (parsed.ver || 0) + 1;
-                await env.APP_DATA.put(attKey, JSON.stringify(parsed), { expirationTtl: 17280000 });
+              const listRes = await env.APP_DATA.list({ prefix: `a:${gid}:` });
+              if (listRes && Array.isArray(listRes.keys)) {
+                for (const k of listRes.keys) {
+                  const mMatch = k.name.replace(`a:${gid}:`, '');
+                  if (mMatch) targetMonths.add(mMatch);
+                }
               }
             } catch {}
+          }
+
+          for (const monthStr of targetMonths) {
+            const attKey = `a:${gid}:${monthStr}`;
+            const attRaw = await env.APP_DATA.get(attKey);
+            if (attRaw) {
+              try {
+                const parsed = JSON.parse(attRaw);
+                if (parsed.slots && parsed.slots[slotId]) {
+                  delete parsed.slots[slotId];
+                  parsed.ver = (parsed.ver || 0) + 1;
+                  await env.APP_DATA.put(attKey, JSON.stringify(parsed), { expirationTtl: 17280000 });
+                }
+              } catch {}
+            }
           }
 
           return new Response(JSON.stringify({ ok: true }), {
@@ -1733,10 +1785,11 @@ export default {
 
         let groupId = (url.searchParams.get("groupId") || "").toLowerCase();
 
-        // For attendance routes, verify Telegram initData authentication and group role isolation
+        // For attendance routes, verify Telegram initData authentication or X-App-Key
+        const hasAppKey = await requireAppKey(request, APP_SECRET);
         const initDataHeader = extractInitDataFromRequest(request);
-        if (type === "attendance") {
-          if (!initDataHeader && !isTestMode) {
+        if (type === "attendance" && !hasAppKey) {
+          if (!initDataHeader) {
             return new Response(JSON.stringify({ error: "Access denied to group attendance" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1753,7 +1806,7 @@ export default {
             });
           }
 
-          if (type === "attendance" && initDataHeader) {
+          if (type === "attendance" && !hasAppKey) {
             const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
             if (!verifyResult.ok) {
               return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
@@ -1800,10 +1853,9 @@ export default {
 
         // PUT or POST save data to Cloudflare KV with per-group isolation
         if (request.method === "PUT" || request.method === "POST") {
-          const hasAppKey = type !== "attendance" ? await requireAppKey(request, APP_SECRET) : false;
           let userBlindId = null;
 
-          if (type !== "attendance" && !hasAppKey) {
+          if (!hasAppKey) {
             if (!initDataHeader) {
               return new Response(JSON.stringify({ error: "Unauthorized: Missing X-App-Key or Telegram initData" }), {
                 status: 401,
@@ -1961,14 +2013,38 @@ export default {
           });
         }
 
-        const formData = await request.formData();
-        let targetChat = (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID)) || CHANNEL_ID;
+        const hasAppKey = await requireAppKey(request, APP_SECRET);
         const initDataHeader = extractInitDataFromRequest(request);
-        if (!targetChat && initDataHeader) {
+        let initVerified = false;
+        let verifiedUserId = null;
+        if (initDataHeader) {
           const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
           if (verifyResult.ok && verifyResult.user?.id) {
-            targetChat = verifyResult.user.id;
+            initVerified = true;
+            verifiedUserId = verifyResult.user.id;
           }
+        }
+
+        if (!hasAppKey && !initVerified && !isTestMode) {
+          return new Response(JSON.stringify({ error: "Unauthorized: upload requires valid initData or X-App-Key" }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        let formData;
+        try {
+          formData = await request.formData();
+        } catch {
+          return new Response(JSON.stringify({ error: "Invalid multipart form data" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        let targetChat = (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID)) || CHANNEL_ID;
+        if (!targetChat && verifiedUserId) {
+          targetChat = verifiedUserId;
         }
         if (!targetChat) {
           return new Response(JSON.stringify({ error: "Telegram recipient chat is not configured (missing DEV_CHAT_ID / TELEGRAM_CHANNEL_ID in Worker settings)" }), {
@@ -1992,6 +2068,20 @@ export default {
           resStatus = tgRes.status;
           if (tgRes.ok && data && data.ok) {
             recordUploadSent(now);
+          }
+        }
+
+        if (data && data.ok && data.result) {
+          const doc = data.result.document || (data.result.photo ? data.result.photo[data.result.photo.length - 1] : null);
+          if (doc && doc.file_id) {
+            const exp = Math.floor(Date.now() / 1000) + (14 * 86400); // 14 days TTL
+            const signingKey = APP_SECRET || TELEGRAM_BOT_TOKEN || (env && env.ID_PEPPER) || "samgtu_secret_salt_2026";
+            const sig = await signFileUrl(doc.file_id, exp, signingKey);
+            const fileName = doc.file_name || "file";
+            const directUrl = `${url.origin}/file?file_id=${doc.file_id}&exp=${exp}&sig=${sig}&download=1&filename=${encodeURIComponent(fileName)}`;
+            data.direct_url = directUrl;
+            data.exp = exp;
+            data.sig = sig;
           }
         }
         return new Response(JSON.stringify(data), {
@@ -2148,25 +2238,42 @@ export default {
 
         const expStr = url.searchParams.get("exp");
         const sig = url.searchParams.get("sig");
-        if (!expStr || !sig) {
-          return new Response("Missing signature or expiration", { status: 403, headers: corsHeaders });
-        }
-
-        const nowSec = Math.floor(Date.now() / 1000);
-        const exp = parseInt(expStr, 10);
-        if (!exp || isNaN(exp) || exp < nowSec) {
-          return new Response("Expired file link", { status: 403, headers: corsHeaders });
-        }
+        const initDataHeader = extractInitDataFromRequest(request);
 
         let isValidSig = false;
-        if (isTestMode && sig === "mock-valid") {
-          isValidSig = true;
-        } else {
-          if (APP_SECRET) {
-            isValidSig = await verifyFileSignature(fileId, exp, sig, APP_SECRET);
+        if (initDataHeader && TELEGRAM_BOT_TOKEN) {
+          const initVerify = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
+          if (initVerify.ok) {
+            isValidSig = true;
           }
-          if (!isValidSig && TELEGRAM_BOT_TOKEN) {
-            isValidSig = await verifyFileSignature(fileId, exp, sig, TELEGRAM_BOT_TOKEN);
+        }
+
+        if (!isValidSig) {
+          if (!expStr || !sig) {
+            return new Response("Missing signature or expiration", { status: 403, headers: corsHeaders });
+          }
+
+          const nowSec = Math.floor(Date.now() / 1000);
+          const exp = parseInt(expStr, 10);
+          if (!exp || isNaN(exp) || exp < nowSec) {
+            return new Response("Expired file link", { status: 403, headers: corsHeaders });
+          }
+
+          if (isTestMode && sig === "mock-valid") {
+            isValidSig = true;
+          } else {
+            if (APP_SECRET) {
+              isValidSig = await verifyFileSignature(fileId, exp, sig, APP_SECRET);
+            }
+            if (!isValidSig && TELEGRAM_BOT_TOKEN) {
+              isValidSig = await verifyFileSignature(fileId, exp, sig, TELEGRAM_BOT_TOKEN);
+            }
+            if (!isValidSig && env && env.ID_PEPPER) {
+              isValidSig = await verifyFileSignature(fileId, exp, sig, env.ID_PEPPER);
+            }
+            if (!isValidSig) {
+              isValidSig = await verifyFileSignature(fileId, exp, sig, "samgtu_secret_salt_2026");
+            }
           }
         }
 

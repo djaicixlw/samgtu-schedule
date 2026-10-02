@@ -275,7 +275,13 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
 
           {/* Lesson Cancellation Toggle (Rock-solid Clickable Container) */}
           <div 
-            onClick={() => setIsCancelled(!isCancelled)}
+            onClick={() => {
+              if (!isCancelled) {
+                const confirmed = window.confirm('Вы уверены, что хотите отметить пару как отмененную на эту дату?');
+                if (!confirmed) return;
+              }
+              setIsCancelled(!isCancelled);
+            }}
             className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
               isCancelled 
                 ? 'bg-red-500/15 border-red-500/40 dark:bg-red-950/40 dark:border-red-800' 

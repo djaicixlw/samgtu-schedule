@@ -247,7 +247,6 @@ export const exportAttendanceToWord = async (
       let sentToPm = false;
 
       const headers: Record<string, string> = {
-        ...(import.meta.env?.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {}),
         ...(tg?.initData ? { 'X-Telegram-Init-Data': tg.initData } : {})
       };
 
@@ -260,7 +259,9 @@ export const exportAttendanceToWord = async (
         });
 
         if (uploadRes.ok) {
-          const contentType = uploadRes.headers.get('content-type') || '';
+          const contentType = uploadRes.headers && typeof (uploadRes.headers as any).get === 'function'
+            ? uploadRes.headers.get('content-type') || ''
+            : (uploadRes.headers && (uploadRes.headers as any)['content-type']) || '';
           if (contentType.includes('application/json')) {
             const data = await uploadRes.json();
             if (data.ok && data.direct_url) {

@@ -15,6 +15,8 @@ export const mockAppData = {
 
 export const mockEnv = {
   TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+  APP_SECRET: 'test_mock_app_secret_32bytes_!',
+  ID_PEPPER: 'test_mock_id_pepper_32bytes_value!',
   APP_DATA: mockAppData
 };
 

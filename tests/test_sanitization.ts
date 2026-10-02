@@ -181,6 +181,9 @@ async function runSanitizationTests() {
   console.log('\n--- 6. End-to-End Worker PUT /sync Request Handling ---');
   const mockKvStore = new Map<string, string>();
   const mockWorkerEnv = {
+    APP_SECRET: 'test_secret_sanitization_123',
+    TELEGRAM_BOT_TOKEN: 'test_token',
+    ID_PEPPER: 'test_pepper_sanitization_32b_!',
     APP_DATA: {
       get: async (k: string) => mockKvStore.get(k) || null,
       put: async (k: string, v: string) => { mockKvStore.set(k, v); }
@@ -189,7 +192,10 @@ async function runSanitizationTests() {
 
   const req = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-App-Key': 'test_secret_sanitization_123'
+    },
     body: JSON.stringify({
       byGroup: {
         'ingt-310': {
@@ -215,7 +221,10 @@ async function runSanitizationTests() {
 
   // Test GET isolation from KV
   const getReq = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {
-    method: 'GET'
+    method: 'GET',
+    headers: {
+      'X-App-Key': 'test_secret_sanitization_123'
+    }
   });
   const getRes = await worker.fetch(getReq, mockWorkerEnv);
   check('Worker GET /sync returns HTTP 200', getRes.status === 200);
@@ -223,25 +232,8 @@ async function runSanitizationTests() {
   check('GET returns isolated byGroup[groupId]', getBody && getBody.byGroup && getBody.byGroup['ingt-310'] !== undefined);
   check('GET returns matching records', getBody.byGroup['ingt-310'].records.length === 1);
 
-  // --- 7. Admin Migration Route (/admin/migrate-to-kv) ---
-  console.log('\n--- 7. Admin KV Migration Endpoint (/admin/migrate-to-kv) ---');
-  const originalFetch = globalThis.fetch;
-  const mockOldBinsData: Record<string, any> = {
-    'cecbcbf': { byGroup: { 'ingt-310': { overrides: {} } } },
-    'dfdebcc': { byGroup: { 'ingt-310': { items: [] } } },
-    'cdaacff': { byGroup: { 'ingt-310': { records: [] } } }
-  };
-
-  globalThis.fetch = async (input: any): Promise<any> => {
-    const urlStr = String(input);
-    for (const [binId, data] of Object.entries(mockOldBinsData)) {
-      if (urlStr.includes(binId)) {
-        return new Response(JSON.stringify(data), { status: 200 });
-      }
-    }
-    return new Response(JSON.stringify({}), { status: 200 });
-  };
-
+  // --- 7. Admin Migration Route (/admin/migrate-to-kv) Deprecation ---
+  console.log('\n--- 7. Verification: Legacy Migration Route Deprecated ---');
   const adminEnv = {
     APP_SECRET: 'admin-secret',
     APP_DATA: {
@@ -250,23 +242,9 @@ async function runSanitizationTests() {
     }
   };
 
-  // Unauthorized test
   const unauthMigrate = new Request('https://worker.test/admin/migrate-to-kv', { method: 'GET' });
   const unauthMigrateRes = await worker.fetch(unauthMigrate, adminEnv);
-  check('GET /admin/migrate-to-kv without secret returns 401', unauthMigrateRes.status === 401);
-
-  // Authorized test
-  const authMigrate = new Request('https://worker.test/admin/migrate-to-kv', {
-    method: 'GET',
-    headers: { 'X-App-Key': 'admin-secret' }
-  });
-  const authMigrateRes = await worker.fetch(authMigrate, adminEnv);
-  check('GET /admin/migrate-to-kv with secret returns 200', authMigrateRes.status === 200);
-  const migrateJson = await authMigrateRes.json();
-  check('Migration summary reported correctly', migrateJson && migrateJson.ok === true && migrateJson.migrated.homework.includes('ingt-310'));
-
-  // Restore fetch
-  globalThis.fetch = originalFetch;
+  check('GET /admin/migrate-to-kv is safely disabled and returns 404', unauthMigrateRes.status === 404);
 
   console.log('\n================================================================');
   console.log(`TOTAL SANITIZATION TESTS: ${passCount + failCount}`);

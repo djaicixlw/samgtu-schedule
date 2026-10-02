@@ -35,30 +35,17 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   const canEdit = normalizedRole === 'admin' || normalizedRole === 'starosta';
 
   const getHealedStudents = (groupId: string, parsed: Student[]): Student[] => {
-    if (!Array.isArray(parsed)) {
+    if (!Array.isArray(parsed) || parsed.length === 0) {
       const local = getLocalStudents(groupId);
       return local.length > 0 ? local : (STUDENTS_REGISTRY[groupId] || []);
     }
-    if (groupId === 'ingt-310') {
-      if (parsed.length !== 16) {
-        const local = getLocalStudents('ingt-310');
-        const fallback = local.length === 16 ? local : (STUDENTS_REGISTRY['ingt-310'] || []);
-        try {
-          localStorage.setItem(`students_ingt-310`, JSON.stringify(fallback));
-        } catch (e) {}
-        return fallback;
-      }
-    } else if (groupId === 'faid-310' || groupId === 'faid-110') {
-      if (parsed.length !== 22) {
-        const local = getLocalStudents(groupId);
-        const fallback = local.length === 22 ? local : (STUDENTS_REGISTRY['faid-310'] || []);
-        try {
-          localStorage.setItem(`students_${groupId}`, JSON.stringify(fallback));
-        } catch (e) {}
-        return fallback;
-      }
+    // Validate each student has valid structure (id and non-empty name)
+    const valid = parsed.filter(s => s && typeof s.id === 'number' && typeof s.name === 'string');
+    if (valid.length === 0) {
+      const local = getLocalStudents(groupId);
+      return local.length > 0 ? local : (STUDENTS_REGISTRY[groupId] || []);
     }
-    return parsed;
+    return valid;
   };
 
   const loadInitialStudents = (groupId: string): Student[] => {

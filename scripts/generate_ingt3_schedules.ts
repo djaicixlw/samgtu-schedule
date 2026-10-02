@@ -117,7 +117,7 @@ async function main() {
   }
 
   // Ensure schedules directory exists
-  const schedulesDir = path.resolve(__dirname, '../schedules');
+  const schedulesDir = path.resolve(__dirname, '../public/schedules');
   if (!fs.existsSync(schedulesDir)) {
     fs.mkdirSync(schedulesDir, { recursive: true });
   }

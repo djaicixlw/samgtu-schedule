@@ -63,13 +63,13 @@ console.log('  [PASS] Base "/samgtu-schedule/" URL resolution correct.');
 
 // Full document.baseURI (HTTP/HTTPS origin + path)
 assert.strictEqual(
-  scheduleUrl('ingt-101', 'https://aleblll.github.io/samgtu-schedule/'),
-  'https://aleblll.github.io/samgtu-schedule/schedules/ingt-101.json',
+  scheduleUrl('ingt-101', 'https://djaicixlw.github.io/samgtu-schedule/'),
+  'https://djaicixlw.github.io/samgtu-schedule/schedules/ingt-101.json',
   'Full base URI should resolve correctly'
 );
 assert.strictEqual(
-  scheduleUrl('ingt-101', 'https://aleblll.github.io/samgtu-schedule/index.html'),
-  'https://aleblll.github.io/samgtu-schedule/schedules/ingt-101.json',
+  scheduleUrl('ingt-101', 'https://djaicixlw.github.io/samgtu-schedule/index.html'),
+  'https://djaicixlw.github.io/samgtu-schedule/schedules/ingt-101.json',
   'Full base URI ending in index.html should strip filename and resolve correctly'
 );
 console.log('  [PASS] Full document.baseURI resolution correct.');
@@ -94,6 +94,16 @@ console.log('  [PASS] Bundled group with lessons is recognized as loaded.');
 
 // Unbundled group ingt-301 initialized with createEmptyWeek() in constants.ts
 // MUST NOT be considered loaded!
+const savedIngt301 = SCHEDULE_REGISTRY['ingt-301'];
+const savedAlias = SCHEDULE_REGISTRY['3-ИНГТ-101'];
+SCHEDULE_REGISTRY['ingt-301'] = {
+  1: createEmptyWeek(),
+  2: createEmptyWeek(),
+  3: createEmptyWeek(),
+  4: createEmptyWeek()
+};
+SCHEDULE_REGISTRY['3-ИНГТ-101'] = SCHEDULE_REGISTRY['ingt-301'];
+
 assert.strictEqual(
   isScheduleLoaded('ingt-301'),
   false,
@@ -104,6 +114,8 @@ assert.strictEqual(
   false,
   'Alias 3-ИНГТ-101 pointing to empty weeks must NOT be considered loaded'
 );
+if (savedIngt301) SCHEDULE_REGISTRY['ingt-301'] = savedIngt301;
+if (savedAlias) SCHEDULE_REGISTRY['3-ИНГТ-101'] = savedAlias;
 console.log('  [PASS] Empty weeks from createEmptyWeek() correctly rejected as unbundled/unloaded.');
 
 // Test hasAnyLessons helper directly

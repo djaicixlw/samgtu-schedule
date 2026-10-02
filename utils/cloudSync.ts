@@ -180,7 +180,6 @@ const fetchJson = async (url: string, timeoutMs = 6000, signal?: AbortSignal) =>
         'Accept': 'application/json',
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
-        ...(import.meta.env?.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {}),
         ...(isAttendance ? { 'X-Telegram-Init-Data': initData } : {})
       }
     });
@@ -225,7 +224,6 @@ const putJson = async (url: string, body: any, timeoutMs = 7000) => {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        ...(import.meta.env?.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {}),
         ...(initData ? { 'X-Telegram-Init-Data': initData } : {})
       },
       body: JSON.stringify(body)
@@ -550,8 +548,7 @@ export const fetchOfficialSamgtuSchedule = async (samgtuGroupId: number, weekNum
   try {
     const res = await fetch(url, {
       headers: {
-        'Accept': 'application/json',
-        ...(import.meta.env?.VITE_APP_SECRET ? { 'X-App-Key': import.meta.env.VITE_APP_SECRET } : {})
+        'Accept': 'application/json'
       }
     });
     if (!res.ok) return null;
