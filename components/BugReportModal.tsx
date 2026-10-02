@@ -309,6 +309,21 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
 
       const caption = captionLines.join('\n');
 
+      // Local safety backup so user bug reports are never lost on network or server faults
+      try {
+        const localBackupItem = {
+          date: nowSamara,
+          group: cleanGroup,
+          course,
+          contact: contact.trim(),
+          desc: cleanDesc,
+          screenshotCount: screenshotFiles.length
+        };
+        const prev = JSON.parse(localStorage.getItem('saved_bugreports') || '[]');
+        prev.unshift(localBackupItem);
+        localStorage.setItem('saved_bugreports', JSON.stringify(prev.slice(0, 10)));
+      } catch {}
+
       if (screenshotFiles.length === 0) {
         // Create an informational text document if no screenshot attached
         const fullReportText = [
@@ -355,7 +370,12 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
           if (res.ok && data && (data.ok || data.stored)) {
             uploadSucceeded = true;
           } else {
-            lastUploadError = data?.description || data?.error || `Ошибка сервера (${res.status})`;
+            const rawErr = data?.description || data?.error || `Ошибка сервера (${res.status})`;
+            if (rawErr.includes('chat not found')) {
+              lastUploadError = 'Telegram-бот ещё не запущен разработчиком (/start в боте) или не обновлён код Worker в Cloudflare Dashboard.';
+            } else {
+              lastUploadError = rawErr;
+            }
           }
         } catch (workerErr: any) {
           if (workerErr.message?.includes('Слишком много запросов')) throw workerErr;
@@ -406,7 +426,12 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
           if (res.ok && data && (data.ok || data.stored)) {
             uploadSucceeded = true;
           } else {
-            lastUploadError = data?.description || data?.error || `Ошибка сервера (${res.status})`;
+            const rawErr = data?.description || data?.error || `Ошибка сервера (${res.status})`;
+            if (rawErr.includes('chat not found')) {
+              lastUploadError = 'Telegram-бот ещё не запущен разработчиком (/start в боте) или не обновлён код Worker в Cloudflare Dashboard.';
+            } else {
+              lastUploadError = rawErr;
+            }
           }
         } catch (workerErr: any) {
           if (workerErr.message?.includes('Слишком много запросов')) throw workerErr;
