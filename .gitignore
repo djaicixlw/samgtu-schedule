@@ -52,6 +52,7 @@ android/app/google-services.json
 add-on inf base/
 scratch/
 diag/
+/assets/
 samgtu_schedule/
 kv-group-codes.json
 .review-out/

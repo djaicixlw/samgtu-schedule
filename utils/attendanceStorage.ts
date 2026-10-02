@@ -201,6 +201,9 @@ export function exportRosterBackup(groupId: string): string {
 
 /**
  * Import local group roster from JSON backup string.
+ * Supports:
+ * 1. Standard wrapper object v3: { version: 3, groupId: '...', students: [...] }
+ * 2. Direct students array: Student[] (e.g. [{ id: 1, name: '...', slot?: '...' }])
  */
 export function importRosterBackup(
   groupId: string,
@@ -208,24 +211,55 @@ export function importRosterBackup(
 ): { ok: boolean, count?: number, error?: string } {
   try {
     if (!jsonStr || typeof jsonStr !== 'string') {
-      return { ok: false, error: 'Empty or invalid JSON backup' };
+      return { ok: false, error: 'Пустая или некорректная резервная копия' };
     }
-    const parsed = JSON.parse(jsonStr);
+    let cleanStr = jsonStr.trim();
+    // Strip UTF-8 BOM if present
+    if (cleanStr.charCodeAt(0) === 0xFEFF) {
+      cleanStr = cleanStr.slice(1).trim();
+    }
+    // Strip markdown code fences if copied from chat or markdown (e.g. ```json ... ```)
+    if (cleanStr.startsWith('```')) {
+      cleanStr = cleanStr.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    }
+    if (!cleanStr) {
+      return { ok: false, error: 'Пустая строка резервной копии' };
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(cleanStr);
+    } catch (e: any) {
+      return { ok: false, error: `Ошибка парсинга JSON: ${e?.message || 'некорректный синтаксис'}` };
+    }
+
     if (!parsed || typeof parsed !== 'object') {
-      return { ok: false, error: 'Backup root must be an object' };
+      return { ok: false, error: 'Неверный формат: резервная копия должна быть объектом или списком' };
     }
-    if (parsed.version !== 3) {
-      return { ok: false, error: `Unsupported backup version: ${parsed.version}` };
-    }
-    if (parsed.groupId && parsed.groupId !== groupId) {
-      return { ok: false, error: `Backup belongs to group "${parsed.groupId}", expected "${groupId}"` };
-    }
-    if (!Array.isArray(parsed.students)) {
-      return { ok: false, error: 'Backup does not contain a valid students array' };
+
+    let rawStudents: any[];
+
+    if (Array.isArray(parsed)) {
+      // Direct array of students
+      rawStudents = parsed;
+    } else {
+      // Wrapper object
+      if (parsed.version !== undefined && parsed.version !== 3) {
+        return { ok: false, error: `Неподдерживаемая версия резервной копии: ${parsed.version}` };
+      }
+      if (parsed.groupId && typeof parsed.groupId === 'string') {
+        if (parsed.groupId.trim().toLowerCase() !== groupId.trim().toLowerCase()) {
+          return { ok: false, error: `Резервная копия принадлежит группе "${parsed.groupId}", а выбрана "${groupId}"` };
+        }
+      }
+      if (!Array.isArray(parsed.students)) {
+        return { ok: false, error: 'Резервная копия не содержит корректного списка студентов (поле students)' };
+      }
+      rawStudents = parsed.students;
     }
 
     const sanitizedStudents: Student[] = [];
-    for (const item of parsed.students) {
+    for (const item of rawStudents) {
       if (!item || typeof item !== 'object') continue;
       const id = Number(item.id);
       const name = typeof item.name === 'string' ? item.name.trim() : '';
@@ -241,7 +275,7 @@ export function importRosterBackup(
     saveLocalStudents(groupId, rosterWithSlots);
     return { ok: true, count: rosterWithSlots.length };
   } catch (e: any) {
-    return { ok: false, error: e?.message || 'Failed to parse JSON backup' };
+    return { ok: false, error: e?.message || 'Не удалось восстановить резервную копию' };
   }
 }
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Student } from '../types';
 import { STUDENTS_REGISTRY } from '../attendance';
 import { AVAILABLE_GROUPS } from '../constants';
-import { UserPlus, Trash2, Edit2, Check, X, Users, AlertCircle, Download, Upload, Key, Copy, Loader2 } from 'lucide-react';
+import { UserPlus, Trash2, Edit2, Check, X, Users, AlertCircle, Download, Upload, Key, Copy, Loader2, FileText, Clipboard } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   getLocalStudents,
@@ -30,6 +30,8 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [isLoadingInvites, setIsLoadingInvites] = useState(false);
   const [invites, setInvites] = useState<StudentInvite[]>([]);
+  const [isTextImportModalOpen, setIsTextImportModalOpen] = useState(false);
+  const [textBackupInput, setTextBackupInput] = useState('');
 
   const loadInitialStudents = (groupId: string): Student[] => {
     if (!groupId) return [];
@@ -104,6 +106,79 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
       if (fileInputRef.current) fileInputRef.current.value = '';
     };
     reader.readAsText(file);
+  };
+
+  const handleCopyBackupJson = async () => {
+    if (!currentGroupId) return;
+    try {
+      const json = exportRosterBackup(currentGroupId);
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(json);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = json;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-9999px';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+      toast.success('Резервная копия скопирована в буфер обмена');
+    } catch (err: any) {
+      toast.error('Не удалось скопировать резервную копию: ' + (err?.message || String(err)));
+    }
+  };
+
+  const handlePasteFromClipboard = async () => {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+        const text = await navigator.clipboard.readText();
+        if (!text || !text.trim()) {
+          toast.warning('Буфер обмена пуст');
+          return;
+        }
+        setTextBackupInput(text.trim());
+        toast.success('Текст вставлен из буфера обмена');
+      } else {
+        toast.info('Автоматическая вставка недоступна — вставьте текст в поле ниже вручную');
+      }
+    } catch {
+      toast.info('Нет доступа к чтению буфера обмена — вставьте текст в поле ниже вручную');
+    }
+  };
+
+  const handleOpenTextImportModal = async () => {
+    setTextBackupInput('');
+    setIsTextImportModalOpen(true);
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+        const text = await navigator.clipboard.readText();
+        if (text && (text.trim().startsWith('{') || text.trim().startsWith('['))) {
+          setTextBackupInput(text.trim());
+          toast.info('JSON автоматически подставлен из буфера обмена');
+        }
+      }
+    } catch {
+      // Permission denied or blocked in WebView, user can paste manually
+    }
+  };
+
+  const handleApplyTextImport = () => {
+    if (!currentGroupId) return;
+    if (!textBackupInput.trim()) {
+      toast.error('Введите или вставьте JSON резервной копии');
+      return;
+    }
+    const res = importRosterBackup(currentGroupId, textBackupInput);
+    if (res.ok) {
+      setStudents(getLocalStudents(currentGroupId));
+      toast.success(`Список успешно восстановлен (${res.count ?? 0} студентов)`);
+      setIsTextImportModalOpen(false);
+      setTextBackupInput('');
+    } else {
+      toast.error(`Ошибка восстановления: ${res.error}`);
+    }
   };
 
   const handleOpenInvites = async () => {
@@ -232,14 +307,25 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
           </div>
           <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
             <button onClick={handleDownloadBackup} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Скачать резервную копию (.json)">
-              <Download className="w-3.5 h-3.5" /><span>Скачать резервную копию (.json)</span>
+              <Download className="w-3.5 h-3.5" /><span>Скачать (.json)</span>
+            </button>
+            <button onClick={handleCopyBackupJson} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Скопировать JSON резервной копии в буфер обмена">
+              <Copy className="w-3.5 h-3.5" /><span>Скопировать JSON</span>
             </button>
             <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Восстановить из файла (.json)">
-              <Upload className="w-3.5 h-3.5" /><span>Восстановить из файла (.json)</span>
+              <Upload className="w-3.5 h-3.5" /><span>Из файла</span>
             </button>
-            <input type="file" ref={fileInputRef} accept=".json,application/json" onChange={handleRestoreBackup} className="hidden" />
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleRestoreBackup}
+              className="hidden"
+            />
+            <button onClick={handleOpenTextImportModal} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Восстановить из скопированного текста или буфера обмена">
+              <FileText className="w-3.5 h-3.5" /><span>Вставить текстом</span>
+            </button>
             <button onClick={handleOpenInvites} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-xs cursor-pointer" title="Коды приглашений для студентов">
-              <Key className="w-3.5 h-3.5" /><span>Коды приглашений для студентов</span>
+              <Key className="w-3.5 h-3.5" /><span>Коды приглашений</span>
             </button>
           </div>
         </div>
@@ -417,6 +503,75 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
             <div className="flex justify-end pt-2">
               <button onClick={() => setIsInviteModalOpen(false)} className="px-4 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer">
                 Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Text / Clipboard Import Modal */}
+      {isTextImportModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full p-6 shadow-xl border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-slate-900 dark:text-white">Импорт через текст / буфер</h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Группа: {groupConfig?.name || currentGroupId}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsTextImportModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              Вставьте скопированный текст JSON резервной копии (или массив студентов). Этот способ работает на смартфонах в Telegram Mini App, если проводник не отображает файлы <code>.json</code>.
+            </p>
+
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">Содержимое JSON:</label>
+                <button
+                  type="button"
+                  onClick={handlePasteFromClipboard}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 transition-colors cursor-pointer"
+                >
+                  <Clipboard className="w-3.5 h-3.5" />
+                  <span>📋 Вставить из буфера</span>
+                </button>
+              </div>
+
+              <textarea
+                value={textBackupInput}
+                onChange={(e) => setTextBackupInput(e.target.value)}
+                placeholder='Вставьте сюда JSON резервной копии, например: {"version": 3, "groupId": "...", "students": [...]} или [{ "id": 1, "name": "Иванов" }]'
+                rows={8}
+                className="w-full p-3 font-mono text-xs rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none resize-y"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsTextImportModalOpen(false)}
+                className="px-4 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={handleApplyTextImport}
+                className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Применить</span>
               </button>
             </div>
           </div>

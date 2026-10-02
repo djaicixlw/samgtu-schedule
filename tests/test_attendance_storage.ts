@@ -217,6 +217,40 @@ const sanitizedStudent = getLocalStudents(testGroupId)[0] as any;
 check('Injected field was stripped during import', sanitizedStudent.injectedField === undefined);
 check('Deprecated phone field was stripped during import', sanitizedStudent.phone === undefined);
 
+// New features: Trim, Case-insensitive groupId, Direct array
+const untrimmedBackup = `  \n\r  ${backupWithInjectedFields}   \n  `;
+const untrimmedImport = importRosterBackup(testGroupId, untrimmedBackup);
+check('Importing with leading/trailing whitespace and newlines succeeds', untrimmedImport.ok === true && untrimmedImport.count === 1);
+
+const caseMismatchBackup = JSON.stringify({
+  version: 3,
+  groupId: 'INGT-310',
+  exportedAt: new Date().toISOString(),
+  students: [{ id: 1, name: 'Студент Регистра' }]
+});
+const caseMismatchImport = importRosterBackup('ingt-310', caseMismatchBackup);
+check('Importing with case-insensitive groupId succeeds', caseMismatchImport.ok === true && caseMismatchImport.count === 1);
+
+const directArrayBackup = JSON.stringify([
+  { id: 1, name: 'Студент Прямой 1', slot: 'DIRSLOT1' },
+  { id: 2, name: 'Студент Прямой 2' }
+]);
+const directArrayImport = importRosterBackup('direct-array-group', directArrayBackup);
+check('Importing direct Student[] array succeeds', directArrayImport.ok === true && directArrayImport.count === 2);
+const directLoaded = getLocalStudents('direct-array-group');
+check('Direct array students loaded correctly', directLoaded[0].name === 'Студент Прямой 1' && directLoaded[0].slot === 'DIRSLOT1');
+check('Direct array second student auto-received slot', typeof directLoaded[1].slot === 'string' && directLoaded[1].slot.length === 8);
+
+// UTF-8 BOM test
+const bomBackup = '\uFEFF' + JSON.stringify([{ id: 1, name: 'Студент с BOM' }]);
+const bomImport = importRosterBackup('bom-group', bomBackup);
+check('Importing JSON with UTF-8 BOM succeeds', bomImport.ok === true && bomImport.count === 1);
+
+// Markdown code fence test
+const markdownBackup = '```json\n' + JSON.stringify([{ id: 1, name: 'Студент из Markdown' }]) + '\n```';
+const markdownImport = importRosterBackup('md-group', markdownBackup);
+check('Importing JSON wrapped in markdown code fence succeeds', markdownImport.ok === true && markdownImport.count === 1);
+
 // ------------------------------------------------------------------
 // 7. Cloudflare Worker API v3 Client Methods
 // ------------------------------------------------------------------
