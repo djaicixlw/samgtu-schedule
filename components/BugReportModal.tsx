@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Bug, Upload, Image as ImageIcon, Trash2, Send, ExternalLink, MessageSquare, Loader2, CheckCircle2 } from 'lucide-react';
+import { X, Bug, Upload, Image as ImageIcon, Trash2, Send, ExternalLink, MessageSquare, Loader2, CheckCircle2, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { WORKER_BASE } from '../utils/cloudSync';
 import { getGroupTag } from '../constants';
@@ -11,6 +11,7 @@ interface BugReportModalProps {
   currentGroupId: string;
   currentGroupName: string;
   currentCourse?: number;
+  userRole?: string;
 }
 
 export function detectClientPlatform(): string {
@@ -142,7 +143,8 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
   onClose,
   currentGroupId,
   currentGroupName,
-  currentCourse
+  currentCourse,
+  userRole
 }) => {
   const [course, setCourse] = useState<number | string>(currentCourse || 1);
   const [groupName, setGroupName] = useState<string>(currentGroupName);
@@ -155,6 +157,30 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
   const screenshotPreview = screenshotPreviews[0] || null;
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [isSuccess, setIsSuccess] = useState<boolean>(false);
+  const [isAdminHistoryOpen, setIsAdminHistoryOpen] = useState<boolean>(false);
+  const [savedReports, setSavedReports] = useState<{
+    date: string;
+    group: string;
+    course: string | number;
+    contact?: string;
+    desc: string;
+    screenshotCount?: number;
+  }[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('saved_bugreports') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  const handleCopySavedReport = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('Текст репорта скопирован в буфер обмена');
+    } catch {
+      toast.error('Не удалось скопировать текст');
+    }
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -503,16 +529,84 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {userRole === 'admin' && savedReports.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setIsAdminHistoryOpen(!isAdminHistoryOpen)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors cursor-pointer"
+                title="Посмотреть сохранённые репорты (Режим Администратора)"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>{isAdminHistoryOpen ? 'К форме' : `Репорты (${savedReports.length})`}</span>
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Content Body */}
-        <form onSubmit={handleSubmit} className="p-4 sm:p-5 overflow-y-auto overscroll-contain space-y-4 flex-1">
+        {isAdminHistoryOpen ? (
+          <div className="p-4 sm:p-5 overflow-y-auto overscroll-contain space-y-3 flex-1">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-200/80 dark:border-slate-800">
+              <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                Сохранённые обращения ({savedReports.length})
+              </h4>
+              <button
+                type="button"
+                onClick={() => setIsAdminHistoryOpen(false)}
+                className="text-xs text-indigo-600 dark:text-indigo-400 font-semibold hover:underline cursor-pointer"
+              >
+                Вернуться к форме
+              </button>
+            </div>
+            {savedReports.map((report, idx) => (
+              <div
+                key={idx}
+                className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 space-y-2"
+              >
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-slate-900 dark:text-white">{report.group || 'Без группы'}</span>
+                    {report.course && (
+                      <span className="text-[10px] text-slate-400">({report.course} курс)</span>
+                    )}
+                    {typeof report.screenshotCount === 'number' && report.screenshotCount > 0 && (
+                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400">
+                        📸 {report.screenshotCount}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[11px] text-slate-400">{report.date}</span>
+                </div>
+                {report.contact && (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Контакт: <span className="font-medium text-slate-700 dark:text-slate-300">{report.contact}</span>
+                  </p>
+                )}
+                <div className="p-2.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200/60 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-200 whitespace-pre-wrap font-sans leading-relaxed max-h-48 overflow-y-auto select-text">
+                  {report.desc}
+                </div>
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleCopySavedReport(report.desc)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Скопировать полный текст</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="p-4 sm:p-5 overflow-y-auto overscroll-contain space-y-4 flex-1">
           {isSuccess ? (
             <div className="py-8 text-center space-y-3">
               <div className="w-16 h-16 mx-auto bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 rounded-2xl flex items-center justify-center">
@@ -711,6 +805,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
             </>
           )}
         </form>
+        )}
       </div>
     </div>
   );
