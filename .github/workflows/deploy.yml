@@ -53,6 +53,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./dist
+          keep_files: true
 
       - name: Upload artifact for GitHub Pages
         uses: actions/upload-pages-artifact@v3

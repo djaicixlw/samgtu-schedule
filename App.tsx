@@ -25,19 +25,46 @@ import {
   Search, Plus, X, Terminal, RotateCcw, Database
 } from 'lucide-react';
 
-// Code-split heavy tabs and modals to keep the initial client bundle ultra-light for students
-const AttendanceTracker = React.lazy(() => import('./components/AttendanceTracker'));
-const HomeworkTracker = React.lazy(() => import('./components/HomeworkTracker'));
-const SubjectTeachersModal = React.lazy(() => import('./components/SubjectTeachersModal'));
-const GroupManager = React.lazy(() => import('./components/GroupManager'));
-const AdminPanel = React.lazy(() => import('./components/AdminPanel'));
-const BugReportModal = React.lazy(() => import('./components/BugReportModal'));
-const DebugLogsModal = React.lazy(() => import('./components/DebugLogsModal'));
-const MaintenanceScreen = React.lazy(() => import('./components/MaintenanceScreen'));
-const ConsentModal = React.lazy(() => import('./components/ConsentModal'));
-const StudentLinkModal = React.lazy(() => import('./components/StudentLinkModal'));
-const MyAbsencesModal = React.lazy(() => import('./components/MyAbsencesModal'));
-const PrivacyPolicyModal = React.lazy(() => import('./components/PrivacyPolicyModal'));
+// Code-split heavy tabs and modals with auto-retry on new deployments
+function lazyWithRetry<T extends React.ComponentType<any>>(
+  factory: () => Promise<{ default: T }>
+): React.LazyExoticComponent<T> {
+  return React.lazy(async () => {
+    try {
+      return await factory();
+    } catch (error: any) {
+      const isChunkError = Boolean(
+        error?.message && (
+          error.message.includes('dynamically imported module') ||
+          error.message.includes('Loading chunk') ||
+          error.message.includes('Failed to fetch')
+        )
+      );
+      if (isChunkError && typeof window !== 'undefined') {
+        const retryKey = 'chunk_retry_auto';
+        if (!sessionStorage.getItem(retryKey)) {
+          sessionStorage.setItem(retryKey, '1');
+          window.location.reload();
+          return new Promise<{ default: T }>(() => {});
+        }
+      }
+      throw error;
+    }
+  });
+}
+
+const AttendanceTracker = lazyWithRetry(() => import('./components/AttendanceTracker'));
+const HomeworkTracker = lazyWithRetry(() => import('./components/HomeworkTracker'));
+const SubjectTeachersModal = lazyWithRetry(() => import('./components/SubjectTeachersModal'));
+const GroupManager = lazyWithRetry(() => import('./components/GroupManager'));
+const AdminPanel = lazyWithRetry(() => import('./components/AdminPanel'));
+const BugReportModal = lazyWithRetry(() => import('./components/BugReportModal'));
+const DebugLogsModal = lazyWithRetry(() => import('./components/DebugLogsModal'));
+const MaintenanceScreen = lazyWithRetry(() => import('./components/MaintenanceScreen'));
+const ConsentModal = lazyWithRetry(() => import('./components/ConsentModal'));
+const StudentLinkModal = lazyWithRetry(() => import('./components/StudentLinkModal'));
+const MyAbsencesModal = lazyWithRetry(() => import('./components/MyAbsencesModal'));
+const PrivacyPolicyModal = lazyWithRetry(() => import('./components/PrivacyPolicyModal'));
 
 interface UserProfile {
   displayName?: string | null;
