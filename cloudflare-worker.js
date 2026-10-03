@@ -894,7 +894,38 @@ export default {
             }
           }
 
-          if (!gid || typeof gid !== 'string') {
+          const rawGid = (gid && typeof gid === 'string') ? gid.trim().toLowerCase() : '';
+          const CANONICAL_ALIASES = {
+            'faid-110': 'faid-310',
+            '24фад-110': 'faid-310',
+            '24фаид-110': 'faid-310',
+            '3-фаид-110': 'faid-310',
+            '3-faid-110': 'faid-310',
+            '3 фаид 110': 'faid-310',
+            'фаид-110': 'faid-310',
+            'фаид-310': 'faid-310',
+            'htf-115': 'htf-215',
+            '2-htf-115': 'htf-215',
+            '2-хтф-115': 'htf-215',
+            '2 хтф 115': 'htf-215',
+            'ingt-1': 'ingt-301',
+            '3-ингт-110': 'ingt-310',
+            '3-ингт-101': 'ingt-301',
+            '3-ингт-111': 'ingt-311',
+            '3-ингт-113': 'ingt-313',
+            '2-ингт-109': 'ingt-209',
+            '3-иаит-108': 'iait-308'
+          };
+          let targetGid = CANONICAL_ALIASES[rawGid] || rawGid;
+          if (targetGid.includes('фаид') || targetGid.includes('faid') || targetGid.includes('фад')) {
+            targetGid = 'faid-310';
+          } else if (targetGid.includes('хтф') || targetGid.includes('htf')) {
+            targetGid = 'htf-215';
+          } else if (targetGid.includes('иаит') || targetGid.includes('iait')) {
+            targetGid = 'iait-308';
+          }
+
+          if (!targetGid) {
             await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
             return new Response(JSON.stringify({ error: "Invalid claim code or missing gid" }), {
               status: 401,
@@ -902,7 +933,10 @@ export default {
             });
           }
 
-          const groupRaw = await env.APP_DATA.get("g:" + gid.toLowerCase());
+          let groupRaw = await env.APP_DATA.get("g:" + targetGid);
+          if (!groupRaw && targetGid !== rawGid) {
+            groupRaw = await env.APP_DATA.get("g:" + rawGid);
+          }
           if (!groupRaw) {
             await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
             return new Response(JSON.stringify({ error: "Group not found" }), {
@@ -951,9 +985,9 @@ export default {
           if (!groupData.staff.includes(userBlindId)) {
             groupData.staff.push(userBlindId);
           }
-          await env.APP_DATA.put("g:" + gid.toLowerCase(), JSON.stringify(groupData));
+          await env.APP_DATA.put("g:" + targetGid, JSON.stringify(groupData));
 
-          return new Response(JSON.stringify({ ok: true, role: "starosta" }), {
+          return new Response(JSON.stringify({ ok: true, role: "starosta", gid: targetGid }), {
             status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });

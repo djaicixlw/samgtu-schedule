@@ -15,6 +15,7 @@ import { SEED_SCHEDULE_OVERRIDES, SEED_SUBJECT_TEACHERS, getSeedSubjectTeachers 
 import { verifyPinCode } from './utils/auth';
 import { logger } from './utils/logger';
 import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuParser';
+import { resolveCanonicalGroupId } from './utils/groupMigration';
 import ScheduleState from './components/ScheduleState';
 import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason } from './utils/scheduleLoader';
 import { getLocalStudentLink, claimStaffRole } from './utils/attendanceStorage';
@@ -134,7 +135,8 @@ const App: React.FC = () => {
     }
     setIsClaimingStaff(true);
     try {
-      const res = await claimStaffRole(currentGroupId, clean);
+      const targetGid = resolveCanonicalGroupId(currentGroupId);
+      const res = await claimStaffRole(targetGid, clean);
       if (res.ok) {
         if (res.role === 'admin') {
           toast.success('Права администратора подтверждены!');
@@ -144,15 +146,18 @@ const App: React.FC = () => {
           setGroupCodeInput('');
           return;
         }
+        const assignedGid = res.gid || targetGid;
         toast.success('Права старосты подтверждены через Telegram!');
         setUserRole('starosta');
-        setStarostaGroupId(currentGroupId);
+        setStarostaGroupId(assignedGid);
+        setCurrentGroupId(assignedGid);
+        setBoundGroupId(assignedGid);
         localStorage.setItem('user_role', 'starosta');
         localStorage.setItem('auth_role', 'starosta');
-        localStorage.setItem('starosta_group_id', currentGroupId);
-        localStorage.setItem('auth_group', currentGroupId);
-        localStorage.setItem('my_group_id', currentGroupId);
-        setBoundGroupId(currentGroupId);
+        localStorage.setItem('starosta_group_id', assignedGid);
+        localStorage.setItem('auth_group', assignedGid);
+        localStorage.setItem('my_group_id', assignedGid);
+        localStorage.setItem('selected_group_id', assignedGid);
         setGroupCodeInput('');
       } else {
         toast.error(res.error || 'Неверный код группы или администратора');

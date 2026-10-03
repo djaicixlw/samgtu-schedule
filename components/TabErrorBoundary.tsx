@@ -28,13 +28,34 @@ export class TabErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error(`[TabErrorBoundary] Error caught in tab "${this.props.tabName}":`, error, errorInfo);
+
+    // Check if error is due to stale deployment chunk hash after new release
+    const isChunkLoadError = Boolean(
+      error?.message && (
+        error.message.includes('dynamically imported module') ||
+        error.message.includes('Loading chunk') ||
+        error.message.includes('Failed to fetch dynamically imported')
+      )
+    );
+
+    if (isChunkLoadError && typeof window !== 'undefined') {
+      const retryKey = 'chunk_reload_tab_' + this.props.tabName;
+      if (!sessionStorage.getItem(retryKey)) {
+        sessionStorage.setItem(retryKey, '1');
+        window.location.reload();
+        return;
+      }
+    }
+
     try {
       logger.error('UI', `Ошибка рендера во вкладке [${this.props.tabName}]: ${error.message}\n${errorInfo.componentStack || ''}`);
-      sendCrashReport({
-        component: `TabErrorBoundary (${this.props.tabName})`,
-        message: error?.message || String(error),
-        stack: error?.stack || errorInfo?.componentStack || undefined
-      });
+      if (!isChunkLoadError) {
+        sendCrashReport({
+          component: `TabErrorBoundary (${this.props.tabName})`,
+          message: error?.message || String(error),
+          stack: error?.stack || errorInfo?.componentStack || undefined
+        });
+      }
     } catch {}
   }
 

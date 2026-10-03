@@ -1,5 +1,6 @@
 import { Student } from '../types';
 import type { AttendanceRecord } from '../attendance';
+import { resolveCanonicalGroupId } from './groupMigration';
 
 export const WORKER_BASE = 'https://floral-union-26d1.alexeyberezin2.workers.dev';
 export const CROCKFORD_BASE32_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -595,14 +596,15 @@ export async function unlinkStudentV3(month?: string): Promise<{
 export async function claimStaffRole(
   gid: string,
   code: string
-): Promise<{ ok: boolean; role?: 'admin' | 'starosta'; error?: string }> {
+): Promise<{ ok: boolean; role?: 'admin' | 'starosta'; gid?: string; error?: string }> {
   try {
     const base = getAttendanceApiBase();
+    const canonicalGid = resolveCanonicalGroupId(gid).trim().toLowerCase();
     const res = await fetch(`${base}/v3/staff/claim`, {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({
-        gid: gid.trim().toLowerCase(),
+        gid: canonicalGid,
         code: code.trim().toUpperCase()
       })
     });
@@ -613,7 +615,7 @@ export async function claimStaffRole(
     if (!res.ok) {
       return { ok: false, error: json.error || 'Неверный код группы или администратора' };
     }
-    return { ok: true, role: json.role || 'starosta' };
+    return { ok: true, role: json.role || 'starosta', gid: json.gid || canonicalGid };
   } catch (err: any) {
     return { ok: false, error: err?.message || 'Ошибка сети' };
   }
