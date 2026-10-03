@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { UserRole } from '../types';
-import { ShieldCheck, Key, CheckCircle2, RefreshCw, Wrench, ChevronDown, Download, MessageSquare, Copy, Trash2 } from 'lucide-react';
+import { ShieldCheck, Key, CheckCircle2, RefreshCw, Wrench, ChevronDown, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { verifyPinCode } from '../utils/auth';
 import { SAMGTU_GROUP_MAP } from '../utils/samgtuGroupMap';
@@ -32,47 +32,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
   const [isSimulatingMaintenance, setIsSimulatingMaintenance] = useState(() => {
     return localStorage.getItem('simulate_maintenance') === 'true';
   });
-  const [savedReports, setSavedReports] = useState<{
-    date: string;
-    group: string;
-    course: string | number;
-    contact?: string;
-    desc: string;
-    screenshotCount?: number;
-  }[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('saved_bugreports') || '[]');
-    } catch {
-      return [];
-    }
-  });
-
-  const handleCopyReportText = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success('Полный текст обращения скопирован в буфер обмена');
-    } catch {
-      toast.error('Не удалось скопировать текст в буфер');
-    }
-  };
-
-  const handleDeleteReport = (index: number) => {
-    const updated = savedReports.filter((_, i) => i !== index);
-    setSavedReports(updated);
-    try {
-      localStorage.setItem('saved_bugreports', JSON.stringify(updated));
-      toast.info('Отчёт удалён');
-    } catch {}
-  };
-
-  const handleClearAllReports = () => {
-    if (!window.confirm('Очистить все сохранённые баг-репорты?')) return;
-    setSavedReports([]);
-    try {
-      localStorage.removeItem('saved_bugreports');
-      toast.info('История репортов очищена');
-    } catch {}
-  };
 
   const handleToggleMaintenance = () => {
     const nextVal = !isSimulatingMaintenance;
@@ -425,94 +384,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
                 {isSimulatingMaintenance ? 'Отключить режим техработ' : 'Активировать экран техработ'}
               </button>
             </div>
-          </div>
-
-          {/* Saved Bug Reports Card (Admin Only) */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 flex items-center justify-center">
-                  <MessageSquare className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">История обращений и баг-репортов</h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Локально сохранённые обращения пользователей с этого устройства ({savedReports.length})</p>
-                </div>
-              </div>
-              {savedReports.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleClearAllReports}
-                  className="text-xs text-red-500 hover:text-red-600 font-medium px-2 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
-                >
-                  Очистить все
-                </button>
-              )}
-            </div>
-
-            {savedReports.length === 0 ? (
-              <div className="text-center py-8 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800">
-                <p className="text-xs text-slate-400">На этом устройстве пока нет сохранённых обращений.</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {savedReports.map((report, idx) => (
-                  <div
-                    key={idx}
-                    className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 space-y-2.5"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-xs text-slate-900 dark:text-white">
-                          {report.group || 'Без группы'}
-                        </span>
-                        {report.course && (
-                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400">
-                            {report.course} курс
-                          </span>
-                        )}
-                        {typeof report.screenshotCount === 'number' && report.screenshotCount > 0 && (
-                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400">
-                            📸 {report.screenshotCount} скринш.
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-[11px] text-slate-400">{report.date}</span>
-                    </div>
-
-                    {report.contact && (
-                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                        Контакт: <span className="text-slate-700 dark:text-slate-300 font-medium">{report.contact}</span>
-                      </p>
-                    )}
-
-                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200/60 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-200 whitespace-pre-wrap font-sans leading-relaxed max-h-60 overflow-y-auto select-text">
-                      {report.desc}
-                    </div>
-
-                    <div className="flex items-center justify-end gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteReport(idx)}
-                        className="flex items-center gap-1 px-2.5 py-1 text-xs text-slate-400 hover:text-red-500 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-                        title="Удалить этот отчёт"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Удалить</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleCopyReportText(report.desc)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-colors cursor-pointer"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>Скопировать полный текст</span>
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       ) : currentRole === 'starosta' ? (

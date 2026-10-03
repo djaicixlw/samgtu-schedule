@@ -2127,7 +2127,6 @@ const App: React.FC = () => {
             currentGroupId={currentGroupId}
             currentGroupName={currentGroupConfig.name}
             currentCourse={currentGroupConfig.course}
-            userRole={effectiveRole}
           />
         </Suspense>
       )}
