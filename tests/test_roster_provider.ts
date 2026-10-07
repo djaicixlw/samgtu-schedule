@@ -126,20 +126,15 @@ async function runRosterProviderTests() {
   console.log('✅ PASS: Local storage tier serves roster with zero network latency.\n');
 
   // ----------------------------------------------------
-  // TEST 3: LocalCloudRosterProvider Tier 2 (Cloud fetch fallback and cache backfill)
+  // TEST 3: LocalCloudRosterProvider Tier 2 (152-FZ No cloud fetch of student PII)
   // ----------------------------------------------------
-  console.log('>>> 3. Testing LocalCloudRosterProvider Tier 2: Cloud fetch & cache backfill');
+  console.log('>>> 3. Testing LocalCloudRosterProvider Tier 2: 152-FZ Privacy (Zero cloud leak)');
   assert.strictEqual(mockLocalStorage.getItem('students_test-group-cloud'), null, 'Local cache starts empty for test-group-cloud');
 
   const cloudRes = await provider.getRoster('test-group-cloud');
-  assert.strictEqual(cloudRes.length, 2, 'Fetched 2 students from cloud mock');
-  assert.strictEqual(cloudRes[0].name, 'Синтетический Студент 1');
-
-  // Verify backfilled localStorage
-  const backfilled = JSON.parse(mockLocalStorage.getItem('students_test-group-cloud') || '[]');
-  assert.strictEqual(backfilled.length, 2, 'Local storage automatically backfilled from cloud');
-  assert.strictEqual(backfilled[1].name, 'Синтетический Студент 2');
-  console.log('✅ PASS: Cloud tier resolves missing roster and populates local cache.\n');
+  assert.strictEqual(cloudRes.length, 0, 'Does NOT fetch student PII from cloud (152-FZ / P0-01 compliant)');
+  assert.strictEqual(mockLocalStorage.getItem('students_test-group-cloud'), null, 'No cloud data backfilled to localStorage');
+  console.log('✅ PASS: Cloud tier strictly preserves privacy and never leaks student PII.\n');
 
   // ----------------------------------------------------
   // TEST 4: LocalCloudRosterProvider Tier 3 (Static registry fallback)
@@ -156,9 +151,9 @@ async function runRosterProviderTests() {
   console.log('✅ PASS: Static registry fallback behaves reliably.\n');
 
   // ----------------------------------------------------
-  // TEST 5: LocalCloudRosterProvider saveRoster (Dual storage write & cloud dispatch)
+  // TEST 5: LocalCloudRosterProvider saveRoster (Local device storage only)
   // ----------------------------------------------------
-  console.log('>>> 5. Testing LocalCloudRosterProvider saveRoster (local & cloud dispatch)');
+  console.log('>>> 5. Testing LocalCloudRosterProvider saveRoster (local-only persistence under 152-FZ)');
   const newRoster: Student[] = [
     { id: 201, name: 'Студент Сохранения 1' },
     { id: 202, name: 'Студент Сохранения 2' }
@@ -170,10 +165,9 @@ async function runRosterProviderTests() {
   assert.strictEqual(savedLocal.length, 2, 'Roster saved to localStorage');
   assert.strictEqual(savedLocal[0].name, 'Студент Сохранения 1');
 
-  // Verify cloud received payload
-  assert(mockCloudBin.byGroup['test-save-group'] !== undefined, 'Cloud received updated group');
-  assert.strictEqual(mockCloudBin.byGroup['test-save-group'].students.length, 2, 'Cloud contains saved roster');
-  console.log('✅ PASS: Dual persistence (local + cloud) verified successfully.\n');
+  // Verify cloud NEVER received student personal data (152-FZ compliant)
+  assert.strictEqual(mockCloudBin.byGroup['test-save-group'], undefined, 'Cloud never receives student personal data (152-FZ compliant)');
+  console.log('✅ PASS: Local-only roster persistence verified successfully (152-FZ safe).\n');
 
   // ----------------------------------------------------
   // TEST 6: Error handling & Resilience

@@ -101,11 +101,8 @@ async function runTests() {
     }
   });
 
-  const groupStudents = cleanPayload.byGroup['ingt-313'].students;
-  assert.strictEqual(groupStudents.length, 1, 'Sanitizer retained only valid students');
-  assert.strictEqual(groupStudents[0].name, 'Студент А', 'Student name cleaned');
-  assert.strictEqual(groupStudents[0].injected, undefined, 'Hacked field stripped');
-  console.log('✅ PASS: Worker sanitization correctly protects student roster.\n');
+  assert.strictEqual(cleanPayload.byGroup['ingt-313'].students, undefined, 'Sanitizer unconditionally drops students from cloud sync (P0-01)');
+  console.log('✅ PASS: Worker sanitization correctly protects student roster by purging students.\n');
 
   // ----------------------------------------------------
   // TEST 1b: Sanitizer validates attendance record DTO
@@ -146,9 +143,9 @@ async function runTests() {
   console.log('✅ PASS: Worker sanitization correctly protects AttendanceRecord DTO.\n');
 
   // ----------------------------------------------------
-  // TEST 2: Device A (Admin) creates and pushes students
+  // TEST 2: Device A (Admin) saves roster locally; pushGroupCloudData does NOT leak students
   // ----------------------------------------------------
-  console.log('>>> 2. Device A (Admin) saves roster locally and pushes to cloud');
+  console.log('>>> 2. Device A saves roster locally and pushGroupCloudData does NOT leak students to cloud');
   activeStorage = deviceAdmin;
 
   const initialStudents: Student[] = [
@@ -160,38 +157,35 @@ async function runTests() {
   deviceAdmin.setItem(`students_${testGroupId}`, JSON.stringify(initialStudents));
 
   const localBackup = getLocalBackup(testGroupId);
-  assert.strictEqual(localBackup.students?.length, 3, 'getLocalBackup returns saved students');
+  assert.strictEqual((localBackup as any).students, undefined, 'getLocalBackup never exposes students to cloud sync payload');
 
-  const pushOk = await pushGroupCloudData({ students: initialStudents }, testGroupId);
-  assert.strictEqual(pushOk, true, 'pushGroupCloudData returned true');
+  // Attempting to push with any students property should be stripped/ignored and never leak to cloud
+  const pushOk = await pushGroupCloudData({ students: initialStudents } as any, testGroupId);
+  assert.strictEqual(pushOk, true, 'pushGroupCloudData completes without error');
 
-  // Verify cloud received students and preserved other groups
-  assert(mockCloudAttendanceBin.byGroup['ingt-310'] !== undefined, 'Group ingt-310 was preserved');
-  assert(mockCloudAttendanceBin.byGroup[testGroupId] !== undefined, 'Group ingt-313 exists in cloud');
-  assert.strictEqual(mockCloudAttendanceBin.byGroup[testGroupId].students.length, 3, 'Cloud has 3 students for ingt-313');
-  console.log('✅ PASS: Device A successfully synced roster to cloud.\n');
+  // Verify cloud never received student personal data
+  assert.strictEqual(mockCloudAttendanceBin.byGroup[testGroupId]?.students, undefined, 'Cloud bin does NOT receive students (152-FZ compliant)');
+  console.log('✅ PASS: Student roster is strictly kept local and never pushed to cloud.\n');
 
   // ----------------------------------------------------
-  // TEST 3: Device B (Starosta) fetches roster from cloud
+  // TEST 3: Device B (Starosta) cold-starts: student PII is NOT fetched from cloud
   // ----------------------------------------------------
-  console.log('>>> 3. Device B (Starosta) cold-starts and fetches roster from cloud');
+  console.log('>>> 3. Device B (Starosta) cold-starts: student PII is NOT fetched from cloud');
   activeStorage = deviceStarosta;
-  assert.strictEqual(deviceStarosta.getItem(`students_${testGroupId}`), null, 'Device B starts with empty storage');
+  assert.strictEqual(deviceStarosta.getItem(`students_${testGroupId}`), null, 'Device B starts with empty local storage');
 
   const fetched = await fetchGroupCloudData(true, testGroupId);
-  assert(fetched !== null, 'fetchGroupCloudData returned data');
-  assert.strictEqual(fetched.students?.length, 3, 'fetched.students has 3 students');
-  assert.strictEqual(fetched.students[0].name, 'Тестовый Студент 1', 'First student name matches');
+  assert(fetched !== null, 'fetchGroupCloudData returned valid cloud payload');
+  assert.strictEqual((fetched as any).students, undefined, 'fetchGroupCloudData does not return students from cloud');
 
-  // Verify Device B localStorage was automatically populated
-  const savedOnDeviceB = JSON.parse(deviceStarosta.getItem(`students_${testGroupId}`) || '[]');
-  assert.strictEqual(savedOnDeviceB.length, 3, 'Device B localStorage was populated from cloud');
-  console.log('✅ PASS: Device B successfully received and persisted roster from cloud.\n');
+  // LocalStorage must not be populated with cloud student data
+  assert.strictEqual(deviceStarosta.getItem(`students_${testGroupId}`), null, 'Device B localStorage remains unpopulated by cloud');
+  console.log('✅ PASS: Device B cold start does not pull student PII from cloud.\n');
 
   // ----------------------------------------------------
-  // TEST 4: Device B edits a student, pushes, Device A receives
+  // TEST 4: Local edits stay on local device and do not leak
   // ----------------------------------------------------
-  console.log('>>> 4. Device B edits student name, pushes, Device A pulls update');
+  console.log('>>> 4. Local edits stay on local device and do not leak');
   const updatedStudents: Student[] = [
     { id: 1, name: 'Тестовый Студент 1 (Обновлен)' },
     { id: 2, name: 'Тестовый Студент 2' },
@@ -199,20 +193,18 @@ async function runTests() {
   ];
 
   deviceStarosta.setItem(`students_${testGroupId}`, JSON.stringify(updatedStudents));
-  await pushGroupCloudData({ students: updatedStudents }, testGroupId);
+  await pushGroupCloudData({ students: updatedStudents } as any, testGroupId);
 
-  // Switch to Device A
+  // Switch to Device A: Device A must not see Device B's local roster in cloud
   activeStorage = deviceAdmin;
   const adminFetched = await fetchGroupCloudData(true, testGroupId);
-  assert.strictEqual(adminFetched?.students?.[0].name, 'Тестовый Студент 1 (Обновлен)', 'Device A sees updated name');
-  const adminLocal = JSON.parse(deviceAdmin.getItem(`students_${testGroupId}`) || '[]');
-  assert.strictEqual(adminLocal[0].name, 'Тестовый Студент 1 (Обновлен)', 'Device A localStorage updated with new name');
-  console.log('✅ PASS: Roster edits propagate bidirectionally without data loss.\n');
+  assert.strictEqual((adminFetched as any).students, undefined, 'Cloud never returns students to Device A');
+  console.log('✅ PASS: Roster edits remain strictly local on the editing device.\n');
 
   // ----------------------------------------------------
-  // TEST 5: Pushing attendance records does NOT wipe students
+  // TEST 5: Pushing attendance via pushGroupCloudData is deprecated/ignored
   // ----------------------------------------------------
-  console.log('>>> 5. Pushing attendance records preserves existing students in cloud');
+  console.log('>>> 5. pushGroupCloudData does not push attendance or students');
   await pushGroupCloudData({
     attendance: [{
       docId: 'rec_att_1',
@@ -225,26 +217,21 @@ async function runTests() {
     }]
   }, testGroupId);
 
-  assert.strictEqual(mockCloudAttendanceBin.byGroup[testGroupId].records.length, 1, 'Attendance record saved');
-  assert.strictEqual(mockCloudAttendanceBin.byGroup[testGroupId].students.length, 3, 'Students preserved when attendance was pushed');
+  assert.strictEqual(mockCloudAttendanceBin.byGroup[testGroupId]?.students, undefined, 'Cloud has no students');
+  console.log('✅ PASS: pushGroupCloudData does not leak student records.\n');
+
   // ----------------------------------------------------
-  // TEST 6: AttendanceTracker cold start roster hydration
+  // TEST 6: Attendance data isolation
   // ----------------------------------------------------
-  console.log('>>> 6. AttendanceTracker cold start loads group roster from cloud');
+  console.log('>>> 6. Cold-start cloud fetch never populates student roster');
   const deviceC = new MemoryStorage();
   activeStorage = deviceC;
   assert.strictEqual(deviceC.getItem(`students_${testGroupId}`), null, 'Device C has empty localStorage on cold start');
 
-  // Simulate AttendanceTracker mount lifecycle
   const cloudData = await fetchGroupCloudData(false, testGroupId);
   assert(cloudData !== null, 'fetchGroupCloudData returned cloud payload');
-  assert(Array.isArray(cloudData.students) && cloudData.students.length > 0, 'Cloud returned non-empty students');
-  deviceC.setItem(`students_${testGroupId}`, JSON.stringify(cloudData.students));
-
-  const loadedStudents: Student[] = JSON.parse(deviceC.getItem(`students_${testGroupId}`) || '[]');
-  assert.strictEqual(loadedStudents.length, 3, 'Device C successfully hydrated 3 students for ingt-313');
-  assert.strictEqual(loadedStudents[0].name, 'Тестовый Студент 1 (Обновлен)', 'Student name preserved');
-  console.log('✅ PASS: AttendanceTracker cold start hydration loads and persists roster from cloud.\n');
+  assert.strictEqual((cloudData as any).students, undefined, 'Cloud does not contain students');
+  console.log('✅ PASS: 152-FZ zero-leakage compliance verified across all client sync tiers.\n');
 
   console.log('====================================================');
   console.log('   ALL ROSTER CLOUD SYNC TESTS PASSED (6/6) 🎉');

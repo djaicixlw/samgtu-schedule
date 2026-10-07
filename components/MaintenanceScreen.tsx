@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Wrench, RefreshCw, BookOpen, Key, Shield, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { verifyPinCode } from '../utils/auth';
+import { claimStaffRole } from '../utils/attendanceStorage';
 import { toast } from 'sonner';
 
 interface MaintenanceScreenProps {
@@ -63,8 +63,9 @@ export const MaintenanceScreen: React.FC<MaintenanceScreenProps> = ({
     setAuthError('');
 
     try {
-      const result = await verifyPinCode(adminPin.trim());
-      if (result && result.role === 'admin') {
+      const code = adminPin.trim();
+      const result = await claimStaffRole(code, 'admin');
+      if (result && result.ok && result.role === 'admin') {
         sessionStorage.setItem('admin_maintenance_bypass', 'true');
         toast.success('Авторизация успешна. Доступ открыт.');
         if (onAdminBypass) {
@@ -73,13 +74,13 @@ export const MaintenanceScreen: React.FC<MaintenanceScreenProps> = ({
           onContinueOffline();
         }
       } else {
-        setAuthError('Неверный PIN-код администратора');
+        setAuthError(result?.error || 'Неверный код доступа администратора');
         if (typeof window !== 'undefined' && (window as any).Telegram?.WebApp?.HapticFeedback) {
           (window as any).Telegram.WebApp.HapticFeedback.notificationOccurred('error');
         }
       }
     } catch (err) {
-      setAuthError('Ошибка проверки кода авторизации');
+      setAuthError('Ошибка проверки кода доступа');
     } finally {
       setIsAuthenticating(false);
     }
@@ -167,12 +168,11 @@ export const MaintenanceScreen: React.FC<MaintenanceScreenProps> = ({
             <div className="flex gap-2">
               <input
                 type="password"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={8}
+                inputMode="text"
+                maxLength={19}
                 value={adminPin}
                 onChange={(e) => setAdminPin(e.target.value)}
-                placeholder="PIN-код"
+                placeholder="XXXX-XXXX-XXXX-XXXX"
                 className="flex-1 px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                 autoFocus
               />

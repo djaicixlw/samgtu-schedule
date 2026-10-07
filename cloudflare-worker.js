@@ -145,18 +145,12 @@ export function sanitizeSyncPayload(type, rawData) {
             records: Array.isArray(grp.records) ? grp.records.slice(0, 500).map(r => sanitizeAttendanceRecord(r, gid)).filter(Boolean) : [],
             updatedAt: Number(grp.updatedAt) || now
           };
-          if (Array.isArray(grp.students)) {
-            cleanGroup.students = grp.students.slice(0, 100).map(s => sanitizeStudent(s)).filter(Boolean);
-          }
           res.byGroup[gid] = cleanGroup;
         }
       }
     }
     if (Array.isArray(rawData.records)) {
       res.records = rawData.records.slice(0, 500).map(r => sanitizeAttendanceRecord(r)).filter(Boolean);
-    }
-    if (Array.isArray(rawData.students)) {
-      res.students = rawData.students.slice(0, 100).map(s => sanitizeStudent(s)).filter(Boolean);
     }
     return res;
   }
@@ -308,8 +302,6 @@ export function getCorsHeaders(request, env, pathname = '') {
   let allowOrigin;
   if (origin && allowed.includes(origin)) {
     allowOrigin = origin;
-  } else if (!origin && pathname === '/report-error') {
-    allowOrigin = '*';
   } else {
     allowOrigin = allowed[0];
   }
@@ -344,6 +336,24 @@ export async function verifyFileSignature(fileId, exp, sig, secret) {
   return safeEqual(sig, expectedSig);
 }
 
+export async function deriveFileSigningKey(pepper) {
+  if (!pepper || typeof pepper !== 'string') {
+    throw new Error("ID_PEPPER is not configured");
+  }
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(pepper),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sigBuffer = await crypto.subtle.sign("HMAC", key, enc.encode("file-sign:v1"));
+  return Array.from(new Uint8Array(sigBuffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 export async function pbkdf2(secret, saltB64) {
   try {
     const cleanSecret = String(secret || '');
@@ -356,15 +366,6 @@ export async function pbkdf2(secret, saltB64) {
   } catch {
     return '';
   }
-}
-
-export async function hashPin(pin) {
-  const clean = String(pin || '').trim();
-  const encoder = new TextEncoder();
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(clean));
-  return Array.from(new Uint8Array(digest))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
 }
 
 export async function sha256Hex(str) {
@@ -496,8 +497,7 @@ export async function verifyTelegramInitData(initDataStr, botToken, options = {}
       return { ok: false, error: 'Invalid HMAC signature (tampered data)' };
     }
 
-    const isTestMode = options.isTestMode === true;
-    const ignoreAuthDate = options.ignoreAuthDate === true || (isTestMode && options.checkAuthDate !== true);
+    const ignoreAuthDate = options.ignoreAuthDate === true || options.isTestMode === true;
 
     const authDateStr = params.get('auth_date');
     const authDate = authDateStr ? parseInt(authDateStr, 10) : 0;
@@ -581,26 +581,31 @@ export async function createTelegramInitData(paramsObj, botToken) {
   return searchParams.toString();
 }
 
-export async function checkUserGroupAccess(appData, userId, groupId) {
-  if (!appData || !userId || !groupId) return false;
+export async function checkUserGroupAccess(appData, userBlindId, groupId) {
+  if (!appData || !userBlindId || !groupId) return false;
   const normalizedGroupId = String(groupId).toLowerCase();
 
-  const groupAuthRaw = await appData.get(`auth:${userId}:${normalizedGroupId}`);
-  const adminAuthRaw = await appData.get(`auth:${userId}:admin`);
-  const wildcardAuthRaw = await appData.get(`auth:${userId}:*`);
-
-  for (const raw of [groupAuthRaw, adminAuthRaw, wildcardAuthRaw]) {
-    if (!raw) continue;
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed.role === 'admin') return true;
-      if (parsed.role === 'starosta' && (!parsed.groupId || parsed.groupId.toLowerCase() === normalizedGroupId)) {
+  // Check admin staff
+  try {
+    const adminRaw = await appData.get("g:admin");
+    if (adminRaw) {
+      const adminObj = JSON.parse(adminRaw);
+      if (Array.isArray(adminObj?.staff) && adminObj.staff.includes(userBlindId)) {
         return true;
       }
-    } catch {
-      if (raw === 'admin' || raw === 'starosta') return true;
     }
-  }
+  } catch {}
+
+  // Check group staff
+  try {
+    const groupRaw = await appData.get("g:" + normalizedGroupId);
+    if (groupRaw) {
+      const groupObj = JSON.parse(groupRaw);
+      if (Array.isArray(groupObj?.staff) && groupObj.staff.includes(userBlindId)) {
+        return true;
+      }
+    }
+  } catch {}
 
   return false;
 }
@@ -614,9 +619,8 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    const isTestMode = Boolean(env && (env.TEST_MODE === 'true' || env.TEST_MODE === true || env.TELEGRAM_BOT_TOKEN === 'mock' || env.TELEGRAM_BOT_TOKEN === 'test'));
     const TELEGRAM_BOT_TOKEN = (env && env.TELEGRAM_BOT_TOKEN) ? env.TELEGRAM_BOT_TOKEN : "";
-    const BOT_TOKEN = isTestMode ? "" : TELEGRAM_BOT_TOKEN;
+    const BOT_TOKEN = TELEGRAM_BOT_TOKEN;
     const CHANNEL_ID = (env && env.TELEGRAM_CHANNEL_ID) ? env.TELEGRAM_CHANNEL_ID : "";
 
     const APP_SECRET = (env && (env.APP_SECRET || env.X_APP_KEY)) ? (env.APP_SECRET || env.X_APP_KEY) : null;
@@ -642,143 +646,10 @@ export default {
         });
       }
 
-      // 0a. Telegram WebApp HMAC Authentication & Role Assertion (POST /auth/pin)
+      // 0a. Telegram WebApp HMAC Authentication & Role Assertion (POST /auth/pin) - DEPRECATED (P0-02)
       if (url.pathname === "/auth/pin" && request.method === "POST") {
-        let body;
-        try {
-          body = await request.json();
-        } catch {
-          return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        const { pin, initData, targetGroupId } = body || {};
-        if (!pin || !initData) {
-          return new Response(JSON.stringify({ error: "Missing required fields: pin and initData" }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        const verifyResult = await verifyTelegramInitData(initData, TELEGRAM_BOT_TOKEN, { isTestMode });
-        if (!verifyResult.ok) {
-          return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        const user = verifyResult.user;
-        if (!user || !user.id) {
-          return new Response(JSON.stringify({ error: "Missing user in Telegram initData" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        if (!env || !env.APP_DATA) {
-          return new Response(JSON.stringify({ error: "Cloudflare KV APP_DATA namespace is not bound" }), {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        const assignedScope = targetGroupId ? String(targetGroupId).toLowerCase() : 'admin';
-        const rlKey = `rl:pin:${assignedScope}`;
-        const attemptsRaw = await env.APP_DATA.get(rlKey);
-        const attempts = attemptsRaw ? parseInt(attemptsRaw, 10) : 0;
-        if (attempts >= 5) {
-          return new Response(JSON.stringify({ error: "Too many attempts. Please try again later." }), {
-            status: 429,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        let role = null;
-        let assignedGroupId = targetGroupId ? String(targetGroupId).toLowerCase() : null;
-
-        if (assignedGroupId && assignedGroupId !== 'admin') {
-          const groupRecordRaw = await env.APP_DATA.get(`g:${assignedGroupId}`);
-          if (groupRecordRaw) {
-            try {
-              const groupData = JSON.parse(groupRecordRaw);
-              if (groupData && groupData.codeSalt && groupData.codeHash) {
-                const calcHash = await pbkdf2(pin, groupData.codeSalt);
-                if (await safeEqual(calcHash, groupData.codeHash)) {
-                  role = 'starosta';
-                }
-              }
-            } catch {}
-          }
-        } else {
-          let adminSalt = null;
-          let adminHash = null;
-
-          const adminRecordRaw = await env.APP_DATA.get('g:admin');
-          if (adminRecordRaw) {
-            try {
-              const adminData = JSON.parse(adminRecordRaw);
-              if (adminData && adminData.codeSalt && adminData.codeHash) {
-                adminSalt = adminData.codeSalt;
-                adminHash = adminData.codeHash;
-              }
-            } catch {}
-          }
-
-          if (!adminHash && env.ADMIN_CODE_HASH && env.ADMIN_CODE_SALT) {
-            adminHash = env.ADMIN_CODE_HASH;
-            adminSalt = env.ADMIN_CODE_SALT;
-          }
-
-          if (adminSalt && adminHash) {
-            const calcHash = await pbkdf2(pin, adminSalt);
-            if (await safeEqual(calcHash, adminHash)) {
-              role = 'admin';
-              assignedGroupId = 'admin';
-            }
-          }
-        }
-
-        if (!role) {
-          await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
-          return new Response(JSON.stringify({ error: "Invalid PIN code" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        await env.APP_DATA.delete(rlKey);
-
-        const TTL_30_DAYS = 30 * 24 * 60 * 60;
-        const sessionData = {
-          userId: user.id,
-          role,
-          groupId: assignedGroupId,
-          createdAt: Date.now()
-        };
-
-        await env.APP_DATA.put(`auth:${user.id}:${assignedGroupId}`, JSON.stringify(sessionData), {
-          expirationTtl: TTL_30_DAYS
-        });
-
-        if (role === 'admin') {
-          await env.APP_DATA.put(`auth:${user.id}:admin`, JSON.stringify(sessionData), {
-            expirationTtl: TTL_30_DAYS
-          });
-          await env.APP_DATA.put(`auth:${user.id}:*`, JSON.stringify(sessionData), {
-            expirationTtl: TTL_30_DAYS
-          });
-        }
-
-        return new Response(JSON.stringify({
-          ok: true,
-          role,
-          groupId: assignedGroupId,
-          userId: user.id
-        }), {
-          status: 200,
+        return new Response(JSON.stringify({ error: "Deprecated endpoint. Use /v3/staff/claim for authorization." }), {
+          status: 410,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       }
@@ -793,7 +664,7 @@ export default {
           });
         }
 
-        const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN, { isTestMode });
+        const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN);
         if (!verifyResult.ok) {
           return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
             status: 401,
@@ -896,34 +767,43 @@ export default {
 
           const rawGid = (gid && typeof gid === 'string') ? gid.trim().toLowerCase() : '';
           const CANONICAL_ALIASES = {
-            'faid-110': 'faid-310',
-            '24фад-110': 'faid-310',
-            '24фаид-110': 'faid-310',
+            // FAID (Факультет архитектуры и дизайна)
             '3-фаид-110': 'faid-310',
             '3-faid-110': 'faid-310',
             '3 фаид 110': 'faid-310',
             'фаид-110': 'faid-310',
+            'faid-110': 'faid-310',
+            '24фад-110': 'faid-310',
+            '24фаид-110': 'faid-310',
             'фаид-310': 'faid-310',
-            'htf-115': 'htf-215',
-            '2-htf-115': 'htf-215',
-            '2-хтф-115': 'htf-215',
-            '2 хтф 115': 'htf-215',
+            '3-фаид-310': 'faid-310',
+
+            // INGT (Институт нефтегазовых технологий)
             'ingt-1': 'ingt-301',
-            '3-ингт-110': 'ingt-310',
             '3-ингт-101': 'ingt-301',
+            '3-ingt-101': 'ingt-301',
+            '3-ингт-110': 'ingt-310',
+            '3-ingt-110': 'ingt-310',
             '3-ингт-111': 'ingt-311',
+            '3-ingt-111': 'ingt-311',
             '3-ингт-113': 'ingt-313',
+            '3-ingt-113': 'ingt-313',
             '2-ингт-109': 'ingt-209',
-            '3-иаит-108': 'iait-308'
+            '2-ingt-109': 'ingt-209',
+            'ingt-109': 'ingt-209',
+
+            // IAIT (Институт автоматики и информационных технологий)
+            '3-иаит-108': 'iait-308',
+            '3-iait-108': 'iait-308',
+
+            // HTF (Химико-технологический факультет)
+            '2 хтф 115': 'htf-215',
+            '2-хтф-115': 'htf-215',
+            '2-htf-115': 'htf-215',
+            'хтф-115': 'htf-215',
+            'htf-115': 'htf-215'
           };
           let targetGid = CANONICAL_ALIASES[rawGid] || rawGid;
-          if (targetGid.includes('фаид') || targetGid.includes('faid') || targetGid.includes('фад')) {
-            targetGid = 'faid-310';
-          } else if (targetGid.includes('хтф') || targetGid.includes('htf')) {
-            targetGid = 'htf-215';
-          } else if (targetGid.includes('иаит') || targetGid.includes('iait')) {
-            targetGid = 'iait-308';
-          }
 
           if (!targetGid) {
             await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
@@ -1621,7 +1501,7 @@ export default {
           });
         }
 
-        const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN, { isTestMode });
+        const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN);
         if (!verifyResult.ok) {
           return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
             status: 401,
@@ -1711,10 +1591,7 @@ export default {
             sentMessageId = tgJson.result.message_id;
           }
         }
-        if (!sentMessageId && isTestMode) {
-          sentMessageId = 12345;
-        }
-
+ 
         if (!sentMessageId && env && env.APP_DATA) {
           try {
             const reportKey = `report:${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -1759,7 +1636,7 @@ export default {
               headers: { ...corsHeaders, "Content-Type": "application/json" }
             });
           }
-        } else if (!isTestMode) {
+        } else {
           return new Response(JSON.stringify({ error: "Unauthorized: Webhook secret not configured" }), {
             status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1856,7 +1733,7 @@ export default {
           }
 
           if (type === "attendance" && !hasAppKey) {
-            const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
+            const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN);
             if (!verifyResult.ok) {
               return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
                 status: 401,
@@ -1871,7 +1748,15 @@ export default {
               });
             }
 
-            const isAuthorized = await checkUserGroupAccess(env.APP_DATA, userId, groupId);
+            if (!env || !env.ID_PEPPER) {
+              return new Response(JSON.stringify({ error: "Internal server error" }), {
+                status: 500,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+
+            const userBlindId = await blindId(env, userId);
+            const isAuthorized = await checkUserGroupAccess(env.APP_DATA, userBlindId, groupId);
             if (!isAuthorized) {
               return new Response(JSON.stringify({ error: "Access denied to group attendance" }), {
                 status: 403,
@@ -1902,6 +1787,14 @@ export default {
 
         // PUT or POST save data to Cloudflare KV with per-group isolation
         if (request.method === "PUT" || request.method === "POST") {
+          // P0-01: PUT /sync/attendance is permanently deprecated (410 Gone) in API v3
+          if (type === "attendance") {
+            return new Response(JSON.stringify({ error: "Deprecated endpoint. Use /v3/att for attendance synchronization." }), {
+              status: 410,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
           let userBlindId = null;
 
           if (!hasAppKey) {
@@ -1911,7 +1804,7 @@ export default {
                 headers: { ...corsHeaders, "Content-Type": "application/json" }
               });
             }
-            const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
+            const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN);
             if (!verifyResult.ok || !verifyResult.user?.id) {
               return new Response(JSON.stringify({ error: verifyResult.error || "Unauthorized: Invalid Telegram initData" }), {
                 status: 401,
@@ -1982,31 +1875,6 @@ export default {
             }
           }
 
-          if (type === "attendance" && initDataHeader) {
-            const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
-            if (!verifyResult.ok) {
-              return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
-                status: 401,
-                headers: { ...corsHeaders, "Content-Type": "application/json" }
-              });
-            }
-            const userId = verifyResult.user?.id;
-            if (!userId) {
-              return new Response(JSON.stringify({ error: "Access denied to group attendance" }), {
-                status: 403,
-                headers: { ...corsHeaders, "Content-Type": "application/json" }
-              });
-            }
-
-            const isAuthorized = await checkUserGroupAccess(env.APP_DATA, userId, groupId);
-            if (!isAuthorized) {
-              return new Response(JSON.stringify({ error: "Access denied to group attendance" }), {
-                status: 403,
-                headers: { ...corsHeaders, "Content-Type": "application/json" }
-              });
-            }
-          }
-
           const kvKey = `${type}:${groupId}`;
 
           // Mass Assignment Protection (Strict Whitelist DTO)
@@ -2029,14 +1897,6 @@ export default {
             updatedAt: Date.now()
           };
 
-          if (type === "attendance") {
-            if (incomingSlice.records !== undefined) groupSlice.records = incomingSlice.records;
-            else if (existingGroup.records !== undefined) groupSlice.records = existingGroup.records;
-
-            if (incomingSlice.students !== undefined) groupSlice.students = incomingSlice.students;
-            else if (existingGroup.students !== undefined) groupSlice.students = existingGroup.students;
-          }
-
           await env.APP_DATA.put(kvKey, JSON.stringify(groupSlice));
           return new Response(JSON.stringify({ ok: true, updatedAt: groupSlice.updatedAt }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2046,14 +1906,14 @@ export default {
 
       // 2. File Upload to Telegram Channel / Owner Relay (Bug Reports)
       if (url.pathname === "/upload" && request.method === "POST") {
-        if (!BOT_TOKEN && !isTestMode) {
+        if (!BOT_TOKEN) {
           return new Response(JSON.stringify({ error: "TELEGRAM_BOT_TOKEN is not configured" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
 
-        // Anti-DoS Rate Limiting for upload
+        // Anti-DoS Rate Limiting for upload (in-memory burst protection)
         const now = Date.now();
         if (isUploadRateLimited(now)) {
           return new Response(JSON.stringify({ error: "Too many upload requests. Please wait a moment." }), {
@@ -2067,32 +1927,50 @@ export default {
         let initVerified = false;
         let verifiedUserId = null;
         if (initDataHeader) {
-          const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
+          const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN);
           if (verifyResult.ok && verifyResult.user?.id) {
             initVerified = true;
             verifiedUserId = verifyResult.user.id;
           }
         }
 
-        const originHeader = request.headers.get("Origin") || "";
-        const isFromAllowedWeb = Boolean(originHeader && (
-          originHeader.includes("aleblll.github.io") ||
-          originHeader.includes("djaicixlw.github.io") ||
-          originHeader.includes("localhost")
-        ));
-
-        if (!hasAppKey && !initVerified && !isFromAllowedWeb && !isTestMode) {
+        // P0-03: Origin check completely removed from authorization. Must have valid initData or X-App-Key.
+        if (!hasAppKey && !initVerified) {
           return new Response(JSON.stringify({ error: "Unauthorized: upload requires valid initData or X-App-Key" }), {
             status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
 
+        // P0-03: Rate limiting by blindId in KV with TTL
+        let userBlindId = null;
+        if (verifiedUserId) {
+          if (!env || !env.ID_PEPPER) {
+            return new Response(JSON.stringify({ error: "Internal server error" }), {
+              status: 500,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+          userBlindId = await blindId(env, verifiedUserId);
+          if (env.APP_DATA && userBlindId) {
+            const rlKey = `rl:up:${userBlindId}`;
+            const countRaw = await env.APP_DATA.get(rlKey);
+            const count = countRaw ? parseInt(countRaw, 10) : 0;
+            if (count >= 10) {
+              return new Response(JSON.stringify({ error: "Too many upload requests. Please wait a moment." }), {
+                status: 429,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+            await env.APP_DATA.put(rlKey, String(count + 1), { expirationTtl: 600 });
+          }
+        }
+
         let formData;
         try {
           formData = await request.formData();
         } catch {
-          return new Response(JSON.stringify({ error: "Invalid multipart form data" }), {
+          return new Response(JSON.stringify({ error: "Invalid form data" }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -2129,24 +2007,19 @@ export default {
 
         let data;
         let resStatus = 200;
-        if (isTestMode) {
-          data = { ok: true, result: { message_id: 1234, document: { file_id: "mock_file_upload_123" } } };
-          recordUploadSent(now);
-        } else {
-          try {
-            const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-              method: "POST",
-              body: formData,
-            });
-            data = await tgRes.json().catch(() => ({}));
-            resStatus = tgRes.status;
-            if (tgRes.ok && data && data.ok) {
-              recordUploadSent(now);
-            }
-          } catch (fetchErr) {
-            data = { ok: false, description: String(fetchErr) };
-            resStatus = 500;
+        try {
+          const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+            method: "POST",
+            body: formData,
+          });
+          data = await tgRes.json().catch(() => ({}));
+          resStatus = tgRes.status;
+          if (tgRes.ok && data && data.ok) {
+            recordUploadSent(now);
           }
+        } catch (fetchErr) {
+          data = { ok: false, description: String(fetchErr) };
+          resStatus = 500;
         }
 
         // If Telegram delivery failed (e.g. 400 Bad Request: chat not found), do NOT fail the user!
@@ -2187,7 +2060,13 @@ export default {
           const doc = data.result.document || (data.result.photo ? data.result.photo[data.result.photo.length - 1] : null);
           if (doc && doc.file_id) {
             const exp = Math.floor(Date.now() / 1000) + (14 * 86400); // 14 days TTL
-            const signingKey = APP_SECRET || TELEGRAM_BOT_TOKEN || (env && env.ID_PEPPER) || "samgtu_secret_salt_2026";
+            if (!env || !env.ID_PEPPER) {
+              return new Response(JSON.stringify({ error: "Internal server error" }), {
+                status: 500,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+            const signingKey = await deriveFileSigningKey(env.ID_PEPPER);
             const sig = await signFileUrl(doc.file_id, exp, signingKey);
             const fileName = doc.file_name || "file";
             const directUrl = `${url.origin}/file?file_id=${doc.file_id}&exp=${exp}&sig=${sig}&download=1&filename=${encodeURIComponent(fileName)}`;
@@ -2211,7 +2090,7 @@ export default {
           });
         }
 
-        if (!BOT_TOKEN && !isTestMode) {
+        if (!BOT_TOKEN) {
           return new Response(JSON.stringify({ error: "TELEGRAM_BOT_TOKEN is not configured" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -2248,7 +2127,7 @@ export default {
         const initDataHeader = extractInitDataFromRequest(request);
         let targetUserId = null;
         if (initDataHeader) {
-          const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
+          const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN);
           if (verifyResult.ok && verifyResult.user && verifyResult.user.id) {
             targetUserId = verifyResult.user.id;
           }
@@ -2256,62 +2135,37 @@ export default {
 
         // Step 1: If user initData is valid, try direct send to their PM
         if (targetUserId) {
-          if (!BOT_TOKEN && isTestMode) {
-            tgJson = {
-              ok: true,
-              result: {
-                document: {
-                  file_id: "mock_export_file_12345",
-                  file_name: String(rawFileName)
-                }
-              }
-            };
-            sentToUser = true;
-          } else {
-            const userFormData = new FormData();
-            userFormData.append("chat_id", String(targetUserId));
-            userFormData.append("document", file, String(rawFileName));
-            userFormData.append("caption", String(caption));
+          const userFormData = new FormData();
+          userFormData.append("chat_id", String(targetUserId));
+          userFormData.append("document", file, String(rawFileName));
+          userFormData.append("caption", String(caption));
 
-            try {
-              const userTgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-                method: "POST",
-                body: userFormData
-              });
-              tgJson = await userTgRes.json();
-              if (tgJson && tgJson.ok) {
-                sentToUser = true;
-              }
-            } catch (e) {
-              console.warn("Direct send to user chat failed, falling back to private storage chat:", e);
+          try {
+            const userTgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+              method: "POST",
+              body: userFormData
+            });
+            tgJson = await userTgRes.json();
+            if (tgJson && tgJson.ok) {
+              sentToUser = true;
             }
+          } catch (e) {
+            console.warn("Direct send to user chat failed, falling back to private storage chat:", e);
           }
         }
 
         // Step 2: Fallback to private storage chat if direct send failed or initData is absent
         if (!sentToUser) {
-          if (!BOT_TOKEN && isTestMode) {
-            tgJson = {
-              ok: true,
-              result: {
-                document: {
-                  file_id: "mock_export_file_12345",
-                  file_name: String(rawFileName)
-                }
-              }
-            };
-          } else {
-            const fallbackFormData = new FormData();
-            fallbackFormData.append("chat_id", String(PRIVATE_STORAGE_CHAT));
-            fallbackFormData.append("document", file, String(rawFileName));
-            fallbackFormData.append("caption", `[Архив ведомостей] ${caption}`);
+          const fallbackFormData = new FormData();
+          fallbackFormData.append("chat_id", String(PRIVATE_STORAGE_CHAT));
+          fallbackFormData.append("document", file, String(rawFileName));
+          fallbackFormData.append("caption", `[Архив ведомостей] ${caption}`);
 
-            const fallbackRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-              method: "POST",
-              body: fallbackFormData
-            });
-            tgJson = await fallbackRes.json();
-          }
+          const fallbackRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+            method: "POST",
+            body: fallbackFormData
+          });
+          tgJson = await fallbackRes.json();
         }
 
         if (!tgJson || !tgJson.ok) {
@@ -2324,7 +2178,13 @@ export default {
         const fileId = tgJson.result.document.file_id;
         const fileName = tgJson.result.document.file_name || rawFileName;
 
-        const signingKey = APP_SECRET || TELEGRAM_BOT_TOKEN;
+        if (!env || !env.ID_PEPPER) {
+          return new Response(JSON.stringify({ error: "Internal server error" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        const signingKey = await deriveFileSigningKey(env.ID_PEPPER);
         const exp = Math.floor(Date.now() / 1000) + 600;
         const sig = await signFileUrl(fileId, exp, signingKey);
 
@@ -2354,7 +2214,7 @@ export default {
 
         let isValidSig = false;
         if (initDataHeader && TELEGRAM_BOT_TOKEN) {
-          const initVerify = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN, { isTestMode });
+          const initVerify = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN);
           if (initVerify.ok) {
             isValidSig = true;
           }
@@ -2371,22 +2231,12 @@ export default {
             return new Response("Expired file link", { status: 403, headers: corsHeaders });
           }
 
-          if (isTestMode && sig === "mock-valid") {
-            isValidSig = true;
-          } else {
-            if (APP_SECRET) {
-              isValidSig = await verifyFileSignature(fileId, exp, sig, APP_SECRET);
-            }
-            if (!isValidSig && TELEGRAM_BOT_TOKEN) {
-              isValidSig = await verifyFileSignature(fileId, exp, sig, TELEGRAM_BOT_TOKEN);
-            }
-            if (!isValidSig && env && env.ID_PEPPER) {
-              isValidSig = await verifyFileSignature(fileId, exp, sig, env.ID_PEPPER);
-            }
-            if (!isValidSig) {
-              isValidSig = await verifyFileSignature(fileId, exp, sig, "samgtu_secret_salt_2026");
-            }
+          if (!env || !env.ID_PEPPER) {
+            return new Response("Internal server error", { status: 500, headers: corsHeaders });
           }
+
+          const signingKey = await deriveFileSigningKey(env.ID_PEPPER);
+          isValidSig = await verifyFileSignature(fileId, exp, sig, signingKey);
         }
 
         if (!isValidSig) {
@@ -2406,16 +2256,6 @@ export default {
         }
 
         if (!BOT_TOKEN) {
-          if (isTestMode) {
-            return new Response("MOCK_FILE_CONTENT", {
-              headers: {
-                ...corsHeaders,
-                "Content-Type": contentType,
-                "Content-Disposition": `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${utf8EncodedName}`,
-                "Cache-Control": "private, max-age=3600"
-              }
-            });
-          }
           return new Response("TELEGRAM_BOT_TOKEN is not configured", { status: 500, headers: corsHeaders });
         }
 
@@ -2482,7 +2322,7 @@ export default {
           });
         }
 
-        if (!BOT_TOKEN && !isTestMode) {
+        if (!BOT_TOKEN) {
           return new Response(JSON.stringify({ error: "TELEGRAM_BOT_TOKEN is not configured" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2506,13 +2346,6 @@ export default {
         if (!allowedChats.has(targetChatId)) {
           return new Response(JSON.stringify({ error: "Forbidden: target chat_id must match system channels" }), {
             status: 403,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        if (!BOT_TOKEN && isTestMode) {
-          return new Response(JSON.stringify({ ok: true, result: { message_id: 12345 } }), {
-            status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }

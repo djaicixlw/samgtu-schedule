@@ -3,13 +3,18 @@ import { AttendanceRecord, STUDENTS_REGISTRY } from '../attendance';
 import { SAMGTU_GROUP_MAP } from './samgtuGroupMap';
 import { convertOfficialSamgtuToWeekData } from './samgtuParser';
 
-export const WORKER_BASE = 'https://floral-union-26d1.alexeyberezin2.workers.dev';
+import { WORKER_BASE, getAttendanceApiBase } from './attendanceStorage';
+
+export { WORKER_BASE };
 
 // Primary sync through Cloudflare Worker proxy (100% CORS compliant, zero rate limits, reliable worldwide)
-const ENDPOINTS = {
-  schedule: `${WORKER_BASE}/sync/schedule`,
-  homework: `${WORKER_BASE}/sync/homework`,
-  attendance: `${WORKER_BASE}/sync/attendance`
+const getEndpoints = () => {
+  const base = getAttendanceApiBase();
+  return {
+    schedule: base ? `${base}/sync/schedule` : '/sync/schedule',
+    homework: base ? `${base}/sync/homework` : '/sync/homework',
+    attendance: base ? `${base}/sync/attendance` : '/sync/attendance'
+  };
 };
 
 export interface GroupCloudData {
@@ -19,7 +24,6 @@ export interface GroupCloudData {
   scheduleOverrides: Record<string, Partial<Lesson>>;
   subjectTeachers: Record<string, string>;
   attendance: AttendanceRecord[];
-  students?: Student[];
   lastUpdated?: number;
 }
 
@@ -117,8 +121,6 @@ export const getLocalBackup = (groupId = 'ingt-310'): GroupCloudData => {
     const localOv = ov ? JSON.parse(ov) : {};
     const localSt = st ? JSON.parse(st) : {};
     const localAtt: AttendanceRecord[] = att ? JSON.parse(att) : [];
-    const stu = localStorage.getItem(`students_${groupId}`);
-    const localStu: Student[] = stu ? JSON.parse(stu) : (STUDENTS_REGISTRY[groupId] || []);
 
     const hwMap = new Map<string, HomeworkItem>();
     defaultHw.forEach(it => { if (it && it.id && !deletedSet.has(it.id)) hwMap.set(it.id, { ...it, groupId: it.groupId || groupId }); });
@@ -133,7 +135,6 @@ export const getLocalBackup = (groupId = 'ingt-310'): GroupCloudData => {
       scheduleOverrides: sanitizeOverrides({ ...defaultOv, ...localOv }),
       subjectTeachers: sanitizeTeachers({ ...defaultSt, ...localSt }, groupId),
       attendance: Array.from(attMap.values()),
-      students: localStu,
       lastUpdated: 0
     };
   } catch (e) {
@@ -141,17 +142,11 @@ export const getLocalBackup = (groupId = 'ingt-310'): GroupCloudData => {
     try {
       safeDeletedSet = new Set(JSON.parse(localStorage.getItem(`deleted_hw_${groupId}`) || '[]'));
     } catch {}
-    let localStu: Student[] = [];
-    try {
-      const stu = localStorage.getItem(`students_${groupId}`);
-      localStu = stu ? JSON.parse(stu) : (STUDENTS_REGISTRY[groupId] || []);
-    } catch {}
     return {
       homework: groupId === 'ingt-310' ? SEED_HOMEWORK.filter(it => it && it.id && !safeDeletedSet.has(it.id)) : [],
       scheduleOverrides: groupId === 'ingt-310' ? sanitizeOverrides(SEED_SCHEDULE_OVERRIDES) : {},
       subjectTeachers: sanitizeTeachers(getSeedSubjectTeachers(groupId), groupId),
       attendance: groupId === 'ingt-310' ? SEED_ATTENDANCE : [],
-      students: localStu,
       lastUpdated: 0
     };
   }
@@ -274,17 +269,17 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
 
   try {
     const gq = `groupId=${encodeURIComponent(groupId)}`;
-    const [schedRes, hwRes, attRes] = await Promise.allSettled([
-      fetchJson(`${ENDPOINTS.schedule}?${gq}`, 4000, signal),
-      fetchJson(`${ENDPOINTS.homework}?${gq}`, 4000, signal),
-      fetchJson(`${ENDPOINTS.attendance}?${gq}`, 4000, signal)
+    const endpoints = getEndpoints();
+    const [schedRes, hwRes] = await Promise.allSettled([
+      fetchJson(`${endpoints.schedule}?${gq}`, 4000, signal),
+      fetchJson(`${endpoints.homework}?${gq}`, 4000, signal)
     ]);
 
     if (signal?.aborted) return null;
 
     let cloudScheduleOverrides: Record<string, Partial<Lesson>> = localBackup.scheduleOverrides || {};
     let cloudSubjectTeachers: Record<string, string> = localBackup.subjectTeachers || {};
-    let serverTimestamp = (schedRes.status === 'fulfilled' && schedRes.value) || (hwRes.status === 'fulfilled' && hwRes.value) || (attRes.status === 'fulfilled' && attRes.value) ? now : 0;
+    let serverTimestamp = (schedRes.status === 'fulfilled' && schedRes.value) || (hwRes.status === 'fulfilled' && hwRes.value) ? now : 0;
 
     if (schedRes.status === 'fulfilled' && schedRes.value) {
       const d = parseCloudPayload(schedRes.value);
@@ -376,40 +371,7 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
       }
     }
 
-    let cloudAttendance: AttendanceRecord[] = localBackup.attendance || [];
-    let cloudStudents: Student[] = localBackup.students || [];
-    if (attRes.status === 'fulfilled' && attRes.value) {
-      const d = parseCloudPayload(attRes.value);
-      if (d && typeof d === 'object') {
-        let rawRecords: any[] = [];
-        if (d.byGroup && d.byGroup[groupId] && Array.isArray(d.byGroup[groupId].records)) {
-          rawRecords = d.byGroup[groupId].records;
-        } else if (Array.isArray(d.records)) {
-          rawRecords = d.records.filter((a: any) => (a.groupId || 'ingt-310') === groupId);
-        }
-
-        cloudAttendance = rawRecords.map((a: any) => ({
-          docId: String(a.docId || `${groupId}_${a.date}_${a.lessonId}`),
-          groupId: String(a.groupId || groupId),
-          date: String(a.date || ''),
-          lessonId: String(a.lessonId || ''),
-          absentStudentIds: Array.isArray(a.absentStudentIds) ? a.absentStudentIds : [],
-          excusedStudentIds: Array.isArray(a.excusedStudentIds) ? a.excusedStudentIds : [],
-          isCancelled: !!a.isCancelled,
-          updatedAt: a.updatedAt,
-          updatedBy: a.updatedBy
-        }));
-        try { localStorage.setItem(`attendance_${groupId}`, JSON.stringify(cloudAttendance)); } catch (e) {}
-
-        if (d.byGroup && d.byGroup[groupId] && Array.isArray(d.byGroup[groupId].students)) {
-          const rawStudents = d.byGroup[groupId].students;
-          cloudStudents = rawStudents
-            .map((s: any) => ({ id: Number(s.id), name: String(s.name || '').trim() }))
-            .filter((s: Student) => s.id && s.name);
-          try { localStorage.setItem(`students_${groupId}`, JSON.stringify(cloudStudents)); } catch (e) {}
-        }
-      }
-    }
+    const cloudAttendance: AttendanceRecord[] = localBackup.attendance || [];
 
     const result: GroupCloudData = {
       homework: cloudHomework,
@@ -417,7 +379,6 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
       scheduleOverrides: cloudScheduleOverrides,
       subjectTeachers: cloudSubjectTeachers,
       attendance: cloudAttendance,
-      students: cloudStudents,
       lastUpdated: serverTimestamp
     };
 
@@ -445,7 +406,8 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
       : sanitizeTeachers({ ...(lastFetchedDataMap[groupId]?.subjectTeachers || {}), ...(local.subjectTeachers || {}) }, groupId);
 
     promises.push((async () => {
-      return await putJson(`${ENDPOINTS.schedule}?groupId=${encodeURIComponent(groupId)}`, {
+      const endpoints = getEndpoints();
+      return await putJson(`${endpoints.schedule}?groupId=${encodeURIComponent(groupId)}`, {
         byGroup: {
           [groupId]: {
             overrides,
@@ -498,8 +460,9 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
     }));
 
     promises.push((async () => {
+      const endpoints = getEndpoints();
       const cleanItems = sanitizedHw.filter(it => !allDeleted.includes(it.id));
-      return await putJson(`${ENDPOINTS.homework}?groupId=${encodeURIComponent(groupId)}`, {
+      return await putJson(`${endpoints.homework}?groupId=${encodeURIComponent(groupId)}`, {
         byGroup: {
           [groupId]: {
             items: cleanItems,
@@ -511,28 +474,6 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
     })());
   }
 
-  // 3. Attendance & Roster (Students) push with multi-group preservation
-  if (partialUpdate.attendance !== undefined || partialUpdate.students !== undefined) {
-    const updatedAtt = partialUpdate.attendance !== undefined 
-      ? partialUpdate.attendance.map(r => ({ ...r, groupId: r.groupId || groupId }))
-      : undefined;
-    const updatedStudents = partialUpdate.students !== undefined
-      ? partialUpdate.students
-          .map(s => ({ id: Number(s.id), name: String(s.name || '').trim().slice(0, 100) }))
-          .filter(s => s.id && s.name)
-      : undefined;
-
-    promises.push((async () => {
-      const groupSlice: any = { updatedAt: Date.now() };
-      if (updatedAtt !== undefined) groupSlice.records = updatedAtt;
-      if (updatedStudents !== undefined) groupSlice.students = updatedStudents;
-      return await putJson(`${ENDPOINTS.attendance}?groupId=${encodeURIComponent(groupId)}`, {
-        byGroup: {
-          [groupId]: groupSlice
-        }
-      });
-    })());
-  }
 
   if (promises.length === 0) return true;
 

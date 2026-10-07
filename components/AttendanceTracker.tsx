@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { ClipboardCheck, Download, FileText, Table as TableIcon, Copy } from 'lucide-react';
+import { ClipboardCheck, Download, FileText, Table as TableIcon, Copy, Shield } from 'lucide-react';
 import { STUDENTS_REGISTRY, useAttendance, BLOCKS, getSemesterWeek, getDayName, getSamaraISODate } from '../attendance';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES } from '../constants';
 import { Lesson, Student, GroupConfig } from '../types';
 import { toast } from 'sonner';
-import { fetchGroupCloudData } from '../utils/cloudSync';
 import { getLocalStudents, syncAttendanceRecordsToV3 } from '../utils/attendanceStorage';
 
 interface AttendanceTrackerProps {
@@ -13,6 +12,7 @@ interface AttendanceTrackerProps {
   userEmail: string | null;
   currentGroupId: string;
   refreshTrigger: number;
+  onNavigateToGroup?: () => void;
 }
 
 const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({ 
@@ -20,7 +20,8 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   userRole = 'student', 
   userEmail, 
   currentGroupId, 
-  refreshTrigger 
+  refreshTrigger,
+  onNavigateToGroup
 }) => {
   const [activeTab, setActiveTab] = useState<'mark' | 'report' | 'details'>('mark');
   const [selectedBlockId, setSelectedBlockId] = useState<number>(1);
@@ -66,23 +67,9 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
 
     setStudents(loadInitialStudents(currentGroupId));
-
-    let isCancelled = false;
-    fetchGroupCloudData(false, currentGroupId).then(cloudData => {
-      if (isCancelled || !cloudData) return;
-      if (Array.isArray(cloudData.students) && cloudData.students.length > 0) {
-        const cloudStudents = getHealedStudents(currentGroupId, cloudData.students);
-        setStudents(cloudStudents);
-        try {
-          localStorage.setItem(`students_${currentGroupId}`, JSON.stringify(cloudStudents));
-        } catch (e) {}
-      }
-    }).catch(console.warn);
-
-    return () => {
-      isCancelled = true;
-    };
   }, [currentGroupId, refreshTrigger]);
+
+  const isRosterAnonymous = students.length > 0 && students.every(s => /^Студент\s+\d+$/i.test(s.name.trim()));
 
   // Initial and reactive background sync with V3 Blind Server for starosta/admin
   useEffect(() => {
@@ -179,8 +166,19 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     e.stopPropagation();
     if (!canEdit) return;
     const record = getAttendance(selectedDate, lessonId);
-    markAttendance(selectedDate, lessonId, record.absentStudentIds, record.excusedStudentIds, !record.isCancelled);
+    const willBeCancelled = !record.isCancelled;
+
+    if (willBeCancelled) {
+      const lessonName = selectedLesson?.subject || 'эту пару';
+      const confirmed = window.confirm(
+        `Вы уверены, что хотите отменить пару «${lessonName}» на ${selectedDate} для всей группы?\n\nОтмена будет синхронизирована с группой и пропуски на это занятие начисляться не будут.`
+      );
+      if (!confirmed) return;
+    }
+
+    markAttendance(selectedDate, lessonId, record.absentStudentIds, record.excusedStudentIds, willBeCancelled);
     syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
+    toast.success(willBeCancelled ? 'Пара отмечена как отменённая' : 'Пара восстановлена');
   };
 
   // Export official Word (.docx) document
@@ -322,6 +320,33 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
           </button>
         </div>
       </div>
+
+      {/* B-04 Onboarding Banner for Anonymous Placeholders */}
+      {isRosterAnonymous && (
+        <div className="bg-indigo-50/90 dark:bg-indigo-950/40 border border-indigo-200/90 dark:border-indigo-800/60 rounded-3xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 bg-indigo-100 dark:bg-indigo-900/60 rounded-2xl text-indigo-600 dark:text-indigo-400 shrink-0">
+              <Shield className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-indigo-950 dark:text-indigo-200">
+                Отображаются системные номера (политика 152-ФЗ Zero-Knowledge)
+              </h4>
+              <p className="text-xs text-indigo-800/80 dark:text-indigo-300/80 mt-0.5 leading-relaxed">
+                Реальные имена и фамилии не передаются в облако. {canEdit ? 'Как староста, вы можете настроить список фамилий группы — он сохранится только в локальной памяти вашего браузера.' : 'Староста группы может заполнить список фамилий локально на своём устройстве.'}
+              </p>
+            </div>
+          </div>
+          {canEdit && onNavigateToGroup && (
+            <button
+              onClick={onNavigateToGroup}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shrink-0 transition-colors shadow-xs cursor-pointer"
+            >
+              Настроить список группы
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Mode Navigation Tabs */}
       <div className="flex bg-slate-200/70 dark:bg-slate-800 p-1 rounded-2xl border border-slate-200/60 dark:border-transparent">

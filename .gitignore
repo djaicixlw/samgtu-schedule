@@ -39,6 +39,7 @@ android/app/google-services.json
 # Environment variables and secrets
 .env
 .env.*
+!.env.example
 *.env
 .env.local
 .dev.vars
@@ -56,3 +57,7 @@ diag/
 samgtu_schedule/
 kv-group-codes.json
 .review-out/
+
+# Резервные копии KV (scripts/kv-backup.mjs)
+backups/
+*.kvbackup

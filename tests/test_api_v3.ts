@@ -10,7 +10,8 @@ import worker, {
   createTelegramInitData,
   pbkdf2,
   encryptChatId,
-  decryptChatId
+  decryptChatId,
+  checkUserGroupAccess
 } from '../cloudflare-worker.js';
 
 let passed = 0;
@@ -688,6 +689,48 @@ assert((await callSync('PUT', 'schedule', { 'X-Telegram-Init-Data': elderInitDat
 
 // 15.6 Admin (ADMIN_BLIND_ID) can write homework and schedule
 assert((await callSync('PUT', 'homework', { 'X-Telegram-Init-Data': adminInitData }, { items: [] }, syncEnvWithAdmin)).status === 200, 'PUT /sync/homework by ADMIN_BLIND_ID returns 200 OK');
+
+// ------------------------------------------------------------
+// 16. User Group Access Control (checkUserGroupAccess) & Deprecated Endpoints
+// ------------------------------------------------------------
+console.log('\n--- 16. Access Control by userBlindId & Deprecated Routes ---');
+
+// 16.1 checkUserGroupAccess checks g:{gid}.staff by userBlindId
+await mockAppData.put('g:test-grp-access', JSON.stringify({ staff: [elderBlindId] }));
+assert(await checkUserGroupAccess(mockAppData, elderBlindId, 'test-grp-access') === true, 'checkUserGroupAccess grants access to group staff member');
+assert(await checkUserGroupAccess(mockAppData, student1BlindId, 'test-grp-access') === false, 'checkUserGroupAccess denies access to non-staff user');
+
+// 16.2 checkUserGroupAccess checks g:admin.staff by userBlindId
+await mockAppData.put('g:admin', JSON.stringify({ staff: [adminBlindIdCalculated] }));
+assert(await checkUserGroupAccess(mockAppData, adminBlindIdCalculated, 'test-grp-access') === true, 'checkUserGroupAccess grants global admin access to any group');
+assert(await checkUserGroupAccess(mockAppData, adminBlindIdCalculated, 'other-arbitrary-group') === true, 'checkUserGroupAccess grants global admin access to arbitrary groups');
+
+// 16.3 checkUserGroupAccess fails safe on invalid inputs or missing group
+assert(await checkUserGroupAccess(mockAppData, '', 'test-grp-access') === false, 'checkUserGroupAccess rejects empty userBlindId');
+assert(await checkUserGroupAccess(mockAppData, elderBlindId, '') === false, 'checkUserGroupAccess rejects empty groupId');
+assert(await checkUserGroupAccess(null as any, elderBlindId, 'test-grp-access') === false, 'checkUserGroupAccess rejects null appData');
+assert(await checkUserGroupAccess(mockAppData, elderBlindId, 'nonexistent-group-xyz') === false, 'checkUserGroupAccess returns false for nonexistent group');
+
+// 16.4 Verify PUT /sync/attendance returns 410 Gone (P0-01)
+const putAttRes = await worker.fetch(new Request('https://worker.test/sync/attendance?groupId=test-grp-access', {
+  method: 'PUT',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-App-Key': 'ci-secret-key-999'
+  },
+  body: JSON.stringify({ byGroup: { 'test-grp-access': { records: [] } } })
+}), syncEnv);
+assert(putAttRes.status === 410, 'PUT /sync/attendance is deprecated and returns 410 Gone');
+
+// 16.5 Verify POST /auth/pin returns 410 Gone (P0-02)
+const postPinRes = await worker.fetch(new Request('https://worker.test/auth/pin', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ pin: '839124' })
+}), mockEnv);
+assert(postPinRes.status === 410, 'POST /auth/pin is deprecated and returns 410 Gone');
 
 // ============================================================
 // Summary

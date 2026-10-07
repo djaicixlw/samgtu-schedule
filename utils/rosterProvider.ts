@@ -1,6 +1,5 @@
 import { Student } from '../types';
 import { STUDENTS_REGISTRY } from '../attendance';
-import { fetchGroupCloudData, pushGroupCloudData } from './cloudSync';
 import { getLocalStudents } from './attendanceStorage';
 
 /**
@@ -82,33 +81,13 @@ export class LocalCloudRosterProvider implements RosterProvider {
       console.warn(`[LocalCloudRosterProvider] Error reading local storage for ${groupId}:`, e);
     }
 
-    // Step 2: Fetch from cloud gateway
-    try {
-      const cloudData = await fetchGroupCloudData(false, groupId);
-      if (cloudData && Array.isArray(cloudData.students) && cloudData.students.length > 0) {
-        const healed = this.healRoster(groupId, cloudData.students);
-        try {
-          if (typeof localStorage !== 'undefined') {
-            localStorage.setItem(`students_${groupId}`, JSON.stringify(healed));
-          }
-        } catch (e) {
-          console.warn(`[LocalCloudRosterProvider] Error writing cloud cache for ${groupId}:`, e);
-        }
-        return healed;
-      }
-    } catch (e) {
-      console.warn(`[LocalCloudRosterProvider] Cloud sync error for ${groupId}:`, e);
-    }
-
-    // Step 3: Static registry fallback
+    // Step 2: Static registry fallback (student roster is local-only under 152-FZ / P0-01)
     const staticList = STUDENTS_REGISTRY[groupId] || [];
     return [...staticList];
   }
 
   /**
-   * Persists roster:
-   * 1. Writes to localStorage (`students_${groupId}`).
-   * 2. Dispatches update to cloud backend via pushGroupCloudData({ students }, groupId).
+   * Persists roster strictly to local device storage (152-FZ / P0-01 compliant).
    */
   async saveRoster(groupId: string, students: Student[]): Promise<boolean> {
     if (!groupId) return false;
@@ -120,13 +99,7 @@ export class LocalCloudRosterProvider implements RosterProvider {
       }
     } catch (e) {
       console.warn(`[LocalCloudRosterProvider] Error saving local roster for ${groupId}:`, e);
-    }
-
-    // 2) Cloud push
-    try {
-      await pushGroupCloudData({ students }, groupId);
-    } catch (e) {
-      console.warn(`[LocalCloudRosterProvider] Error pushing roster to cloud for ${groupId}:`, e);
+      return false;
     }
 
     return true;

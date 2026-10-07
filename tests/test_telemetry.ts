@@ -185,10 +185,13 @@ async function runTelemetryTests() {
   console.log('\n--- 3. Cloudflare Worker Fetch Handler Integration ---');
   clearWorkerRateLimits();
 
-  // Test OPTIONS CORS preflight
-  const corsReq = new Request('https://worker.local/report-error', { method: 'OPTIONS' });
+  // Test OPTIONS CORS preflight with explicit allowed origin (R-007: no wildcard *)
+  const corsReq = new Request('https://worker.local/report-error', { 
+    method: 'OPTIONS',
+    headers: { 'Origin': 'https://djaicixlw.github.io' }
+  });
   const corsRes = await worker.fetch(corsReq, {});
-  check('OPTIONS returns 200 with CORS headers', corsRes.status === 200 && corsRes.headers.get('Access-Control-Allow-Origin') === '*');
+  check('OPTIONS returns 200 with explicit CORS allowlist header', corsRes.status === 200 && corsRes.headers.get('Access-Control-Allow-Origin') === 'https://djaicixlw.github.io');
 
   // Test missing message validation
   const invalidReq = new Request('https://worker.local/report-error', {

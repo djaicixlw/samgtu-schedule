@@ -2,7 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, Suspense, useRef 
 import { ThemePref, getThemePref, setThemePref, syncTelegramTheme } from './utils/theme';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES, createEmptyWeek } from './constants';
 import { getSemesterWeek, getWeekDateRange, getDayISODate, useAttendance, getSamaraISODate } from './attendance';
-import { getSamaraDate } from './utils/samaraDate';
+import { getSamaraDate, getSemesterConfig } from './utils/samaraDate';
 import { useNow } from './utils/useNow';
 import SwipeableDays from './components/SwipeableDays';
 import BottomNav from './components/BottomNav';
@@ -12,10 +12,9 @@ import { UserRole, Lesson, GroupConfig, WeekData } from './types';
 import { TeacherAssignmentScope } from './components/EditLessonModal';
 import { fetchGroupCloudData, pushGroupCloudData, sanitizeTeachers, sanitizeOverrides, WORKER_BASE } from './utils/cloudSync';
 import { SEED_SCHEDULE_OVERRIDES, SEED_SUBJECT_TEACHERS, getSeedSubjectTeachers } from './defaultData';
-import { verifyPinCode } from './utils/auth';
 import { logger } from './utils/logger';
 import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuParser';
-import { resolveCanonicalGroupId } from './utils/groupMigration';
+import { normalizeGroupId } from './utils/groupAliases';
 import ScheduleState from './components/ScheduleState';
 import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason } from './utils/scheduleLoader';
 import { getLocalStudentLink, claimStaffRole } from './utils/attendanceStorage';
@@ -162,7 +161,7 @@ const App: React.FC = () => {
     }
     setIsClaimingStaff(true);
     try {
-      const targetGid = resolveCanonicalGroupId(currentGroupId);
+      const targetGid = normalizeGroupId(currentGroupId);
       const res = await claimStaffRole(targetGid, clean);
       if (res.ok) {
         if (res.role === 'admin') {
@@ -173,7 +172,7 @@ const App: React.FC = () => {
           setGroupCodeInput('');
           return;
         }
-        const assignedGid = res.gid || targetGid;
+        const assignedGid = normalizeGroupId(res.gid || targetGid);
         toast.success('Права старосты подтверждены через Telegram!');
         setUserRole('starosta');
         setStarostaGroupId(assignedGid);
@@ -331,7 +330,7 @@ const App: React.FC = () => {
 
   // Effective Role: Starosta only has edit rights in their designated group.
   // When viewing other groups, they become a read-only 'student'.
-  // Global admin PIN 2808 has full access across all groups.
+  // Global admin role has full access across all groups.
   const effectiveRole: UserRole = useMemo(() => {
     if (userRole === 'admin') return 'admin';
     if (userRole === 'starosta') {
@@ -345,6 +344,15 @@ const App: React.FC = () => {
   }, [userRole, starostaGroupId, currentGroupId]);
 
   const canEdit = effectiveRole === 'admin' || effectiveRole === 'starosta';
+
+  // B-08: If effectiveRole changes (e.g. guest mode or logout), redirect away from restricted tabs
+  useEffect(() => {
+    if (effectiveRole === 'student' && (activeTab === 'admin' || activeTab === 'group')) {
+      setActiveTab('schedule');
+    } else if (effectiveRole === 'starosta' && activeTab === 'admin') {
+      setActiveTab('schedule');
+    }
+  }, [effectiveRole, activeTab]);
 
   const handleSelectGroup = (groupId: string) => {
     setBoundGroupId(groupId);
@@ -782,22 +790,6 @@ const App: React.FC = () => {
               localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt));
             } catch (e) {}
           }
-
-          if (cloud.students !== undefined && Array.isArray(cloud.students) && cloud.students.length > 0) {
-            try {
-              localStorage.setItem(`students_${currentGroupId}`, JSON.stringify(cloud.students));
-            } catch (e) {}
-          } else {
-            try {
-              const localRaw = localStorage.getItem(`students_${currentGroupId}`);
-              if (localRaw) {
-                const localParsed = JSON.parse(localRaw);
-                if (Array.isArray(localParsed) && localParsed.length > 0) {
-                  pushGroupCloudData({ students: localParsed }, currentGroupId).catch(console.warn);
-                }
-              }
-            } catch (e) {}
-          }
         }
       } catch (err) {
         if (!controller.signal.aborted) {
@@ -871,19 +863,22 @@ const App: React.FC = () => {
         }
       }
       lastVisibilitySyncRef.current = Date.now();
-    } catch (e) {}
-    toast.success('Данные обновлены');
-    setTimeout(() => setIsRefreshing(false), 500);
+      toast.success('Данные обновлены');
+    } catch (e) {
+      toast.error('Не удалось обновить данные с сервера');
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 500);
+    }
   };
 
   const handleQuickPinLogin = async () => {
-    const pin = quickPin.trim();
-    if (!pin) return;
+    const code = quickPin.trim();
+    if (!code) return;
 
     try {
-      const authRes = await verifyPinCode(pin);
-      if (!authRes) {
-        toast.error('Неверный PIN-код доступа');
+      const authRes = await claimStaffRole(normalizeGroupId(currentGroupId) || 'admin', code);
+      if (!authRes || !authRes.ok) {
+        toast.error(authRes?.error || 'Неверный код доступа');
         return;
       }
 
@@ -894,19 +889,20 @@ const App: React.FC = () => {
         localStorage.removeItem('starosta_group_id');
         toast.success('Активирован режим ГЛАВНОГО АДМИНИСТРАТОРА (все группы)');
         setQuickPin('');
-      } else if (authRes.role === 'starosta' && authRes.targetGroupId) {
+      } else if (authRes.role === 'starosta' && authRes.gid) {
+        const assignedGid = normalizeGroupId(authRes.gid);
         setUserRole('starosta');
-        setStarostaGroupId(authRes.targetGroupId);
+        setStarostaGroupId(assignedGid);
         localStorage.setItem('user_role', 'starosta');
-        localStorage.setItem('starosta_group_id', authRes.targetGroupId);
-        setCurrentGroupId(authRes.targetGroupId);
-        localStorage.setItem('my_group_id', authRes.targetGroupId);
-        setBoundGroupId(authRes.targetGroupId);
-        toast.success(`Активирован режим СТАРОСТЫ (${authRes.groupName || authRes.targetGroupId})`);
+        localStorage.setItem('starosta_group_id', assignedGid);
+        setCurrentGroupId(assignedGid);
+        localStorage.setItem('my_group_id', assignedGid);
+        setBoundGroupId(assignedGid);
+        toast.success(`Активирован режим СТАРОСТЫ (${assignedGid})`);
         setQuickPin('');
       }
     } catch {
-      toast.error('Ошибка проверки PIN-кода');
+      toast.error('Ошибка проверки кода доступа');
     }
   };
 
@@ -1204,8 +1200,10 @@ const App: React.FC = () => {
       if (!day || !day.dayName) return { dayName: 'Понедельник', lessons: [] };
       const isoDate = getDayISODate(day.dayName, selectedWeek);
 
-      // 31 августа - лето, до начала семестра. Категорически 0 пар!
-      if (isoDate === '2026-08-31') {
+      const semesterStart = getSemesterConfig().semesterStart;
+
+      // До начала занятий (день старта семестрового цикла) - 0 пар
+      if (isoDate === semesterStart) {
         return {
           dayName: day.dayName,
           lessons: []
@@ -1213,8 +1211,8 @@ const App: React.FC = () => {
       }
 
       let sourceLessons = Array.isArray(day.lessons) ? day.lessons : [];
-      // Для последующих циклов 1-й недели (28 сентября и далее) понедельник берется из числителя (Неделя 3) если пуст
-      if (day.dayName === 'Понедельник' && sourceLessons.length === 0 && isoDate !== '2026-08-31') {
+      // Для последующих циклов 1-й недели понедельник берется из числителя (Неделя 3) если пуст
+      if (day.dayName === 'Понедельник' && sourceLessons.length === 0 && isoDate !== semesterStart) {
         const w3Mon = SCHEDULE_REGISTRY[currentGroupId]?.[3]?.find(d => d.dayName === 'Понедельник');
         if (w3Mon && Array.isArray(w3Mon.lessons) && w3Mon.lessons.length > 0) {
           sourceLessons = w3Mon.lessons;
@@ -1586,6 +1584,7 @@ const App: React.FC = () => {
                   userEmail={user?.email || null}
                   currentGroupId={currentGroupId}
                   refreshTrigger={refreshTrigger}
+                  onNavigateToGroup={() => setActiveTab('group')}
                 />
               ) : (
                 <div className="max-w-md mx-auto p-6 sm:p-8 bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/90 dark:border-slate-800 text-center space-y-4 shadow-xs my-8">
@@ -1596,7 +1595,7 @@ const App: React.FC = () => {
                     Доступ только для старосты
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                    Журнал посещаемости и ведомости деканата защищены по стандарту 152-ФЗ. Для доступа введите PIN-код старосты в разделе «Вход».
+                    Журнал посещаемости и ведомости деканата защищены по стандарту 152-ФЗ. Для доступа введите код доступа в разделе «Вход».
                   </p>
                   <button
                     onClick={() => setActiveTab('profile')}

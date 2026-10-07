@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { UserRole } from '../types';
 import { ShieldCheck, Key, CheckCircle2, RefreshCw, Wrench, ChevronDown, Download } from 'lucide-react';
 import { toast } from 'sonner';
-import { verifyPinCode } from '../utils/auth';
+import { claimStaffRole } from '../utils/attendanceStorage';
 import { SAMGTU_GROUP_MAP } from '../utils/samgtuGroupMap';
 import { fetchOfficialSamgtuSchedule, syncOfficialGroupSchedule } from '../utils/cloudSync';
 import { registerScheduleAliases, markScheduleLoaded } from '../utils/scheduleLoader';
@@ -51,13 +51,13 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
   };
 
   const handleVerifyPin = async () => {
-    const pin = pinCode.trim();
-    if (!pin) return;
+    const code = pinCode.trim();
+    if (!code) return;
 
     try {
-      const authRes = await verifyPinCode(pin);
-      if (!authRes) {
-        toast.error('Неверный PIN-код доступа');
+      const authRes = await claimStaffRole(currentGroupId || 'admin', code);
+      if (!authRes || !authRes.ok) {
+        toast.error(authRes?.error || 'Неверный код доступа');
         return;
       }
 
@@ -65,13 +65,13 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
         onRoleChange('admin');
         toast.success('Авторизован режим Главного Администратора');
         setPinCode('');
-      } else if (authRes.role === 'starosta' && authRes.targetGroupId) {
-        onRoleChange('starosta', authRes.targetGroupId);
-        toast.success(`Авторизован режим Старосты (${authRes.groupName || authRes.targetGroupId})`);
+      } else if (authRes.role === 'starosta' && authRes.gid) {
+        onRoleChange('starosta', authRes.gid);
+        toast.success(`Авторизован режим Старосты (${authRes.gid})`);
         setPinCode('');
       }
     } catch {
-      toast.error('Ошибка проверки PIN-кода');
+      toast.error('Ошибка проверки кода доступа');
     }
   };
 
@@ -219,7 +219,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-12">
-      {/* Role State Banner / PIN Verification Form */}
+      {/* Role State Banner / Access Code Verification Form */}
       {currentRole === 'admin' ? (
         <div className="space-y-6">
           <div className="bg-gradient-to-br from-emerald-500/10 via-teal-500/5 to-transparent border border-emerald-500/20 rounded-3xl p-6 shadow-sm space-y-3">
@@ -369,7 +369,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Включает экран-заглушку технических работ для проверки интерфейса обслуживания, кнопки офлайн-расписания и аварийного входа по PIN.
+                Включает экран-заглушку технических работ для проверки интерфейса обслуживания, кнопки офлайн-расписания и аварийного входа по коду доступа.
               </p>
               <button
                 type="button"
@@ -407,17 +407,17 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
           </div>
           <div className="pt-2 border-t border-indigo-100 dark:border-indigo-900/40">
             <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
-              Для перехода в режим Главного Администратора введите PIN-код администратора:
+              Для перехода в режим Главного Администратора введите код доступа администратора:
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
               <input
                 type="password"
                 inputMode="text"
-                maxLength={16}
+                maxLength={19}
                 value={pinCode}
                 onChange={(e) => setPinCode(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleVerifyPin()}
-                placeholder="PIN-код Главного Администратора"
+                placeholder="XXXX-XXXX-XXXX-XXXX"
                 className="flex-1 px-4 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none min-h-[44px]"
               />
               <button
@@ -433,20 +433,20 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
         <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/90 dark:border-slate-800 shadow-xs space-y-4">
           <div className="flex items-center gap-3">
             <Key className="w-5 h-5 text-amber-500" />
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Авторизация по PIN-коду</h3>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Авторизация по коду доступа</h3>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Для доступа к функциям Старосты или Главного Администратора введите ваш закрытый персональный PIN-код.
+            Для доступа к функциям Старосты или Главного Администратора введите ваш закрытый персональный код доступа.
           </p>
           <div className="flex flex-col sm:flex-row gap-3">
             <input
               type="password"
               inputMode="text"
-              maxLength={16}
+              maxLength={19}
               value={pinCode}
               onChange={(e) => setPinCode(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleVerifyPin()}
-              placeholder="Введите секретный PIN-код"
+              placeholder="XXXX-XXXX-XXXX-XXXX"
               className="flex-1 px-4 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none min-h-[44px]"
             />
             <button

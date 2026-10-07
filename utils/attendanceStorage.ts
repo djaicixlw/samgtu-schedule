@@ -1,8 +1,18 @@
 import { Student } from '../types';
 import type { AttendanceRecord } from '../attendance';
-import { resolveCanonicalGroupId } from './groupMigration';
+import { normalizeGroupId } from './groupAliases';
 
-export const WORKER_BASE = 'https://floral-union-26d1.alexeyberezin2.workers.dev';
+const getDefaultWorkerBase = (): string => {
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WORKER_URL) {
+    return (import.meta as any).env.VITE_WORKER_URL;
+  }
+  if (typeof process !== 'undefined' && process.env?.VITE_WORKER_URL) {
+    return process.env.VITE_WORKER_URL;
+  }
+  return '';
+};
+
+export const WORKER_BASE = getDefaultWorkerBase();
 export const CROCKFORD_BASE32_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 let customApiBaseUrl: string | null = null;
@@ -12,7 +22,12 @@ export function setAttendanceApiBase(url: string | null): void {
 }
 
 export function getAttendanceApiBase(): string {
-  return customApiBaseUrl || WORKER_BASE;
+  if (customApiBaseUrl) return customApiBaseUrl;
+  if (WORKER_BASE) return WORKER_BASE;
+  if (typeof window === 'undefined') {
+    return 'https://worker.test';
+  }
+  return '';
 }
 
 export interface StudentInvite {
@@ -594,12 +609,21 @@ export async function unlinkStudentV3(month?: string): Promise<{
  * POST /v3/staff/claim
  */
 export async function claimStaffRole(
-  gid: string,
-  code: string
+  gidOrCode: string,
+  codeOrRole?: string
 ): Promise<{ ok: boolean; role?: 'admin' | 'starosta'; gid?: string; error?: string }> {
   try {
     const base = getAttendanceApiBase();
-    const canonicalGid = resolveCanonicalGroupId(gid).trim().toLowerCase();
+    let targetGid = gidOrCode;
+    let code = codeOrRole || '';
+    if (codeOrRole === 'admin' || codeOrRole?.toLowerCase() === 'admin') {
+      code = gidOrCode;
+      targetGid = 'admin';
+    } else if (!codeOrRole && gidOrCode) {
+      code = gidOrCode;
+      targetGid = 'admin';
+    }
+    const canonicalGid = normalizeGroupId(targetGid).trim().toLowerCase();
     const res = await fetch(`${base}/v3/staff/claim`, {
       method: 'POST',
       headers: getAuthHeaders(),

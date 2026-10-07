@@ -1,5 +1,5 @@
 // One-time migration script from ExtendsClass bins directly into Cloudflare Worker KV
-const WORKER_BASE = 'https://floral-union-26d1.alexeyberezin2.workers.dev';
+const WORKER_BASE = process.env.WORKER_URL || process.env.VITE_WORKER_URL || '';
 
 const OLD_BINS = {
   schedule: 'https://extendsclass.com/api/json-storage/bin/cecbcbf',

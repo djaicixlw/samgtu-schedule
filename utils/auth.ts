@@ -1,5 +1,5 @@
 import { UserRole } from '../types';
-import { WORKER_BASE } from './cloudSync';
+import { claimStaffRole } from './attendanceStorage';
 
 declare global {
   interface Window {
@@ -34,66 +34,35 @@ export interface AuthResult {
 }
 
 /**
- * Validates entered PIN by delegating to server endpoint POST /auth/pin.
- * All PIN hashes and authorization verification reside strictly on the server (Cloudflare Worker).
+ * Validates entered access code via modern v3 blind server (POST /v3/staff/claim).
+ * Legacy PIN auth endpoint is eliminated for privacy compliance (P0-02).
  */
 export async function verifyPinCode(inputPin: string, targetGroupId?: string): Promise<AuthResult | null> {
-  const pin = inputPin?.trim();
-  if (!pin) return null;
-
-  const initData = (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData)
-    || (typeof globalThis !== 'undefined' && (globalThis as any).Telegram?.WebApp?.initData)
-    || '';
+  const code = inputPin?.trim();
+  if (!code) return null;
 
   try {
-    const res = await fetch(`${WORKER_BASE}/auth/pin`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({
-        pin,
-        initData,
-        targetGroupId
-      })
-    });
-
-    if (res.status === 200) {
-      const data = await res.json();
-      if (data && data.ok) {
-        try {
-          if (typeof localStorage !== 'undefined') {
-            localStorage.setItem('user_role', data.role);
-            if (data.role === 'starosta' && data.groupId) {
-              localStorage.setItem('starosta_group_id', data.groupId);
-            } else if (data.role === 'admin') {
-              localStorage.removeItem('starosta_group_id');
-            }
-          }
-        } catch (e) {}
-
-        return {
-          role: data.role,
-          groupId: data.groupId,
-          targetGroupId: data.groupId,
-          groupName: data.groupId,
-          userId: data.userId
-        };
-      }
-    }
-
-    if (res.status === 401 || res.status === 403) {
+    const res = await claimStaffRole(targetGroupId || 'admin', code);
+    if (res && res.ok) {
       try {
         if (typeof localStorage !== 'undefined') {
-          localStorage.removeItem('user_role');
-          localStorage.removeItem('starosta_group_id');
+          localStorage.setItem('user_role', res.role || 'starosta');
+          if (res.role === 'starosta' && res.gid) {
+            localStorage.setItem('starosta_group_id', res.gid);
+          } else if (res.role === 'admin') {
+            localStorage.removeItem('starosta_group_id');
+          }
         }
       } catch (e) {}
-      return null;
+
+      return {
+        role: res.role || 'starosta',
+        groupId: res.gid || targetGroupId,
+        targetGroupId: res.gid || targetGroupId,
+        groupName: res.gid || targetGroupId
+      };
     }
 
-    // Any other error
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem('user_role');

@@ -1,5 +1,4 @@
-import './setup_mock_auth';
-import { TEST_ADMIN_PIN, TEST_STAROSTA_310_PIN, TEST_STAROSTA_311_PIN } from './setup_mock_auth';
+import { setupMockAuth, TEST_ADMIN_PIN, TEST_STAROSTA_310_PIN, TEST_STAROSTA_311_PIN } from './setup_mock_auth';
 import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
@@ -8,6 +7,7 @@ import worker, { safeEqual, pbkdf2 } from '../cloudflare-worker.js';
 
 async function runAuthTests() {
   console.log('=== RUNNING AUTH HASH VERIFICATION TESTS ===\n');
+  await setupMockAuth();
 
   // Test 1: Admin Code
   const adminRes = await verifyPinCode(TEST_ADMIN_PIN);

@@ -92,7 +92,7 @@ export async function setupMockAuth() {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
-    if (urlStr.includes('/auth/pin')) {
+    if (urlStr.includes('/v3/staff/claim')) {
       let bodyObj: any = {};
       if (init?.body) {
         try {
@@ -104,52 +104,120 @@ export async function setupMockAuth() {
         } catch {}
       }
 
-      if (!bodyObj.initData) {
-        bodyObj.initData = validInitData;
-      }
-
-      // Auto-assign targetGroupId for known test pins if not provided
-      if (bodyObj.pin === TEST_STAROSTA_310_PIN && !bodyObj.targetGroupId) {
-        bodyObj.targetGroupId = 'ingt-310';
-      } else if (bodyObj.pin === TEST_STAROSTA_311_PIN && !bodyObj.targetGroupId) {
-        bodyObj.targetGroupId = 'ingt-311';
-      } else if (bodyObj.pin === TEST_ADMIN_PIN && !bodyObj.targetGroupId) {
-        bodyObj.targetGroupId = 'admin';
-      }
-
-      // Backwards-compatibility for unmigrated test suites that pass legacy mock tokens
-      const legacyGroup = legacyGroupMap.get(bodyObj.pin);
+      const legacyGroup = legacyGroupMap.get(bodyObj.code);
       if (legacyGroup) {
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem('user_role', 'starosta');
-          localStorage.setItem('starosta_group_id', legacyGroup);
-        }
-        return new Response(JSON.stringify({ ok: true, role: 'starosta', groupId: legacyGroup, userId: 777001 }), {
+        return new Response(JSON.stringify({ ok: true, role: 'starosta', gid: legacyGroup }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
-      if (bodyObj.pin === legacyAdmin) {
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem('user_role', 'admin');
-          localStorage.removeItem('starosta_group_id');
-        }
-        return new Response(JSON.stringify({ ok: true, role: 'admin', groupId: 'admin', userId: 777001 }), {
+      if (bodyObj.code === legacyAdmin) {
+        return new Response(JSON.stringify({ ok: true, role: 'admin', gid: 'admin' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      const workerReq = new Request(urlStr, {
+      if (bodyObj.code === TEST_STAROSTA_310_PIN && (!bodyObj.gid || bodyObj.gid === 'admin')) {
+        bodyObj.gid = 'ingt-310';
+      } else if (bodyObj.code === TEST_STAROSTA_311_PIN && (!bodyObj.gid || bodyObj.gid === 'admin')) {
+        bodyObj.gid = 'ingt-311';
+      } else if (bodyObj.code === TEST_ADMIN_PIN) {
+        bodyObj.gid = 'admin';
+      }
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-Telegram-Init-Data': validInitData
+      };
+      if (init?.headers) {
+        const h = init.headers as any;
+        if (typeof h.get === 'function') {
+          if (h.get('X-Telegram-Init-Data')) headers['X-Telegram-Init-Data'] = h.get('X-Telegram-Init-Data');
+        } else if (typeof h === 'object') {
+          Object.assign(headers, h);
+        }
+      }
+
+      const targetUrl = urlStr.startsWith('http') ? urlStr : `https://worker.test${urlStr.startsWith('/') ? '' : '/'}${urlStr}`;
+      const workerReq = new Request(targetUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
+        headers,
         body: JSON.stringify(bodyObj)
       });
 
       return worker.fetch(workerReq, mockEnv);
+    }
+
+    if (urlStr.includes('/auth/pin')) {
+      const targetUrl = urlStr.startsWith('http') ? urlStr : `https://worker.test${urlStr.startsWith('/') ? '' : '/'}${urlStr}`;
+      const workerReq = new Request(targetUrl, {
+        method: init?.method || (input instanceof Request ? input.method : 'POST'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: init?.body ? (typeof init.body === 'string' ? init.body : init.body.toString()) : undefined
+      });
+      return worker.fetch(workerReq, mockEnv);
+    }
+
+    if (urlStr.startsWith('https://api.telegram.org/')) {
+      if (urlStr.includes('/getFile')) {
+        const u = new URL(urlStr);
+        const fileId = u.searchParams.get('file_id') || 'mock_file_id';
+        return new Response(JSON.stringify({
+          ok: true,
+          result: {
+            file_id: fileId,
+            file_path: 'documents/' + fileId + '.docx',
+            file_size: 1024
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (urlStr.includes('/file/bot')) {
+        return new Response('MOCK_FILE_CONTENT', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'Content-Disposition': 'attachment; filename="mock.docx"'
+          }
+        });
+      }
+      if (urlStr.includes('/sendDocument')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          result: {
+            message_id: 12345,
+            document: {
+              file_id: 'mock_file_upload_123',
+              file_name: 'test.docx'
+            }
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (urlStr.includes('/sendMessage')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          result: {
+            message_id: 12345
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, result: {} }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     return originalFetch(input, init);

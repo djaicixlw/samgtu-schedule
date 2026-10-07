@@ -8,7 +8,9 @@ import worker, {
   requireAppKey,
   signFileUrl,
   verifyFileSignature,
-  clearWorkerRateLimits
+  clearWorkerRateLimits,
+  deriveFileSigningKey,
+  createTelegramInitData
 } from '../cloudflare-worker.js';
 import { verifyPinCode } from '../utils/auth';
 
@@ -39,6 +41,7 @@ const mockEnv = {
   APP_SECRET: 'test-secret-key-12345',
   TELEGRAM_BOT_TOKEN: '123456789:ABCdefGHIjklMNOpqrSTUvwxYZ-mock-token',
   TELEGRAM_CHANNEL_ID: '-1002345678901',
+  ID_PEPPER: 'test_pepper_security_audit_32_bytes!',
   MAINTENANCE_MODE: 'true',
   MAINTENANCE_MESSAGE: 'Плановые регламентные работы',
   MAINTENANCE_UNTIL: '15 минут',
@@ -86,14 +89,37 @@ const invalidGroupRes = await worker.fetch(invalidGroupReq, invalidGroupEnv);
 assert(invalidGroupRes.status === 400, `GET /sync/homework with malformed groupId returns 400 Bad Request (got ${invalidGroupRes.status})`);
 
 // 1.3 Test POST /upload endpoint (User bug reports from Web/Telegram)
-const uploadFormData = new FormData();
-uploadFormData.append('document', new Blob(['fake log']), 'diag.txt');
-uploadFormData.append('caption', 'Bug report test');
-const uploadRes = await worker.fetch(new Request('https://worker.test/upload', {
+// P0-03: Spoofed Origin rejected, valid initData accepted
+const uploadFormDataSpoofed = new FormData();
+uploadFormDataSpoofed.append('document', new Blob(['fake log']), 'diag.txt');
+uploadFormDataSpoofed.append('caption', 'Bug report test');
+const spoofedUploadReq = new Request('https://worker.test/upload', {
   method: 'POST',
-  body: uploadFormData
-}), { ...mockEnv, TEST_MODE: 'true' });
-assert(uploadRes.status === 200, `POST /upload accepts bug reports from users (got ${uploadRes.status})`);
+  headers: {
+    'Origin': 'http://localhost:5173'
+  },
+  body: uploadFormDataSpoofed
+});
+const spoofedUploadRes = await worker.fetch(spoofedUploadReq, mockEnv);
+assert(spoofedUploadRes.status === 401, `POST /upload with spoofed Origin and no initData returns 401 Unauthorized (got ${spoofedUploadRes.status})`);
+
+const validUploadInitData = await createTelegramInitData({
+  user: JSON.stringify({ id: 987654321, first_name: 'AuditUser', username: 'audit_user' }),
+  auth_date: Math.floor(Date.now() / 1000)
+}, mockEnv.TELEGRAM_BOT_TOKEN);
+
+const uploadFormDataValid = new FormData();
+uploadFormDataValid.append('document', new Blob(['real log data']), 'diag.txt');
+uploadFormDataValid.append('caption', 'Valid bug report');
+const validUploadReq = new Request('https://worker.test/upload', {
+  method: 'POST',
+  headers: {
+    'X-Telegram-Init-Data': validUploadInitData
+  },
+  body: uploadFormDataValid
+});
+const validUploadRes = await worker.fetch(validUploadReq, mockEnv);
+assert(validUploadRes.status === 200, `POST /upload with valid initData returns 200 OK (got ${validUploadRes.status})`);
 
 // 1.4 Test POST /notify without X-App-Key
 const unauthNotifyReq = new Request('https://worker.test/notify', {
@@ -156,7 +182,7 @@ const spamNotifyReq = new Request('https://worker.test/notify', {
   headers: { 'Content-Type': 'application/json', 'X-App-Key': mockEnv.APP_SECRET },
   body: JSON.stringify({ message: 'Spam alert', chat_id: '@arbitrary_spam_channel' })
 });
-const spamNotifyRes = await worker.fetch(spamNotifyReq, { ...mockEnv, TEST_MODE: 'true' });
+const spamNotifyRes = await worker.fetch(spamNotifyReq, mockEnv);
 assert(spamNotifyRes.status === 403, `POST /notify with arbitrary chat_id returns 403 Forbidden (got ${spamNotifyRes.status})`);
 
 const validNotifyReq = new Request('https://worker.test/notify', {
@@ -164,7 +190,7 @@ const validNotifyReq = new Request('https://worker.test/notify', {
   headers: { 'Content-Type': 'application/json', 'X-App-Key': mockEnv.APP_SECRET },
   body: JSON.stringify({ message: 'System alert', chat_id: mockEnv.TELEGRAM_CHANNEL_ID })
 });
-const validNotifyRes = await worker.fetch(validNotifyReq, { ...mockEnv, TEST_MODE: 'true' });
+const validNotifyRes = await worker.fetch(validNotifyReq, mockEnv);
 assert(validNotifyRes.status === 200, `POST /notify with system channel returns 200 OK (got ${validNotifyRes.status})`);
 
 // 1.5 Test GET /status or GET /maintenance (Public health check)
@@ -175,20 +201,65 @@ const statusData = await statusRes.json();
 assert(statusData.ok === true && statusData.maintenance === true, `GET /status returns accurate maintenance status`);
 assert(statusData.message === 'Плановые регламентные работы', `GET /status returns correct maintenance message`);
 
-// 1.6 Test signed file URLs in /file (HMAC expiration & signature enforcement)
+// 1.6 Test signed file URLs in /file (HMAC expiration & signature enforcement via derived key)
 const expFuture = Math.floor(Date.now() / 1000) + 600;
-const validSig = await signFileUrl('file_sec_test', expFuture, mockEnv.APP_SECRET);
+const fileSigningKey = await deriveFileSigningKey(mockEnv.ID_PEPPER);
+const validSig = await signFileUrl('file_sec_test', expFuture, fileSigningKey);
+
 const validSignedUrl = `https://worker.test/file?file_id=file_sec_test&exp=${expFuture}&sig=${validSig}&download=1&filename=test.docx`;
-const validSignedRes = await worker.fetch(new Request(validSignedUrl), { ...mockEnv, TEST_MODE: 'true' });
+const validSignedRes = await worker.fetch(new Request(validSignedUrl), mockEnv);
 assert(validSignedRes.status === 200, `GET /file with valid HMAC signature returns 200 (got ${validSignedRes.status})`);
 
 const forgedSignedUrl = `https://worker.test/file?file_id=file_sec_test&exp=${expFuture}&sig=forged_bad_sig&download=1`;
-const forgedSignedRes = await worker.fetch(new Request(forgedSignedUrl), { ...mockEnv, TEST_MODE: 'true' });
+const forgedSignedRes = await worker.fetch(new Request(forgedSignedUrl), mockEnv);
 assert(forgedSignedRes.status === 403, `GET /file with forged signature returns 403 (got ${forgedSignedRes.status})`);
 
 const expiredSignedUrl = `https://worker.test/file?file_id=file_sec_test&exp=100&sig=${validSig}&download=1`;
-const expiredSignedRes = await worker.fetch(new Request(expiredSignedUrl), { ...mockEnv, TEST_MODE: 'true' });
+const expiredSignedRes = await worker.fetch(new Request(expiredSignedUrl), mockEnv);
 assert(expiredSignedRes.status === 403, `GET /file with expired timestamp returns 403 (got ${expiredSignedRes.status})`);
+
+const mockValidSignedUrl = `https://worker.test/file?file_id=file_sec_test&exp=${expFuture}&sig=mock-valid&download=1`;
+const mockValidSignedRes = await worker.fetch(new Request(mockValidSignedUrl), mockEnv);
+assert(mockValidSignedRes.status === 403, `GET /file with sig=mock-valid returns 403 Forbidden (got ${mockValidSignedRes.status})`);
+
+const missingPepperEnv = { ...mockEnv, ID_PEPPER: undefined };
+const missingPepperRes = await worker.fetch(new Request(validSignedUrl), missingPepperEnv);
+assert(missingPepperRes.status === 500, `GET /file with missing ID_PEPPER returns 500 fail-closed (got ${missingPepperRes.status})`);
+
+// 1.7 Test POST /auth/pin deprecation (P0-02)
+const pinDepReq = new Request('https://worker.test/auth/pin', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ pin: '839124' })
+});
+const pinDepRes = await worker.fetch(pinDepReq, mockEnv);
+assert(pinDepRes.status === 410, `POST /auth/pin is deprecated and returns 410 Gone (got ${pinDepRes.status})`);
+
+// 1.8 Test P0-05: TEST_MODE=true and token=mock does NOT bypass security
+const backdoorTestEnv = {
+  ...mockEnv,
+  TEST_MODE: 'true',
+  TELEGRAM_BOT_TOKEN: 'mock'
+};
+const unauthAttReq = new Request('https://worker.test/sync/attendance?groupId=ingt-310', { method: 'GET' });
+const unauthAttRes = await worker.fetch(unauthAttReq, backdoorTestEnv);
+assert(unauthAttRes.status === 403, `TEST_MODE="true" and token="mock" does not bypass attendance auth (got ${unauthAttRes.status})`);
+
+// 1.9 Test P0-18: Group alias isolation (faid-210 does not collate to faid-310)
+const faidUserInitData = await createTelegramInitData({
+  user: JSON.stringify({ id: 554433, first_name: 'FaidStudent', username: 'faid_student' }),
+  auth_date: Math.floor(Date.now() / 1000)
+}, mockEnv.TELEGRAM_BOT_TOKEN);
+const claimFaid210Req = new Request('https://worker.test/v3/staff/claim', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Telegram-Init-Data': faidUserInitData
+  },
+  body: JSON.stringify({ gid: 'faid-210', code: 'TEST-CODE-CLAIM' })
+});
+const claimFaid210Res = await worker.fetch(claimFaid210Req, mockEnv);
+assert(claimFaid210Res.status === 404, `POST /v3/staff/claim with faid-210 does NOT collate to faid-310 (returns 404, got ${claimFaid210Res.status})`);
 
 // ------------------------------------------------------------
 // TEST 2: STAROSTA DOCX EXPORT PRIVACY & LOCAL-ONLY RETRIEVAL
@@ -237,6 +308,23 @@ for (const relFile of filesToCheck) {
   }
 }
 assert(!leakDetected, 'No hardcoded Telegram bot tokens detected in source files');
+
+const workerFileContent = fs.readFileSync(path.resolve(process.cwd(), 'cloudflare-worker.js'), 'utf8');
+assert(!workerFileContent.includes('samgtu_secret_salt_2026'), 'Hardcoded salt "samgtu_secret_salt_2026" strictly purged from worker (P0-04)');
+assert(!workerFileContent.includes('"mock-valid"'), 'Backdoor signature "mock-valid" strictly purged from worker (P0-04)');
+assert(!workerFileContent.includes("targetGid.includes('фаид')"), 'Substring match for faid strictly purged from worker (P0-18)');
+assert(!workerFileContent.includes("targetGid.includes('хтф')"), 'Substring match for htf strictly purged from worker (P0-18)');
+assert(!workerFileContent.includes("targetGid.includes('иаит')"), 'Substring match for iait strictly purged from worker (P0-18)');
+assert(!workerFileContent.includes('function hashPin'), 'Deprecated hashPin function strictly purged from worker (R-004)');
+
+const attStorageContent = fs.readFileSync(path.resolve(process.cwd(), 'utils/attendanceStorage.ts'), 'utf8');
+const cloudSyncContent = fs.readFileSync(path.resolve(process.cwd(), 'utils/cloudSync.ts'), 'utf8');
+assert(!attStorageContent.includes('alexeyberezin2'), 'Hardcoded worker URL strictly purged from utils/attendanceStorage.ts (R-002)');
+assert(!cloudSyncContent.includes('alexeyberezin2'), 'Hardcoded worker URL strictly purged from utils/cloudSync.ts (R-002)');
+
+const reportErrReq = new Request('https://worker.test/report-error', { method: 'OPTIONS' });
+const reportErrRes = await worker.fetch(reportErrReq, mockEnv);
+assert(reportErrRes.headers.get('Access-Control-Allow-Origin') !== '*', 'OPTIONS /report-error without origin strictly does not return wildcard * (R-007)');
 
 // ------------------------------------------------------------
 // TEST 4: DTO WHITELIST SANITIZATION & XSS / INJECTION DEFENSE

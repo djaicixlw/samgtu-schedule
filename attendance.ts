@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Student, Registry } from './types';
-import { fetchGroupCloudData, pushGroupCloudData } from './utils/cloudSync';
+import { syncAttendanceRecordsToV3 } from './utils/attendanceStorage';
 import { getSamaraISODate } from './utils/samaraDate';
 import { SEED_ATTENDANCE } from './defaultData';
 
@@ -199,51 +199,15 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
     };
 
     const syncWithCloud = async () => {
-      const isDirty = localStorage.getItem(`attendance_dirty_${currentGroupId}`) === 'true';
-      const cloud = await fetchGroupCloudData(true, currentGroupId);
-      if (!isMounted) return;
-
       const local = getLocalRecords();
-
-      if (cloud && Array.isArray(cloud.attendance)) {
-        const merged = mergeAttendance(local, cloud.attendance, currentGroupId);
-        setRecords(merged);
-        recordsRef.current = merged;
-        try {
-          localStorage.setItem(`attendance_${currentGroupId}`, JSON.stringify(merged));
-        } catch (e) {}
-
-        if (isDirty) {
-          try {
-            const ok = await pushGroupCloudData({ attendance: merged }, currentGroupId);
-            if (ok && isMounted) {
-              localStorage.removeItem(`attendance_dirty_${currentGroupId}`);
-            }
-          } catch (e) {}
-        } else if (cloud.attendance.length === 0 && merged.length > 0) {
-          // Auto-heal: cloud was wiped or empty, but local has records -> restore cloud!
-          try {
-            const ok = await pushGroupCloudData({ attendance: merged }, currentGroupId);
-            if (!ok && isMounted) {
-              localStorage.setItem(`attendance_dirty_${currentGroupId}`, 'true');
-            }
-          } catch (e) {
-            if (isMounted) {
-              localStorage.setItem(`attendance_dirty_${currentGroupId}`, 'true');
-            }
-          }
+      setRecords(local);
+      recordsRef.current = local;
+      try {
+        await syncAttendanceRecordsToV3(currentGroupId, local);
+        if (isMounted) {
+          localStorage.removeItem(`attendance_dirty_${currentGroupId}`);
         }
-      } else if (isDirty) {
-        // Cloud fetch failed or offline, but we have unsynced changes -> retry push
-        try {
-          if (local.length > 0) {
-            const ok = await pushGroupCloudData({ attendance: local }, currentGroupId);
-            if (ok && isMounted) {
-              localStorage.removeItem(`attendance_dirty_${currentGroupId}`);
-            }
-          }
-        } catch (e) {}
-      }
+      } catch (e) {}
     };
 
     const setupSubscription = async () => {
@@ -329,13 +293,13 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
       localStorage.setItem(`attendance_${groupId}`, JSON.stringify(updatedRecords));
     } catch (e) {}
 
-    // 4. Push the GUARANTEED valid array to REST Cloud immediately (syncs to all classmates)
+    // 4. Push to v3 Blind Server (anonymous slots only, 152-FZ safe)
     try {
-      const ok = await pushGroupCloudData({ attendance: updatedRecords }, groupId);
-      if (!ok) {
-        localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
-      } else {
+      const res = await syncAttendanceRecordsToV3(groupId, updatedRecords);
+      if (res && res.ok) {
         localStorage.removeItem(`attendance_dirty_${groupId}`);
+      } else {
+        localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
       }
     } catch (e) {
       localStorage.setItem(`attendance_dirty_${groupId}`, 'true');

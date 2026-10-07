@@ -7,10 +7,10 @@
 import worker, {
   verifyTelegramInitData,
   createTelegramInitData,
-  hashPin,
   checkUserGroupAccess,
   safeEqual,
-  pbkdf2
+  pbkdf2,
+  blindId
 } from '../cloudflare-worker.js';
 import {
   TEST_ADMIN_PIN,
@@ -47,6 +47,13 @@ const mockEnv = {
   APP_DATA: mockAppData
 };
 
+const starostaUser = { id: 777001, first_name: 'Alex', username: 'starosta_alex' };
+const regularUser = { id: 888002, first_name: 'Ivan', username: 'student_ivan' };
+const adminUser = { id: 999003, first_name: 'Dmitry', username: 'admin_dmitry' };
+
+const starostaBlindId = await blindId(mockEnv, starostaUser.id);
+const adminBlindId = await blindId(mockEnv, adminUser.id);
+
 // Seed test KV data for PBKDF2 verification
 const salt310 = 'MDEyMzQ1Njc4OWFiY2RlZg==';
 const salt311 = 'ZmVkY2JhOTg3NjU0MzIxMA==';
@@ -55,7 +62,7 @@ const saltAdmin = 'MTIzNDU2Nzg5MGFiY2RlZg==';
 await Promise.all([
   mockAppData.put('g:ingt-310', JSON.stringify({ codeSalt: salt310, codeHash: await pbkdf2(TEST_STAROSTA_310_PIN, salt310), codeVer: 1, staff: [], slots: [] })),
   mockAppData.put('g:ingt-311', JSON.stringify({ codeSalt: salt311, codeHash: await pbkdf2(TEST_STAROSTA_311_PIN, salt311), codeVer: 1, staff: [], slots: [] })),
-  mockAppData.put('g:admin', JSON.stringify({ codeSalt: saltAdmin, codeHash: await pbkdf2(TEST_ADMIN_PIN, saltAdmin), codeVer: 1 }))
+  mockAppData.put('g:admin', JSON.stringify({ codeSalt: saltAdmin, codeHash: await pbkdf2(TEST_ADMIN_PIN, saltAdmin), codeVer: 1, staff: [] }))
 ]);
 
 console.log('\n============================================================');
@@ -68,9 +75,6 @@ console.log('============================================================\n');
 console.log('--- 1. Cryptographic HMAC-SHA256 initData Validation ---');
 
 const nowSec = Math.floor(Date.now() / 1000);
-const starostaUser = { id: 777001, first_name: 'Alex', username: 'starosta_alex' };
-const regularUser = { id: 888002, first_name: 'Ivan', username: 'student_ivan' };
-const adminUser = { id: 999003, first_name: 'Dmitry', username: 'admin_dmitry' };
 
 // 1.1 Generate valid initData with correct HMAC signature
 const validInitData = await createTelegramInitData({
@@ -129,7 +133,7 @@ assert(emptyRes.ok === false, 'Empty initData string returns error');
 // ------------------------------------------------------------
 console.log('\n--- 2. Server-side PIN Authentication (POST /auth/pin) ---');
 
-// 2.1 Starosta code for 3-ИНГТ-110
+// 2.1 POST /auth/pin returns 410 Gone for starosta (P0-02)
 const starostaAuthReq = new Request('https://worker.test/auth/pin', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -140,153 +144,181 @@ const starostaAuthReq = new Request('https://worker.test/auth/pin', {
   })
 });
 const starostaAuthRes = await worker.fetch(starostaAuthReq, mockEnv);
-assert(starostaAuthRes.status === 200, `POST /auth/pin returns 200 OK for valid starosta code (got ${starostaAuthRes.status})`);
+assert(starostaAuthRes.status === 410, `POST /auth/pin is deprecated and returns 410 Gone (got ${starostaAuthRes.status})`);
 const starostaAuthBody = await starostaAuthRes.json();
-assert(starostaAuthBody.ok === true, 'Response has ok: true');
-assert(starostaAuthBody.role === 'starosta', 'Response has role: starosta');
-assert(starostaAuthBody.groupId === 'ingt-310', 'Response has groupId: ingt-310');
-assert(starostaAuthBody.userId === starostaUser.id, 'Response has correct userId');
+assert(starostaAuthBody.error?.includes('Deprecated'), '410 response indicates deprecation');
+assert(starostaAuthBody.userId === undefined, 'No raw userId returned in deprecated /auth/pin');
+assert(!kvStore.has(`auth:${starostaUser.id}:ingt-310`), 'No raw userId session written to KV auth:{userId}:{groupId}');
 
-// Verify session was stored in Cloudflare KV
-const starostaKvSessionRaw = kvStore.get(`auth:${starostaUser.id}:ingt-310`);
-assert(starostaKvSessionRaw !== null && starostaKvSessionRaw !== undefined, 'Session is stored in KV at auth:${userId}:${groupId}');
-const starostaKvSession = JSON.parse(starostaKvSessionRaw!);
-assert(starostaKvSession.role === 'starosta' && starostaKvSession.groupId === 'ingt-310', 'Stored KV session has valid role and group');
+// 2.2 Starosta claim via /v3/staff/claim
+const claim310Req = new Request('https://worker.test/v3/staff/claim', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Telegram-Init-Data': validInitData
+  },
+  body: JSON.stringify({
+    gid: 'ingt-310',
+    code: TEST_STAROSTA_310_PIN
+  })
+});
+const claim310Res = await worker.fetch(claim310Req, mockEnv);
+assert(claim310Res.status === 200, 'POST /v3/staff/claim returns 200 for valid starosta code');
+const claim310Body = await claim310Res.json();
+assert(claim310Body.ok === true && claim310Body.role === 'starosta', 'Response has ok: true and role: starosta');
+const group310Data = JSON.parse((await mockAppData.get('g:ingt-310'))!);
+assert(Array.isArray(group310Data.staff) && group310Data.staff.includes(starostaBlindId), 'Staff array contains userBlindId (not raw userId)');
 
-// 2.2 Starosta code for 3-ИНГТ-111
+// 2.3 Starosta code for 3-ИНГТ-111
 const starosta311InitData = await createTelegramInitData({
   user: JSON.stringify({ id: 777002, first_name: 'Pavel' }),
   auth_date: nowSec
 }, BOT_TOKEN);
 
-const starosta311Req = new Request('https://worker.test/auth/pin', {
+const claim311Req = new Request('https://worker.test/v3/staff/claim', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Telegram-Init-Data': starosta311InitData
+  },
   body: JSON.stringify({
-    pin: TEST_STAROSTA_311_PIN,
-    initData: starosta311InitData,
-    targetGroupId: 'ingt-311'
+    gid: 'ingt-311',
+    code: TEST_STAROSTA_311_PIN
   })
 });
-const starosta311Res = await worker.fetch(starosta311Req, mockEnv);
-assert(starosta311Res.status === 200, 'POST /auth/pin resolves starosta role and groupId ingt-311');
-const starosta311Body = await starosta311Res.json();
-assert(starosta311Body.groupId === 'ingt-311', 'groupId in response matches code mapping');
+const claim311Res = await worker.fetch(claim311Req, mockEnv);
+assert(claim311Res.status === 200, 'POST /v3/staff/claim resolves starosta role for ingt-311');
 
-// 2.3 Admin code
+// 2.4 Admin code
 const adminInitData = await createTelegramInitData({
   user: JSON.stringify(adminUser),
   auth_date: nowSec
 }, BOT_TOKEN);
 
-const adminAuthReq = new Request('https://worker.test/auth/pin', {
+const adminClaimReq = new Request('https://worker.test/v3/staff/claim', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Telegram-Init-Data': adminInitData
+  },
   body: JSON.stringify({
-    pin: TEST_ADMIN_PIN,
-    initData: adminInitData
+    code: TEST_ADMIN_PIN
   })
 });
-const adminAuthRes = await worker.fetch(adminAuthReq, mockEnv);
-assert(adminAuthRes.status === 200, 'POST /auth/pin returns 200 OK for valid admin code');
-const adminAuthBody = await adminAuthRes.json();
-assert(adminAuthBody.role === 'admin', 'Admin role issued');
-assert(kvStore.has(`auth:${adminUser.id}:admin`), 'Admin session stored in KV with auth:${userId}:admin');
-assert(kvStore.has(`auth:${adminUser.id}:*`), 'Admin wildcard session stored in KV with auth:${userId}:*');
+const adminClaimRes = await worker.fetch(adminClaimReq, mockEnv);
+assert(adminClaimRes.status === 200, 'POST /v3/staff/claim returns 200 OK for valid admin code');
+const adminClaimBody = await adminClaimRes.json();
+assert(adminClaimBody.role === 'admin', 'Admin role issued');
+const adminKvData = JSON.parse((await mockAppData.get('g:admin'))!);
+assert(Array.isArray(adminKvData.staff) && adminKvData.staff.includes(adminBlindId), 'Admin userBlindId stored in g:admin.staff');
+assert(!kvStore.has(`auth:${adminUser.id}:admin`), 'No raw userId stored in KV for admin');
 
-// 2.4 Wrong code
-const wrongPinReq = new Request('https://worker.test/auth/pin', {
+// 2.5 Wrong code
+const wrongClaimReq = new Request('https://worker.test/v3/staff/claim', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Telegram-Init-Data': validInitData
+  },
   body: JSON.stringify({
-    pin: 'WRONG-MOCK-CODE-000',
-    initData: validInitData,
-    targetGroupId: 'ingt-310'
+    gid: 'ingt-310',
+    code: 'WRONG-MOCK-CODE-000'
   })
 });
-const wrongPinRes = await worker.fetch(wrongPinReq, mockEnv);
-assert(wrongPinRes.status === 401, `Invalid code returns 401 Unauthorized (got ${wrongPinRes.status})`);
+const wrongClaimRes = await worker.fetch(wrongClaimReq, mockEnv);
+assert(wrongClaimRes.status === 401, `Invalid code returns 401 Unauthorized (got ${wrongClaimRes.status})`);
 
-// 2.5 Tampered initData to /auth/pin
-const tamperedPinReq = new Request('https://worker.test/auth/pin', {
+// 2.6 Tampered initData to /v3/staff/claim
+const tamperedClaimReq = new Request('https://worker.test/v3/staff/claim', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Telegram-Init-Data': tamperedInitData
+  },
   body: JSON.stringify({
-    pin: TEST_STAROSTA_310_PIN,
-    initData: tamperedInitData,
-    targetGroupId: 'ingt-310'
+    gid: 'ingt-310',
+    code: TEST_STAROSTA_310_PIN
   })
 });
-const tamperedPinRes = await worker.fetch(tamperedPinReq, mockEnv);
-assert(tamperedPinRes.status === 401, 'Tampered initData to /auth/pin returns 401 Unauthorized');
+const tamperedClaimRes = await worker.fetch(tamperedClaimReq, mockEnv);
+assert(tamperedClaimRes.status === 401, 'Tampered initData to /v3/staff/claim returns 401 Unauthorized');
 
-// 2.6 Expired initData to /auth/pin
-const expiredPinReq = new Request('https://worker.test/auth/pin', {
+// 2.7 Expired initData to /v3/staff/claim
+const expiredClaimReq = new Request('https://worker.test/v3/staff/claim', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Telegram-Init-Data': expiredInitData
+  },
   body: JSON.stringify({
-    pin: TEST_STAROSTA_310_PIN,
-    initData: expiredInitData,
-    targetGroupId: 'ingt-310'
+    gid: 'ingt-310',
+    code: TEST_STAROSTA_310_PIN
   })
 });
-const expiredPinRes = await worker.fetch(expiredPinReq, mockEnv);
-assert(expiredPinRes.status === 401, 'Expired initData (> 24h) to /auth/pin returns 401 Unauthorized');
+const expiredClaimRes = await worker.fetch(expiredClaimReq, mockEnv);
+assert(expiredClaimRes.status === 401, 'Expired initData (> 24h) to /v3/staff/claim returns 401 Unauthorized');
 
-// 2.7 Starosta claiming another group's targetGroupId
-const hijackReq = new Request('https://worker.test/auth/pin', {
+// 2.8 Starosta claiming another group's code
+const hijackReq = new Request('https://worker.test/v3/staff/claim', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Telegram-Init-Data': validInitData
+  },
   body: JSON.stringify({
-    pin: TEST_STAROSTA_310_PIN, // Code for ingt-310
-    initData: validInitData,
-    targetGroupId: 'ingt-311' // Target ingt-311
+    gid: 'ingt-311',
+    code: TEST_STAROSTA_310_PIN
   })
 });
 const hijackRes = await worker.fetch(hijackReq, mockEnv);
 assert(hijackRes.status === 401, `Starosta entering code for wrong group returns 401 Unauthorized (got ${hijackRes.status})`);
 
-// 2.8 Rate-limiting on /auth/pin (429 after 5 failed attempts)
+// 2.9 Rate-limiting on /v3/staff/claim (429 after 5 failed attempts)
 const rlScope = 'rl-worker-test';
 const testSalt = 'MDEyMzQ1Njc4OWFiY2RlZg==';
 const testHash = await pbkdf2('CORRECT-CODE', testSalt);
 await mockAppData.put(`g:${rlScope}`, JSON.stringify({
   codeSalt: testSalt,
   codeHash: testHash,
-  codeVer: 1
+  codeVer: 1,
+  staff: []
 }));
 for (let i = 0; i < 5; i++) {
-  const badReq = new Request('https://worker.test/auth/pin', {
+  const badReq = new Request('https://worker.test/v3/staff/claim', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Init-Data': validInitData
+    },
     body: JSON.stringify({
-      pin: 'WRONG-CODE-' + i,
-      initData: validInitData,
-      targetGroupId: rlScope
+      gid: rlScope,
+      code: 'WRONG-CODE-' + i
     })
   });
   const res = await worker.fetch(badReq, mockEnv);
   assert(res.status === 401, `Failed attempt ${i + 1} returns 401 (got ${res.status})`);
 }
-const rateLimitedReq = new Request('https://worker.test/auth/pin', {
+const rateLimitedReq = new Request('https://worker.test/v3/staff/claim', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Telegram-Init-Data': validInitData
+  },
   body: JSON.stringify({
-    pin: 'WRONG-CODE-6',
-    initData: validInitData,
-    targetGroupId: rlScope
+    gid: rlScope,
+    code: 'WRONG-CODE-6'
   })
 });
 const rateLimitedRes = await worker.fetch(rateLimitedReq, mockEnv);
 assert(rateLimitedRes.status === 429, `6th attempt returns 429 Too Many Requests (got ${rateLimitedRes.status})`);
 
-// 2.9 Cryptographic primitives safeEqual and pbkdf2
+// 2.10 Cryptographic primitives safeEqual and pbkdf2
 assert(await safeEqual('secret_hash_a', 'secret_hash_a') === true, 'safeEqual returns true for identical strings');
 assert(await safeEqual('secret_hash_a', 'secret_hash_b') === false, 'safeEqual returns false for different strings');
 const derivedHash = await pbkdf2('test_password', testSalt);
 assert(typeof derivedHash === 'string' && derivedHash.length === 44, 'pbkdf2 returns 256-bit base64 string (44 chars)');
 
-// 2.10 Absence of hardcoded ADMIN_PIN_HASH in worker
+// 2.11 Absence of hardcoded ADMIN_PIN_HASH in worker
 assert((worker as any).ADMIN_PIN_HASH === undefined, 'ADMIN_PIN_HASH is NOT exported by worker');
 assert((worker as any).GROUP_STAROSTA_PIN_HASHES === undefined, 'GROUP_STAROSTA_PIN_HASHES is NOT exported by worker');
 
@@ -358,7 +390,7 @@ const starostaGetReq = new Request('https://worker.test/sync/attendance?groupId=
 const starostaGetRes = await worker.fetch(starostaGetReq, mockEnv);
 assert(starostaGetRes.status === 200, `Authorized starosta GET returns 200 OK (got ${starostaGetRes.status})`);
 
-// 3.8 Authorized starosta saving attendance records via PUT -> 200 OK
+// 3.8 Authorized starosta saving attendance records via PUT -> 410 Gone (P0-01)
 const starostaPutReq = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {
   method: 'PUT',
   headers: {
@@ -381,9 +413,7 @@ const starostaPutReq = new Request('https://worker.test/sync/attendance?groupId=
   })
 });
 const starostaPutRes = await worker.fetch(starostaPutReq, mockEnv);
-assert(starostaPutRes.status === 200, `Authorized starosta PUT returns 200 OK (got ${starostaPutRes.status})`);
-const savedAttendanceRaw = kvStore.get('attendance:ingt-310');
-assert(savedAttendanceRaw !== null, 'Attendance record saved in KV');
+assert(starostaPutRes.status === 410, `Authorized starosta PUT returns 410 Gone (got ${starostaPutRes.status})`);
 
 // 3.9 Authorization via Authorization: Bearer <initData> header
 const bearerReq = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {

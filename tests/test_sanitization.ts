@@ -142,11 +142,13 @@ async function runSanitizationTests() {
   check('Injected "deleteWholeDatabase" stripped', (cleanOv as any).deleteWholeDatabase === undefined);
   check('Injected "executeCommand" stripped', (cleanOv as any).executeCommand === undefined);
 
-  // --- 4. Full Sync Payload Sanitization (Nested & byGroup) ---
+  // --- 4. Full Sync Payload Structure Sanitization ---
   console.log('\n--- 4. Full Sync Payload Structure Sanitization ---');
   const fullPayload = {
+    students: [{ id: 1, name: 'Alice' }],
     byGroup: {
       'ingt-310': {
+        students: [{ id: 1, name: 'Alice' }],
         items: [maliciousHw],
         deletedIds: ['del-1', 'del-2'],
         unauthorizedField: 'attacker_value'
@@ -157,9 +159,23 @@ async function runSanitizationTests() {
 
   const cleanFull = sanitizeSyncPayload('homework', fullPayload);
   check('Top level injected field stripped', (cleanFull as any).injectedTopLevel === undefined);
+  check('Top level students stripped from homework', (cleanFull as any).students === undefined);
+  check('byGroup students stripped from homework', cleanFull.byGroup['ingt-310'] && (cleanFull.byGroup['ingt-310'] as any).students === undefined);
   check('byGroup group preserved', cleanFull.byGroup && cleanFull.byGroup['ingt-310'] !== undefined);
   check('Group level unauthorizedField stripped', (cleanFull.byGroup['ingt-310'] as any).unauthorizedField === undefined);
   check('Inner item stripped of injection', (cleanFull.byGroup['ingt-310'].items[0] as any).role === undefined);
+
+  const cleanAttPayload = sanitizeSyncPayload('attendance', {
+    students: [{ id: 2, name: 'Bob' }],
+    byGroup: {
+      'ingt-310': {
+        students: [{ id: 2, name: 'Bob' }],
+        records: [maliciousAtt]
+      }
+    }
+  });
+  check('Top level students stripped from attendance', (cleanAttPayload as any).students === undefined);
+  check('byGroup students stripped from attendance', cleanAttPayload.byGroup['ingt-310'] && (cleanAttPayload.byGroup['ingt-310'] as any).students === undefined);
 
   // --- 5. Upload Rate Limiting (Anti-DoS) ---
   console.log('\n--- 5. Upload Rate Limiting (Anti-DoS) ---');
@@ -190,7 +206,8 @@ async function runSanitizationTests() {
     }
   };
 
-  const req = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {
+  // Deprecated PUT /sync/attendance -> 410 Gone (P0-01)
+  const attReq = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -207,20 +224,43 @@ async function runSanitizationTests() {
     })
   });
 
-  const res = await worker.fetch(req, mockWorkerEnv);
-  check('Worker PUT /sync returns HTTP 200', res.status === 200);
+  const attRes = await worker.fetch(attReq, mockWorkerEnv);
+  check('Worker PUT /sync/attendance returns HTTP 410 Gone', attRes.status === 410);
 
-  const storedRaw = mockKvStore.get('attendance:ingt-310');
+  // Active PUT /sync/homework -> 200 with whitelist DTO sanitization
+  const hwReq = new Request('https://worker.test/sync/homework?groupId=ingt-310', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-App-Key': 'test_secret_sanitization_123'
+    },
+    body: JSON.stringify({
+      students: [{ id: 10, name: 'Student' }],
+      byGroup: {
+        'ingt-310': {
+          students: [{ id: 10, name: 'Student' }],
+          items: [maliciousHw],
+          hackField: 'evil'
+        }
+      },
+      topHack: 'evil'
+    })
+  });
+
+  const hwRes = await worker.fetch(hwReq, mockWorkerEnv);
+  check('Worker PUT /sync/homework returns HTTP 200', hwRes.status === 200);
+
+  const storedRaw = mockKvStore.get('homework:ingt-310');
   const storedData = storedRaw ? JSON.parse(storedRaw) : null;
-  check('KV store received group slice', storedData !== null);
+  check('KV store received group slice for homework', storedData !== null);
   check('Stored data stripped of hackField in group', storedData && storedData.hackField === undefined);
-  check('Stored attendance record stripped of isSuperuser', storedData && storedData.records[0].isSuperuser === undefined);
-  check('Stored attendance record preserved absentStudentIds', storedData && JSON.stringify(storedData.records[0].absentStudentIds) === JSON.stringify([1, 2, 3]));
-  check('Stored attendance record preserved excusedStudentIds', storedData && JSON.stringify(storedData.records[0].excusedStudentIds) === JSON.stringify([4, 5]));
-  check('Stored attendance record preserved isCancelled', storedData && storedData.records[0].isCancelled === true);
+  check('Stored data stripped of students in group', storedData && storedData.students === undefined);
+  check('Stored homework item stripped of role', storedData && storedData.items[0].role === undefined);
+  check('Stored homework item preserved title', storedData && storedData.items[0].title === 'ДЗ №1');
+  check('Stored homework item preserved attachments', storedData && storedData.items[0].attachments.length === 1);
 
   // Test GET isolation from KV
-  const getReq = new Request('https://worker.test/sync/attendance?groupId=ingt-310', {
+  const getReq = new Request('https://worker.test/sync/homework?groupId=ingt-310', {
     method: 'GET',
     headers: {
       'X-App-Key': 'test_secret_sanitization_123'
@@ -230,7 +270,7 @@ async function runSanitizationTests() {
   check('Worker GET /sync returns HTTP 200', getRes.status === 200);
   const getBody = await getRes.json();
   check('GET returns isolated byGroup[groupId]', getBody && getBody.byGroup && getBody.byGroup['ingt-310'] !== undefined);
-  check('GET returns matching records', getBody.byGroup['ingt-310'].records.length === 1);
+  check('GET returns matching items', getBody.byGroup['ingt-310'].items.length === 1);
 
   // --- 7. Admin Migration Route (/admin/migrate-to-kv) Deprecation ---
   console.log('\n--- 7. Verification: Legacy Migration Route Deprecated ---');
