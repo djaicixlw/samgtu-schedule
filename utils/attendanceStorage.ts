@@ -2,6 +2,8 @@ import { Student } from '../types';
 import type { AttendanceRecord } from '../attendance';
 import { normalizeGroupId } from './groupAliases';
 
+const DEFAULT_PROD_WORKER_URL = 'https://floral-union-26d1.alexeyberezin2.workers.dev';
+
 const getDefaultWorkerBase = (): string => {
   if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WORKER_URL) {
     return (import.meta as any).env.VITE_WORKER_URL;
@@ -9,7 +11,7 @@ const getDefaultWorkerBase = (): string => {
   if (typeof process !== 'undefined' && process.env?.VITE_WORKER_URL) {
     return process.env.VITE_WORKER_URL;
   }
-  return '';
+  return DEFAULT_PROD_WORKER_URL;
 };
 
 export const WORKER_BASE = getDefaultWorkerBase();
@@ -623,13 +625,14 @@ export async function claimStaffRole(
       code = gidOrCode;
       targetGid = 'admin';
     }
+    const cleanCode = (code || '').trim().toUpperCase();
     const canonicalGid = normalizeGroupId(targetGid).trim().toLowerCase();
     const res = await fetch(`${base}/v3/staff/claim`, {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({
         gid: canonicalGid,
-        code: code.trim().toUpperCase()
+        code: cleanCode
       })
     });
     const json = await res.json().catch(() => ({}));

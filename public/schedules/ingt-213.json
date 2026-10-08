@@ -595,17 +595,7 @@
     },
     {
       "dayName": "Суббота",
-      "lessons": [
-        {
-          "id": "ingt-213-w3-sa-1",
-          "timeStart": "19:10",
-          "timeEnd": "20:45",
-          "subject": "Русский язык и культура коммуникаций",
-          "type": "Лекции",
-          "location": "Moodle, ауд. не указана",
-          "teacher": ""
-        }
-      ]
+      "lessons": []
     }
   ],
   "4": [

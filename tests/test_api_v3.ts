@@ -194,6 +194,34 @@ const groupAfterClaim = JSON.parse((await mockAppData.get(`g:${testGid}`))!);
 assert(Array.isArray(groupAfterClaim.staff) && groupAfterClaim.staff.includes(elderBlindId), 'Elder userBlindId is recorded in g:{gid}.staff');
 assert(!kvStore.has(`rl:claim:${testGid}`), 'Successful claim clears rate-limiting key');
 
+// 4.5 Admin claim with Crockford Base32 typo tolerance (5 <-> S)
+console.log('\n--- 4.5 Admin Claim with Crockford Base32 Typo Tolerance ---');
+const adminStoredCode = 'MA98-2SJP-CKDG-EY3G';
+const adminTypoInput = 'MA98-25JP-CKDG-EY3G';
+const adminSalt = 'bW9ja19hZG1pbl9zYWx0XzMyYnl0ZXM=';
+const adminCodeHash = await pbkdf2(adminStoredCode, adminSalt);
+
+await mockAppData.put('g:admin', JSON.stringify({
+  codeSalt: adminSalt,
+  codeHash: adminCodeHash,
+  staff: []
+}));
+
+const adminClaimUserInitData = await makeInitData(8888, 'AdminCandidate');
+const adminBlindId8888 = await blindId(mockEnv, 8888);
+
+const adminClaimRes = await callWorker('/v3/staff/claim', 'POST', adminClaimUserInitData, {
+  gid: 'admin',
+  code: adminTypoInput
+});
+assert(adminClaimRes.status === 200, 'POST /v3/staff/claim with typo 5 instead of S returns 200 OK');
+const adminClaimData = await adminClaimRes.json();
+assert(adminClaimData.ok === true && adminClaimData.role === 'admin', 'Admin claim with typo returns { ok: true, role: "admin" }');
+
+const adminAfterClaim = JSON.parse((await mockAppData.get('g:admin'))!);
+assert(Array.isArray(adminAfterClaim.staff) && adminAfterClaim.staff.includes(adminBlindId8888), 'Admin userBlindId is recorded in g:admin.staff');
+
+
 // ------------------------------------------------------------
 // 5. POST /v3/slots
 // ------------------------------------------------------------

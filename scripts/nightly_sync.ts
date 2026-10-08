@@ -124,20 +124,33 @@ export async function runNightlySync() {
 
     const groupWeeks: Record<number, DaySchedule[]> = {};
     const rawOfficialWeeks: Record<number, any> = {};
+    let fetchErrorOccurred = false;
 
     for (let w = 1; w <= 4; w++) {
       const url = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w}`;
       try {
-        rawOfficialWeeks[w] = await fetchJson(url);
+        const res = await fetchJson(url);
+        if (!res || typeof res !== 'object' || !res.wd) {
+          fetchErrorOccurred = true;
+          console.warn(`  ⚠️ Некорректный/пустой ответ API для недели ${w} (${conf.name})`);
+        } else {
+          rawOfficialWeeks[w] = res;
+        }
       } catch (err: any) {
+        fetchErrorOccurred = true;
         console.warn(`  ⚠️ Не удалось загрузить неделю ${w} для ${conf.name}: ${err.message}`);
       }
     }
 
-    for (let w = 1; w <= 4; w++) {
-      const officialData = rawOfficialWeeks[w];
-      if (!officialData) continue;
+    if (fetchErrorOccurred || Object.keys(rawOfficialWeeks).length < 4) {
+      console.warn(`  🛡️ [Защита] Сетевая ошибка или неполные данные API для группы ${conf.name}. Локальное расписание защищено от затирания.`);
+      continue;
+    }
 
+    // Load existing schedule across all 4 weeks to guard against empty API wiping local schedule
+    let existingTotalLessons = 0;
+    const existingGroupSchedule: Record<number, DaySchedule[]> = {};
+    for (let w = 1; w <= 4; w++) {
       let existingWeek = SCHEDULE_REGISTRY[groupId]?.[w as 1 | 2 | 3 | 4] || [];
       const hasLessons = existingWeek.some(d => Array.isArray(d.lessons) && d.lessons.length > 0);
       if (!hasLessons) {
@@ -151,6 +164,14 @@ export async function runNightlySync() {
           } catch {}
         }
       }
+      existingGroupSchedule[w] = existingWeek;
+      existingTotalLessons += existingWeek.reduce((acc, d) => acc + (d.lessons?.length || 0), 0);
+    }
+
+    let groupParsedLessons = 0;
+
+    for (let w = 1; w <= 4; w++) {
+      const officialData = rawOfficialWeeks[w];
       const weekDays: DaySchedule[] = [];
 
       for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
@@ -167,8 +188,6 @@ export async function runNightlySync() {
           }
         }
 
-        const curDay = existingWeek.find(d => d.dayName === dayName);
-        const curLessons = curDay?.lessons || [];
         const offLessons: Lesson[] = [];
 
         if (offDay && offDay.at) {
@@ -199,56 +218,33 @@ export async function runNightlySync() {
           }
         }
 
-        // LK timetable corrections for 3-ИНГТ-110 (ingt-310):
-        if (groupId === 'ingt-310') {
-          // 1. Tuesday odd weeks (1 & 3): LK has no 8:00 AM class, starts at 9:45
-          if ((w === 1 || w === 3) && dayIdx === 2) {
-            const idx = offLessons.findIndex(l => l.timeStart === '08:00');
-            if (idx >= 0) offLessons.splice(idx, 1);
-          }
-          // 2. Monday odd weeks (1 & 3): No "Конструирование", strictly BZhD lab (13:35-15:10, note to 17:15) & lecture (17:25)
-          if ((w === 1 || w === 3) && dayIdx === 1) {
-            const pe = offLessons.find(l => l.timeStart === '11:50');
-            offLessons.length = 0;
-            if (pe) {
-              offLessons.push(pe);
-            } else {
-              offLessons.push({
-                id: `${prefix}-w${w}-mo-1`,
-                timeStart: '11:50',
-                timeEnd: '13:25',
-                subject: 'Элективные курсы по физической культуре и спорту',
-                type: 'Практические занятия',
-                location: 'Спортивный комплекс',
-                teacher: 'Кафедра физического воспитания'
-              });
-            }
-            offLessons.push({
-              id: `${prefix}-w${w}-mo-2`,
-              timeStart: '13:35',
-              timeEnd: '15:10',
-              subject: 'Безопасность жизнедеятельности',
-              type: 'Лабораторные работы',
-              location: 'Корпус № 6, 87',
-              teacher: 'Кривова Маргарита Андреевна',
-              note: 'пара до 17:15'
-            });
-            offLessons.push({
-              id: `${prefix}-w${w}-mo-4`,
-              timeStart: '17:25',
-              timeEnd: '19:00',
-              subject: 'Безопасность жизнедеятельности',
-              type: 'Лекции',
-              location: 'Корпус № 1, 432',
-              teacher: 'Сорокина Людмила Владимировна'
-            });
-          }
-        }
-
-        totalParsedLessonsAcrossAll += offLessons.length;
+        groupParsedLessons += offLessons.length;
         weekDays.push({ dayName, lessons: offLessons });
+      }
 
-        // Compare lessons for differences
+      groupWeeks[w] = weekDays;
+    }
+
+    // Safety guard: if official API returned 0 lessons while existing schedule has lessons, do not wipe
+    if (groupParsedLessons === 0 && existingTotalLessons > 0) {
+      console.warn(`  🛡️ [Защита] API вернул 0 пар для группы ${conf.name}, но в локальном расписании ${existingTotalLessons} пар. Защита от затирания активирована, локальное расписание сохранено.`);
+      continue;
+    }
+
+    totalParsedLessonsAcrossAll += groupParsedLessons;
+
+    // Compare lessons for differences
+    for (let w = 1; w <= 4; w++) {
+      const existingWeek = existingGroupSchedule[w] || [];
+      const offWeek = groupWeeks[w] || [];
+
+      for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
+        const dayName = DAY_NAMES[dayIdx - 1];
+        const curDay = existingWeek.find(d => d.dayName === dayName);
+        const curLessons = curDay?.lessons || [];
+        const offDay = offWeek.find(d => d.dayName === dayName);
+        const offLessons = offDay?.lessons || [];
+
         // 1. Added lessons
         for (const ol of offLessons) {
           const match = curLessons.find(cl => cl.timeStart === ol.timeStart && cl.subject.toLowerCase() === ol.subject.toLowerCase());
@@ -270,8 +266,6 @@ export async function runNightlySync() {
           }
         }
       }
-
-      groupWeeks[w] = weekDays;
     }
 
     updatedSchedules[groupId] = groupWeeks;
@@ -365,6 +359,11 @@ export async function runNightlySync() {
       fs.mkdirSync(schedulesDir, { recursive: true });
     }
     for (const [gid, sched] of Object.entries(updatedSchedules)) {
+      const hasAnyLessons = Object.values(sched).some(w => Array.isArray(w) && w.some(d => Array.isArray(d.lessons) && d.lessons.length > 0));
+      if (!hasAnyLessons) {
+        console.warn(`  🛡️ [Защита] Пропуск записи ${gid}.json: пустое расписание!`);
+        continue;
+      }
       const jsonPath = path.join(schedulesDir, `${gid}.json`);
       fs.writeFileSync(jsonPath, JSON.stringify(sched, null, 2), 'utf-8');
     }

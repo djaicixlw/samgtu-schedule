@@ -740,8 +740,7 @@ export const OFFICIAL_TIME_SLOTS: Record<string, { timeStart: string; timeEnd: s
   '3': { timeStart: '11:50', timeEnd: '13:25' },
   '4': { timeStart: '13:35', timeEnd: '15:10' },
   '5': { timeStart: '15:40', timeEnd: '17:15' },
-  '6': { timeStart: '17:25', timeEnd: '19:00' },
-  '7': { timeStart: '19:10', timeEnd: '20:45' }
+  '6': { timeStart: '17:25', timeEnd: '19:00' }
 };
 
 export const OFFICIAL_DAY_NAMES = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];

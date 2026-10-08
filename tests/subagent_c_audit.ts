@@ -184,8 +184,7 @@ const SAMGTU_BELLS = [
   { start: '11:50', end: '13:25', pair: 3 },
   { start: '13:35', end: '15:10', pair: 4 },
   { start: '15:40', end: '17:15', pair: 5 },
-  { start: '17:25', end: '19:00', pair: 6 },
-  { start: '19:10', end: '20:45', pair: 7 }
+  { start: '17:25', end: '19:00', pair: 6 }
 ];
 
 const VALID_TYPES = new Set([

@@ -710,11 +710,42 @@ export default {
           }
 
           const rawCode = code.trim().toUpperCase();
-          const stripped = rawCode.replace(/[^0-9A-Z]/g, '');
-          const formatted = stripped.length === 16
-            ? `${stripped.slice(0,4)}-${stripped.slice(4,8)}-${stripped.slice(8,12)}-${stripped.slice(12,16)}`
-            : rawCode;
-          const candidates = Array.from(new Set([rawCode, formatted, stripped]));
+
+          // Crockford Base32 visual confusion tolerance (5 <-> S, 0 <-> O, 1 <-> I)
+          const baseVariants = new Set([rawCode]);
+          if (rawCode.includes('5')) baseVariants.add(rawCode.replace(/5/g, 'S'));
+          if (rawCode.includes('S')) baseVariants.add(rawCode.replace(/S/g, '5'));
+          if (rawCode.includes('0')) baseVariants.add(rawCode.replace(/0/g, 'O'));
+          if (rawCode.includes('O')) baseVariants.add(rawCode.replace(/O/g, '0'));
+          if (rawCode.includes('1')) baseVariants.add(rawCode.replace(/1/g, 'I'));
+          if (rawCode.includes('I')) baseVariants.add(rawCode.replace(/I/g, '1'));
+
+          // Compound substitutions if code has multiple confusable characters
+          baseVariants.add(
+            rawCode
+              .replace(/5/g, 'S')
+              .replace(/O/g, '0')
+              .replace(/I/g, '1')
+          );
+          baseVariants.add(
+            rawCode
+              .replace(/S/g, '5')
+              .replace(/0/g, 'O')
+              .replace(/I/g, '1')
+          );
+
+          // Format each variant as rawCode, stripped (alphanumeric only), formatted (with hyphens if 16 chars)
+          const candidatesSet = new Set();
+          for (const variant of baseVariants) {
+            candidatesSet.add(variant);
+            const strippedVar = variant.replace(/[^0-9A-Z]/g, '');
+            candidatesSet.add(strippedVar);
+            if (strippedVar.length === 16) {
+              const formattedVar = `${strippedVar.slice(0, 4)}-${strippedVar.slice(4, 8)}-${strippedVar.slice(8, 12)}-${strippedVar.slice(12, 16)}`;
+              candidatesSet.add(formattedVar);
+            }
+          }
+          const candidates = Array.from(candidatesSet);
 
           const isGroupClaim = Boolean(gid && typeof gid === 'string' && gid.trim() && gid.toLowerCase() !== 'admin');
           const rlKey = isGroupClaim ? `rl:claim:${gid.trim().toLowerCase()}` : `rl:claim:admin:${userBlindId}`;

@@ -40,6 +40,8 @@ jobs:
         run: npm run lint
 
       - name: Build production bundle
+        env:
+          VITE_WORKER_URL: 'https://floral-union-26d1.alexeyberezin2.workers.dev'
         run: npm run build
 
       - name: Verify build artifact integrity
