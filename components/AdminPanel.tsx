@@ -176,7 +176,28 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
         }
       }
 
-      // 4. Compare all weeks and days
+      // 4. Compare all weeks and days (with Unicode dash/whitespace and location normalization)
+      const normSubj = (s: string) => (s || '')
+        .replace(/[\u2010-\u2015]/g, '-')
+        .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\s]+/g, ' ')
+        .trim()
+        .toLowerCase();
+
+      const normLoc = (loc: string) => {
+        if (!loc) return '';
+        const clean = loc
+          .toLowerCase()
+          .replace(/[\u2010-\u2015]/g, '-')
+          .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\s]+/g, ' ')
+          .replace(/№/g, '')
+          .replace(/,/g, ' ')
+          .replace(/ауд(?:итория)?\.?/g, '')
+          .replace(/корпус/g, 'к')
+          .replace(/3б/g, '3')
+          .trim();
+        return clean.split(/\s+/).filter(Boolean).sort().join(' ');
+      };
+
       const diffs: string[] = [];
       let currentTotalCount = 0;
 
@@ -193,16 +214,16 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
           const curLessons = curDay?.lessons || [];
 
           for (const offL of offDay.lessons || []) {
-            const match = curLessons.find((cl: any) => cl.timeStart === offL.timeStart && cl.subject.toLowerCase() === offL.subject.toLowerCase());
+            const match = curLessons.find((cl: any) => cl.timeStart === offL.timeStart && normSubj(cl.subject) === normSubj(offL.subject));
             if (!match) {
               diffs.push(`Н${w} ${offDay.dayName} ${offL.timeStart}: в СамГТУ «${offL.subject}», в приложении нет`);
-            } else if (offL.location && match.location !== offL.location) {
+            } else if (offL.location && normLoc(match.location) !== normLoc(offL.location)) {
               diffs.push(`Н${w} ${offDay.dayName} ${offL.timeStart} «${offL.subject}»: ауд. ${match.location || '—'} ➔ ${offL.location}`);
             }
           }
 
           for (const curL of curLessons) {
-            const match = (offDay.lessons || []).find((ol: any) => ol.timeStart === curL.timeStart && ol.subject.toLowerCase() === curL.subject.toLowerCase());
+            const match = (offDay.lessons || []).find((ol: any) => ol.timeStart === curL.timeStart && normSubj(ol.subject) === normSubj(curL.subject));
             if (!match) {
               diffs.push(`Н${w} ${offDay.dayName} ${curL.timeStart}: в приложении «${curL.subject}», в СамГТУ нет`);
             }

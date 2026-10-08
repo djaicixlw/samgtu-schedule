@@ -749,7 +749,8 @@ export const OFFICIAL_DAY_CODES = ['mo', 'tu', 'we', 'th', 'fr', 'sa'];
 export function parseOfficialCell(cellName: string): { subject: string; type: string; location: string } {
   const clean = (cellName || '')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/[\u00a0\s]+/g, ' ')
+    .replace(/[\u2010-\u2015]/g, '-')
+    .replace(/[\u00a0\u1680\u2000-\u200b\u202f\u205f\u3000\s]+/g, ' ')
     .trim();
 
   let type = 'Лекции';
@@ -844,54 +845,6 @@ export function convertOfficialSamgtuToWeekData(
         }
       }
 
-      // LK timetable corrections for 3-ИНГТ-110 (ingt-310):
-      if (canonicalId === 'ingt-310') {
-        // 1. Tuesday odd weeks (1 & 3): LK has no 8:00 AM class, starts at 9:45
-        if ((weekNum === 1 || weekNum === 3) && dayIdx === 2) {
-          const idx = lessons.findIndex(l => l.timeStart === '08:00');
-          if (idx >= 0) {
-            lessons.splice(idx, 1);
-            totalLessons--;
-          }
-        }
-        // 2. Monday odd weeks (1 & 3): No "Конструирование", strictly BZhD lab (13:35-15:10, note to 17:15) & lecture (17:25)
-        if ((weekNum === 1 || weekNum === 3) && dayIdx === 1) {
-          const pe = lessons.find(l => l.timeStart === '11:50');
-          lessons.length = 0;
-          if (pe) {
-            lessons.push(pe);
-          } else {
-            lessons.push({
-              id: `${canonicalId}-w${weekNum}-mo-1`,
-              timeStart: '11:50',
-              timeEnd: '13:25',
-              subject: 'Элективные курсы по физической культуре и спорту',
-              type: 'Практические занятия',
-              location: 'Спортивный комплекс',
-              teacher: 'Кафедра физического воспитания'
-            });
-          }
-          lessons.push({
-            id: `${canonicalId}-w${weekNum}-mo-2`,
-            timeStart: '13:35',
-            timeEnd: '15:10',
-            subject: 'Безопасность жизнедеятельности',
-            type: 'Лабораторные работы',
-            location: 'Корпус № 6, 87',
-            teacher: 'Кривова Маргарита Андреевна',
-            note: 'пара до 17:15'
-          });
-          lessons.push({
-            id: `${canonicalId}-w${weekNum}-mo-4`,
-            timeStart: '17:25',
-            timeEnd: '19:00',
-            subject: 'Безопасность жизнедеятельности',
-            type: 'Лекции',
-            location: 'Корпус № 1, 432',
-            teacher: 'Сорокина Людмила Владимировна'
-          });
-        }
-      }
 
       weekDays.push({ dayName, lessons });
     }
