@@ -1,3 +1,4 @@
+import './setup_mock_auth';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -70,6 +71,7 @@ const mockEnv = {
   TELEGRAM_BOT_TOKEN: '123456789:ABCdefGHIjklMNOpqrSTUvwxYZ-token',
   TELEGRAM_DEV_CHAT_ID: '-10099998888',
   TELEGRAM_CHANNEL_ID: '-1002345678901',
+  ID_PEPPER: 'mock_pepper_v3_fixture_32bytes!',
   TEST_MODE: 'true'
 };
 

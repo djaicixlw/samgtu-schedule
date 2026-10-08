@@ -37,6 +37,8 @@ await import('./test_schedule_url');
 await import('./test_kv_backup');
 await import('./test_privacy_p0');
 await import('./test_bell_schedule');
+await import('./test_attendance_merge');
+await import('./test_tma_word_export');
 const { runHomeworkLifecycleStressTest } = await import('./test_homework_lifecycle_stress');
 await runHomeworkLifecycleStressTest();
 console.log("\n=================================================");

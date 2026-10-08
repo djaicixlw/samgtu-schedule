@@ -393,17 +393,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
                   </ul>
                 )}
 
-                {/* Advisory notice for verified groups */}
-                {auditResult.status === 'diff' && selectedAuditGroup === 'ingt-310' && (
-                  <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-[11px] text-indigo-700 dark:text-indigo-300 space-y-1">
-                    <span className="font-bold flex items-center gap-1.5">
-                      ℹ️ Рабочая база группы выверена по Личному Кабинету (ЛК СамГТУ)
-                    </span>
-                    <p className="opacity-90 leading-relaxed">
-                      Расписание в приложении полностью соответствует живому учебному календарю семестра. Портал samgtu.ru содержит черновую сетку (утренние пары в 08:00 и предварительные предметы). Замена не требуется.
-                    </p>
-                  </div>
-                )}
 
                 {/* Prominent Action Button: Apply / Sync Official Schedule for ANY group */}
                 {auditResult.status === 'diff' && (
