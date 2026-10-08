@@ -32,7 +32,10 @@ export const TARGET_PREFIXES = [
   'attendance_',
   'schedule_overrides_',
   'subject_teachers_',
-  'custom_schedule_'
+  'custom_schedule_',
+  'homework_',
+  'deleted_hw_',
+  'students_'
 ] as const;
 
 /**
@@ -283,6 +286,38 @@ export function migrateLegacyGroupKeys(storageParam?: Storage): MigrationSummary
           if (oldValue === 'true' || targetValue === 'true') {
             storage.setItem(targetKey, 'true');
           }
+        }
+      } else if (matchedPrefix === 'homework_') {
+        if (targetValue === null) {
+          storage.setItem(targetKey, oldValue);
+        } else {
+          try {
+            const oldList = JSON.parse(oldValue);
+            const targetList = JSON.parse(targetValue);
+            if (Array.isArray(oldList) && Array.isArray(targetList)) {
+              const map = new Map<string, any>();
+              oldList.forEach(it => { if (it && it.id) map.set(it.id, { ...it, groupId: canonicalGroupId }); });
+              targetList.forEach(it => { if (it && it.id) map.set(it.id, { ...it, groupId: canonicalGroupId }); });
+              storage.setItem(targetKey, JSON.stringify(Array.from(map.values())));
+            }
+          } catch {}
+        }
+      } else if (matchedPrefix === 'deleted_hw_') {
+        if (targetValue === null) {
+          storage.setItem(targetKey, oldValue);
+        } else {
+          try {
+            const oldList = JSON.parse(oldValue);
+            const targetList = JSON.parse(targetValue);
+            if (Array.isArray(oldList) && Array.isArray(targetList)) {
+              const set = new Set([...oldList, ...targetList]);
+              storage.setItem(targetKey, JSON.stringify(Array.from(set)));
+            }
+          } catch {}
+        }
+      } else if (matchedPrefix === 'students_') {
+        if (targetValue === null) {
+          storage.setItem(targetKey, oldValue);
         }
       }
 

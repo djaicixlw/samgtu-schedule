@@ -83,6 +83,11 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
       return;
     }
 
+    if (groupId === 'ingt-310') {
+      const ok = confirm(`⚠️ Внимание! Расписание группы ${groupConf.name} выверено по Личному Кабинету (ЛК СамГТУ) и является актуальным.\n\nПубличный портал samgtu.ru содержит неполные данные начала семестра (13 расхождений, включая устаревшие пары в 08:00 утра).\n\nВы действительно хотите перезаписать проверенное расписание ЛК данными с портала?`);
+      if (!ok) return;
+    }
+
     setIsApplyingOfficial(true);
     logger.action('SYNC', `Admin initiated official schedule import for ${groupConf.name}`);
 
@@ -296,8 +301,8 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
                   <RefreshCw className={`w-5 h-5 ${isCheckingOfficial ? 'animate-spin' : ''}`} />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Сверка расписания с официальным API СамГТУ</h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Проверка актуальности данных в приложении по базе университета</p>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Сверка расписания с публичным порталом СамГТУ</h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Сверка с витриной samgtu.ru. Расписания из ЛК (lk.samgtu.ru) защищены от перезаписи</p>
                 </div>
               </div>
               <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2.5 py-1 rounded-full uppercase tracking-wider">
@@ -386,6 +391,18 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
                       <li key={i}>{d}</li>
                     ))}
                   </ul>
+                )}
+
+                {/* Advisory notice for verified groups */}
+                {auditResult.status === 'diff' && selectedAuditGroup === 'ingt-310' && (
+                  <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-[11px] text-indigo-700 dark:text-indigo-300 space-y-1">
+                    <span className="font-bold flex items-center gap-1.5">
+                      ℹ️ Рабочая база группы выверена по Личному Кабинету (ЛК СамГТУ)
+                    </span>
+                    <p className="opacity-90 leading-relaxed">
+                      Расписание в приложении полностью соответствует живому учебному календарю семестра. Портал samgtu.ru содержит черновую сетку (утренние пары в 08:00 и предварительные предметы). Замена не требуется.
+                    </p>
+                  </div>
                 )}
 
                 {/* Prominent Action Button: Apply / Sync Official Schedule for ANY group */}

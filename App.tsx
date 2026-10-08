@@ -1566,6 +1566,7 @@ const App: React.FC = () => {
           <TabErrorBoundary tabName="Домашние задания">
             <Suspense fallback={<TabFallback />}>
               <HomeworkTracker
+                key={currentGroupId}
                 currentGroupId={currentGroupId}
                 userRole={effectiveRole}
                 refreshTrigger={refreshTrigger}

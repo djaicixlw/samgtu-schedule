@@ -173,8 +173,12 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
         if (sanitized.length !== parsed.length) {
           localStorage.setItem(`attendance_${currentGroupId}`, JSON.stringify(sanitized));
         }
+      } else {
+        setRecords([]);
       }
-    } catch (e) {}
+    } catch (e) {
+      setRecords([]);
+    }
   }, [currentGroupId, refreshTrigger]);
 
   // 2. Real-time Cloud Sync with REST & safe merge (Syncs across all classmates' devices)
@@ -192,7 +196,7 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
           if (Array.isArray(parsed)) fromStorage = sanitizeGroupRecords(parsed, currentGroupId);
         }
       } catch (e) {}
-      const fromRef = recordsRef.current || [];
+      const fromRef = (recordsRef.current || []).filter(r => r.groupId === currentGroupId);
       if (fromStorage.length === 0) return fromRef;
       if (fromRef.length === 0) return fromStorage;
       return mergeAttendance(fromRef, fromStorage, currentGroupId);

@@ -301,7 +301,11 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       const saved = localStorage.getItem(`homework_${currentGroupId}`);
       if (saved) freshItems = JSON.parse(saved);
     } catch (e) {}
-    if (freshItems.length === 0 && items.length > 0) freshItems = items;
+    if (freshItems.length === 0 && items.length > 0) {
+      freshItems = items.filter(it => it && (!it.groupId || it.groupId === currentGroupId));
+    } else {
+      freshItems = freshItems.filter(it => it && (!it.groupId || it.groupId === currentGroupId));
+    }
 
     const id = editingItem ? editingItem.id : `hw_${Date.now()}`;
     const newHomework: HomeworkItem = {
@@ -357,7 +361,11 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       const saved = localStorage.getItem(`homework_${currentGroupId}`);
       if (saved) freshItems = JSON.parse(saved);
     } catch (e) {}
-    if (freshItems.length === 0 && items.length > 0) freshItems = items;
+    if (freshItems.length === 0 && items.length > 0) {
+      freshItems = items.filter(it => it && (!it.groupId || it.groupId === currentGroupId));
+    } else {
+      freshItems = freshItems.filter(it => it && (!it.groupId || it.groupId === currentGroupId));
+    }
 
     const updated = freshItems.filter(it => it.id !== id);
     setItems(updated);
