@@ -138,7 +138,19 @@ export async function runNightlySync() {
       const officialData = rawOfficialWeeks[w];
       if (!officialData) continue;
 
-      const existingWeek = SCHEDULE_REGISTRY[groupId]?.[w as 1 | 2 | 3 | 4] || [];
+      let existingWeek = SCHEDULE_REGISTRY[groupId]?.[w as 1 | 2 | 3 | 4] || [];
+      const hasLessons = existingWeek.some(d => Array.isArray(d.lessons) && d.lessons.length > 0);
+      if (!hasLessons) {
+        const chunkPath = path.resolve(__dirname, `../public/schedules/${groupId}.json`);
+        if (fs.existsSync(chunkPath)) {
+          try {
+            const chunkData = JSON.parse(fs.readFileSync(chunkPath, 'utf8'));
+            if (chunkData && Array.isArray(chunkData[w])) {
+              existingWeek = chunkData[w];
+            }
+          } catch {}
+        }
+      }
       const weekDays: DaySchedule[] = [];
 
       for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
@@ -362,6 +374,8 @@ export async function runNightlySync() {
   } else {
     msg += `ℹ️ <i>Режим аудита (без автоприменения). Для применения запустите с флагом --apply</i>`;
   }
+
+  console.log('\n--- ДЕТАЛИ ИЗМЕНЕНИЙ ---\n' + msg.replace(/<[^>]+>/g, ''));
 
   // Send the Telegram alert
   await sendTelegramNotification(msg);

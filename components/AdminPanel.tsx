@@ -4,8 +4,9 @@ import { ShieldCheck, Key, CheckCircle2, RefreshCw, Wrench, ChevronDown, Downloa
 import { toast } from 'sonner';
 import { claimStaffRole } from '../utils/attendanceStorage';
 import { SAMGTU_GROUP_MAP } from '../utils/samgtuGroupMap';
-import { fetchOfficialSamgtuSchedule, syncOfficialGroupSchedule } from '../utils/cloudSync';
-import { registerScheduleAliases, markScheduleLoaded } from '../utils/scheduleLoader';
+import { fetchOfficialSamgtuSchedule, syncOfficialGroupSchedule, getLocalBackup } from '../utils/cloudSync';
+import { registerScheduleAliases, markScheduleLoaded, readCachedSchedule } from '../utils/scheduleLoader';
+import { convertOfficialSamgtuToWeekData } from '../utils/samgtuParser';
 import { SCHEDULE_REGISTRY } from '../constants';
 import { logger } from '../utils/logger';
 
@@ -132,8 +133,16 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
     logger.action('SYNC', `Admin initiated official schedule check for ${groupConf.name}`);
 
     try {
-      const officialData = await fetchOfficialSamgtuSchedule(groupConf.samgtuGroupId, 1);
-      if (!officialData || !officialData.wd) {
+      // 1. Fetch official SamGTU data for all 4 weeks
+      const rawWeeks: Record<number, any> = {};
+      for (let w = 1; w <= 4; w++) {
+        const officialData = await fetchOfficialSamgtuSchedule(groupConf.samgtuGroupId, w);
+        if (officialData && officialData.wd) {
+          rawWeeks[w] = officialData;
+        }
+      }
+
+      if (Object.keys(rawWeeks).length === 0) {
         setAuditResult({
           groupName: groupConf.name,
           status: 'error',
@@ -144,52 +153,68 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
         return;
       }
 
-      let officialCount = 0;
-      for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
-        const offDay = officialData.wd[String(dayIdx)];
-        if (offDay && offDay.at) {
-          Object.values(offDay.at).forEach((slot: any) => {
-            if (slot.Cells && slot.Cells.length > 0) {
-              officialCount += slot.Cells.length;
-            }
-          });
-        }
-      }
+      // 2. Parse official 4-week schedule
+      const teachers = getLocalBackup(groupId).subjectTeachers || {};
+      const { weekData: officialWeekData, totalLessons: officialTotalCount } = convertOfficialSamgtuToWeekData(groupId, rawWeeks, teachers);
 
-      // Read active week 1 schedule (checking custom schedule first, then in-memory registry)
-      let activeWeek1 = SCHEDULE_REGISTRY[groupId]?.[1] || [];
+      // 3. Read current app schedule (checking custom schedule, in-memory registry, then v1 cache)
+      let currentWeekData: any = SCHEDULE_REGISTRY[groupId];
       try {
         const customRaw = localStorage.getItem(`custom_schedule_${groupId}`);
         if (customRaw) {
           const parsed = JSON.parse(customRaw);
-          if (parsed && Array.isArray(parsed[1])) {
-            activeWeek1 = parsed[1];
+          if (parsed && typeof parsed === 'object') {
+            currentWeekData = parsed;
           }
         }
       } catch (e) {}
-      const currentCount = activeWeek1.reduce((sum, d) => sum + (Array.isArray(d.lessons) ? d.lessons.length : 0), 0);
 
-      // Check if group has protected LK schedule (e.g. ingt-310)
-      if (groupId === 'ingt-310' || groupId === '310') {
-        setAuditResult({
-          groupName: groupConf.name,
-          status: 'match',
-          summary: `Расписание группы ${groupConf.name} синхронизировано напрямую с Личным кабинетом студента (${currentCount} пар на 1-й неделе). В публичном реестре СамГТУ данные устарели (${officialCount} пар).`,
-          details: [
-            'Понедельник: пары БЖД (лаб. до 17:15 и лекция) верифицированы по ЛК',
-            'Вторник: фантомная пара в 08:00 удалена, занятия начинаются в 09:45',
-            'Расписание защищено от перезаписи устаревшим публичным API'
-          ]
-        });
-        toast.success(`Группа ${groupConf.name}: расписание верифицировано по ЛК`);
-        return;
+      if (!currentWeekData) {
+        const cached = readCachedSchedule(groupId);
+        if (cached?.data) {
+          currentWeekData = cached.data;
+        }
       }
 
-      if (Math.abs(officialCount - currentCount) === 0) {
+      // 4. Compare all weeks and days
+      const diffs: string[] = [];
+      let currentTotalCount = 0;
+
+      for (let w = 1; w <= 4; w++) {
+        const curDays = currentWeekData?.[w] || [];
+        const offDays = officialWeekData?.[w] || [];
+
+        for (const curDay of curDays) {
+          currentTotalCount += (curDay.lessons || []).length;
+        }
+
+        for (const offDay of offDays) {
+          const curDay = curDays.find((d: any) => d.dayName === offDay.dayName);
+          const curLessons = curDay?.lessons || [];
+
+          for (const offL of offDay.lessons || []) {
+            const match = curLessons.find((cl: any) => cl.timeStart === offL.timeStart && cl.subject.toLowerCase() === offL.subject.toLowerCase());
+            if (!match) {
+              diffs.push(`Н${w} ${offDay.dayName} ${offL.timeStart}: в СамГТУ «${offL.subject}», в приложении нет`);
+            } else if (offL.location && match.location !== offL.location) {
+              diffs.push(`Н${w} ${offDay.dayName} ${offL.timeStart} «${offL.subject}»: ауд. ${match.location || '—'} ➔ ${offL.location}`);
+            }
+          }
+
+          for (const curL of curLessons) {
+            const match = (offDay.lessons || []).find((ol: any) => ol.timeStart === curL.timeStart && ol.subject.toLowerCase() === curL.subject.toLowerCase());
+            if (!match) {
+              diffs.push(`Н${w} ${offDay.dayName} ${curL.timeStart}: в приложении «${curL.subject}», в СамГТУ нет`);
+            }
+          }
+        }
+      }
+
+      if (diffs.length === 0) {
         setAuditResult({
           groupName: groupConf.name,
           status: 'match',
-          summary: `Расписание 1-й недели полностью совпадает с базой СамГТУ (${officialCount} пар). Расхождений нет.`,
+          summary: `Расписание группы ${groupConf.name} полностью совпадает с базой СамГТУ (${officialTotalCount} пар на 4 недели). Расхождений нет.`,
           details: []
         });
         toast.success(`Сверка ${groupConf.name}: 0 расхождений`);
@@ -197,13 +222,10 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
         setAuditResult({
           groupName: groupConf.name,
           status: 'diff',
-          summary: `Обнаружены расхождения в количестве пар: в СамГТУ — ${officialCount}, в приложении — ${currentCount}.`,
-          details: [
-            `Официальный реестр СамГТУ: ${officialCount} пар на 1-й неделе`,
-            `Текущее расписание приложения: ${currentCount} пар на 1-й неделе`
-          ]
+          summary: `Обнаружено ${diffs.length} расхождений (в СамГТУ: ${officialTotalCount} пар, в приложении: ${currentTotalCount} пар). Нажмите «Применить», чтобы синхронизировать данные.`,
+          details: diffs.slice(0, 10).concat(diffs.length > 10 ? [`...и еще ${diffs.length - 10} расхождений`] : [])
         });
-        toast.warning(`Группа ${groupConf.name}: есть расхождения`);
+        toast.warning(`Группа ${groupConf.name}: есть расхождения (${diffs.length})`);
       }
     } catch (err: any) {
       setAuditResult({
@@ -308,10 +330,19 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
               <button
                 onClick={() => handleCheckOfficial(selectedAuditGroup)}
                 disabled={isCheckingOfficial || isApplyingOfficial}
-                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 min-h-[44px] cursor-pointer shrink-0"
+                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 min-h-[44px] cursor-pointer shrink-0"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isCheckingOfficial ? 'animate-spin' : ''}`} />
                 {isCheckingOfficial ? 'Сверяю...' : 'Запустить сверку'}
+              </button>
+              <button
+                onClick={() => handleApplyOfficialSchedule(selectedAuditGroup)}
+                disabled={isCheckingOfficial || isApplyingOfficial}
+                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 min-h-[44px] cursor-pointer shrink-0"
+                title="Принудительно загрузить и применить расписание СамГТУ на все 4 недели"
+              >
+                <Download className={`w-3.5 h-3.5 ${isApplyingOfficial ? 'animate-spin' : ''}`} />
+                {isApplyingOfficial ? 'Обновляю...' : 'Синхронизировать'}
               </button>
             </div>
 
@@ -336,8 +367,8 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
                   </ul>
                 )}
 
-                {/* Prominent Action Button: Apply / Sync Official Schedule */}
-                {auditResult.status === 'diff' && selectedAuditGroup !== 'ingt-310' && (
+                {/* Prominent Action Button: Apply / Sync Official Schedule for ANY group */}
+                {auditResult.status === 'diff' && (
                   <div className="pt-2">
                     <button
                       type="button"
