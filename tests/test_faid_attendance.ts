@@ -186,19 +186,19 @@ assert(JSON.stringify(w3MoIds) === JSON.stringify([
   'faid310-w3-mo-1', 'faid310-w3-mo-2', 'faid310-w3-mo-3', 'faid310-w3-mo-4'
 ]), "Week 3 Monday lesson IDs: faid310-w3-mo-1..4");
 
-// 3.3 Week 2 Tuesday (1 lesson: Project Smolenskaya)
+// 3.3 Week 2 Tuesday (2 lessons: Career lecture & Project Smolenskaya)
 const w2TuDay = faidSchedule[2]?.find(d => d.dayName === 'Вторник');
 assert(w2TuDay !== undefined, "Week 2 Tuesday day object exists");
-assert(w2TuDay?.lessons.length === 1, `Week 2 Tuesday has 1 lesson (got: ${w2TuDay?.lessons.length})`);
+assert(w2TuDay?.lessons.length === 2, `Week 2 Tuesday has 2 lessons (got: ${w2TuDay?.lessons.length})`);
 
 // 3.4 Week 4 Tuesday (2 lessons)
 const w4TuDay = faidSchedule[4]?.find(d => d.dayName === 'Вторник');
 assert(w4TuDay !== undefined, "Week 4 Tuesday day object exists");
 assert(w4TuDay?.lessons.length === 2, `Week 4 Tuesday has 2 lessons (got: ${w4TuDay?.lessons.length})`);
 
-// 3.5 Total target lessons count (4 + 4 + 1 + 2 = 11)
+// 3.5 Total target lessons count (4 + 4 + 2 + 2 = 12)
 const totalTargetLessons = (w1MoDay?.lessons.length || 0) + (w3MoDay?.lessons.length || 0) + (w2TuDay?.lessons.length || 0) + (w4TuDay?.lessons.length || 0);
-assert(totalTargetLessons === 11, `Total target lessons across the 4 days is 11 (got: ${totalTargetLessons})`);
+assert(totalTargetLessons === 12, `Total target lessons across the 4 days is 12 (got: ${totalTargetLessons})`);
 
 // 3.6 Calendar dates verification
 // Cycle starts 2026-08-31

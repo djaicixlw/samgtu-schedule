@@ -55,13 +55,13 @@ check("Алиас 'ingt-109' ссылается на расписание ingt-2
 // ============================================================================
 // SECTION 3: WEEK 1 (ЧИСЛИТЕЛЬ) - 16 ПАР
 // ============================================================================
-console.log("\n>>> 3. Проверка Недели 1 (Числитель): ожидается 16 пар (Пн: 3, Вт: 2, Ср: 3, Чт: 4, Пт: 2, Сб: 2)");
+console.log("\n>>> 3. Проверка Недели 1 (Числитель): ожидается 17 пар (Пн: 4, Вт: 2, Ср: 3, Чт: 4, Пт: 2, Сб: 2)");
 const w1 = schedule209[1];
 const w1Total = w1.reduce((sum, day) => sum + day.lessons.length, 0);
-check("Неделя 1 суммарно пар: 16", w1Total === 16, `получено: ${w1Total}`);
+check("Неделя 1 суммарно пар: 17", w1Total === 17, `получено: ${w1Total}`);
 
 const w1Days = Object.fromEntries(w1.map(d => [d.dayName, d.lessons.length]));
-check("Пн Недели 1: 3 пары", w1Days['Понедельник'] === 3, `пар: ${w1Days['Понедельник']}`);
+check("Пн Недели 1: 4 пары", w1Days['Понедельник'] === 4, `пар: ${w1Days['Понедельник']}`);
 check("Вт Недели 1: 2 пары", w1Days['Вторник'] === 2, `пар: ${w1Days['Вторник']}`);
 check("Ср Недели 1: 3 пары", w1Days['Среда'] === 3, `пар: ${w1Days['Среда']}`);
 check("Чт Недели 1: 4 пары", w1Days['Четверг'] === 4, `пар: ${w1Days['Четверг']}`);
@@ -287,7 +287,7 @@ for (let w = 1; w <= 4; w++) {
   const satCount = weekLessons.find(d => d.dayName === 'Суббота')?.lessons.length || 0;
   const weekTotal = monCount + tueCount + wedCount + thuCount + friCount + satCount;
 
-  const expectedTotals: Record<number, number> = { 1: 18, 2: 16, 3: 18, 4: 17 };
+  const expectedTotals: Record<number, number> = { 1: 18, 2: 17, 3: 18, 4: 17 };
   check(`3-ФАИД-110 Неделя ${w}: Пт 0 пар и Сб 0 пар`, friCount === 0 && satCount === 0, `Пт:${friCount}, Сб:${satCount}`);
   check(`3-ФАИД-110 Неделя ${w}: итоговая загрузка ${expectedTotals[w]} пар`, weekTotal === expectedTotals[w], `пар: ${weekTotal}`);
 }

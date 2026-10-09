@@ -37,21 +37,37 @@ export const GROUP_ID_PREFIXES: Record<string, string> = {
   'htf-215': 'htf215'
 };
 
-export function fetchJson(url: string): Promise<any> {
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const clean = data.replace(/^\uFEFF/, '');
-          resolve(JSON.parse(clean));
-        } catch (e) {
-          reject(e);
-        }
+export async function fetchJson(url: string, retries = 3, delayMs = 300): Promise<any> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await new Promise((resolve, reject) => {
+        const req = https.get(url, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              const clean = data.replace(/^\uFEFF/, '').trim();
+              if (clean.startsWith('<')) {
+                return reject(new Error(`HTML response received instead of JSON (status ${res.statusCode}): ${clean.substring(0, 100)}`));
+              }
+              resolve(JSON.parse(clean));
+            } catch (e) {
+              reject(e);
+            }
+          });
+        });
+        req.on('error', reject);
+        req.setTimeout(10000, () => {
+          req.destroy();
+          reject(new Error('Timeout fetching ' + url));
+        });
       });
-    }).on('error', reject);
-  });
+      return res;
+    } catch (err: any) {
+      if (attempt === retries) throw err;
+      await new Promise(r => setTimeout(r, delayMs * attempt));
+    }
+  }
 }
 
 export function cleanText(text: string): string {
@@ -117,7 +133,7 @@ export function parseCellName(cellName: string): {
 }
 
 // Поиск существующего преподавателя (гарантирует нетронутость преподов)
-export function findExistingTeacher(groupId: string, subject: string, type: string): string {
+export function findExistingTeacher(groupId: string, subject: string, type: string, existingWeek?: DaySchedule[]): string {
   const normSubj = cleanText(subject).toLowerCase();
   const normType = type.toLowerCase();
 
@@ -136,6 +152,35 @@ export function findExistingTeacher(groupId: string, subject: string, type: stri
   // Для групп 101 и 103 Колибасов НЕ ведет проект и патенты (только 110)
   if ((groupId === 'ingt-301' || groupId === 'ingt-303') && (normSubj.includes('проект') || normSubj.includes('патентовед'))) {
     return '';
+  }
+
+  // 0. Поиск в переданном existingWeek (если расписание подгружено on-demand)
+  if (existingWeek && existingWeek.length > 0) {
+    for (const day of existingWeek) {
+      for (const lesson of day.lessons) {
+        const lSubj = cleanText(lesson.subject).toLowerCase();
+        const lType = lesson.type.toLowerCase();
+        if (lSubj === normSubj && lType === normType) {
+          const found = checkTeacher(lesson.teacher);
+          if (found) {
+            if ((groupId === 'ingt-301' || groupId === 'ingt-303') && found.includes('Колибасов')) continue;
+            return found;
+          }
+        }
+      }
+    }
+    for (const day of existingWeek) {
+      for (const lesson of day.lessons) {
+        const lSubj = cleanText(lesson.subject).toLowerCase();
+        if (lSubj === normSubj) {
+          const found = checkTeacher(lesson.teacher);
+          if (found) {
+            if ((groupId === 'ingt-301' || groupId === 'ingt-303') && found.includes('Колибасов')) continue;
+            return found;
+          }
+        }
+      }
+    }
   }
 
   // 1. Прямой поиск в текущем расписании группы (совпадение предмета и типа)
@@ -287,15 +332,19 @@ export async function verifyAndSync() {
     const groupWeeks: Record<number, DaySchedule[]> = {};
     const prefix = GROUP_ID_PREFIXES[groupId] || groupId;
 
-    // Сначала скачиваем данные всех 4 недель
-    const rawWeeksData: Record<number, any> = {};
+    // Скачиваем данные 4 недель: ранние (1..4) и стабилизированный семестровый цикл (5..8)
+    const rawWeeksDataEarly: Record<number, any> = {};
+    const rawWeeksDataLate: Record<number, any> = {};
     for (let w = 1; w <= 4; w++) {
-      const url = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w}`;
-      rawWeeksData[w] = await fetchJson(url);
+      const urlEarly = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w}`;
+      const urlLate = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w + 4}`;
+      rawWeeksDataEarly[w] = await fetchJson(urlEarly);
+      await new Promise(r => setTimeout(r, 80));
+      rawWeeksDataLate[w] = await fetchJson(urlLate);
+      await new Promise(r => setTimeout(r, 80));
     }
 
     for (let weekNum = 1; weekNum <= 4; weekNum++) {
-      const officialData = rawWeeksData[weekNum];
       let existingWeek = SCHEDULE_REGISTRY[groupId]?.[weekNum as 1|2|3|4] || [];
       const totalLessonsInReg = existingWeek.reduce((sum, d) => sum + (d.lessons?.length || 0), 0);
       if (totalLessonsInReg === 0) {
@@ -317,17 +366,22 @@ export async function verifyAndSync() {
       for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
         const dayName = DAY_NAMES[dayIdx - 1];
         const dayCode = DAY_CODES[dayIdx - 1];
-        let offDay = officialData?.wd?.[String(dayIdx)];
+
+        const hasCells = (d: any) => d?.at && Object.values(d.at).some((slot: any) => slot.Cells && slot.Cells.length > 0);
+        const dayLate = rawWeeksDataLate[weekNum]?.wd?.[String(dayIdx)];
+        const dayEarly = rawWeeksDataEarly[weekNum]?.wd?.[String(dayIdx)];
+        let offDay = hasCells(dayLate) ? dayLate : dayEarly;
+
+        // 31 августа - понедельник 1-й недели. Если пуст, берем из недели 3
+        if (weekNum === 1 && dayIdx === 1 && !hasCells(offDay)) {
+          const w3Late = rawWeeksDataLate[3]?.wd?.['1'];
+          const w3Early = rawWeeksDataEarly[3]?.wd?.['1'];
+          offDay = hasCells(w3Late) ? w3Late : w3Early;
+        }
+
         const curDay = existingWeek.find(d => d.dayName === dayName);
         const curLessons = curDay?.lessons || [];
         existingLessonsCount += curLessons.length;
-
-        // 31 августа - понедельник 1-й недели. Учеба начинается со вторника 1 сентября.
-        // Для 4-недельного цикла берем пары понедельника числителя из недели 3 (если в неделе 1 нет занятий)
-        const hasCells = (d: any) => d?.at && Object.values(d.at).some((slot: any) => slot.Cells && slot.Cells.length > 0);
-        if (weekNum === 1 && dayIdx === 1 && !hasCells(offDay)) {
-          offDay = rawWeeksData[3]?.wd?.['1'];
-        }
 
         const offLessons: Lesson[] = [];
 
@@ -338,10 +392,11 @@ export async function verifyAndSync() {
 
           let lessonCounter = 1;
           for (const { slotKey, slotData } of sortedSlots) {
+            if (!TIME_SLOTS[String(slotKey)]) continue; // строго пары 1..6 (без 7-й пары)
             if (slotData.Cells && slotData.Cells.length > 0) {
               for (const cell of slotData.Cells) {
                 const parsed = parseCellName(cell.CellName);
-                const times = TIME_SLOTS[String(slotKey)] || { timeStart: '00:00', timeEnd: '00:00' };
+                const times = TIME_SLOTS[String(slotKey)];
                 const teacher = findExistingTeacher(groupId, parsed.subject, parsed.type, existingWeek);
 
                 offLessons.push({

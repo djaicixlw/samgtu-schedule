@@ -11,26 +11,37 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const CONSTANTS_PATH = path.resolve(__dirname, '../constants.ts');
 
-export function fetchJson(url: string, timeoutMs = 8000): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const clean = data.replace(/^\uFEFF/, '');
-          resolve(JSON.parse(clean));
-        } catch (e) {
-          reject(e);
-        }
+export async function fetchJson(url: string, timeoutMs = 10000, retries = 3, delayMs = 300): Promise<any> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await new Promise((resolve, reject) => {
+        const req = https.get(url, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              const clean = data.replace(/^\uFEFF/, '').trim();
+              if (clean.startsWith('<')) {
+                return reject(new Error(`HTML response received instead of JSON (status ${res.statusCode}): ${clean.substring(0, 100)}`));
+              }
+              resolve(JSON.parse(clean));
+            } catch (e) {
+              reject(e);
+            }
+          });
+        });
+        req.on('error', reject);
+        req.setTimeout(timeoutMs, () => {
+          req.destroy();
+          reject(new Error(`Timeout fetching ${url}`));
+        });
       });
-    });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => {
-      req.destroy();
-      reject(new Error(`Timeout fetching ${url}`));
-    });
-  });
+      return res;
+    } catch (err: any) {
+      if (attempt === retries) throw err;
+      await new Promise(r => setTimeout(r, delayMs * attempt));
+    }
+  }
 }
 
 export interface GroupDiff {
@@ -123,18 +134,24 @@ export async function runNightlySync() {
     };
 
     const groupWeeks: Record<number, DaySchedule[]> = {};
-    const rawOfficialWeeks: Record<number, any> = {};
+    const rawOfficialWeeksEarly: Record<number, any> = {};
+    const rawOfficialWeeksLate: Record<number, any> = {};
     let fetchErrorOccurred = false;
 
     for (let w = 1; w <= 4; w++) {
-      const url = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w}`;
+      const urlEarly = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w}`;
+      const urlLate = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w + 4}`;
       try {
-        const res = await fetchJson(url);
-        if (!res || typeof res !== 'object' || !res.wd) {
-          fetchErrorOccurred = true;
-          console.warn(`  ⚠️ Некорректный/пустой ответ API для недели ${w} (${conf.name})`);
-        } else {
-          rawOfficialWeeks[w] = res;
+        const resEarly = await fetchJson(urlEarly);
+        await new Promise(r => setTimeout(r, 80));
+        const resLate = await fetchJson(urlLate);
+        await new Promise(r => setTimeout(r, 80));
+
+        if (resEarly && typeof resEarly === 'object' && resEarly.wd) {
+          rawOfficialWeeksEarly[w] = resEarly;
+        }
+        if (resLate && typeof resLate === 'object' && resLate.wd) {
+          rawOfficialWeeksLate[w] = resLate;
         }
       } catch (err: any) {
         fetchErrorOccurred = true;
@@ -142,7 +159,7 @@ export async function runNightlySync() {
       }
     }
 
-    if (fetchErrorOccurred || Object.keys(rawOfficialWeeks).length < 4) {
+    if (fetchErrorOccurred && Object.keys(rawOfficialWeeksEarly).length === 0 && Object.keys(rawOfficialWeeksLate).length === 0) {
       console.warn(`  🛡️ [Защита] Сетевая ошибка или неполные данные API для группы ${conf.name}. Локальное расписание защищено от затирания.`);
       continue;
     }
@@ -171,21 +188,22 @@ export async function runNightlySync() {
     let groupParsedLessons = 0;
 
     for (let w = 1; w <= 4; w++) {
-      const officialData = rawOfficialWeeks[w];
       const weekDays: DaySchedule[] = [];
 
       for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
         const dayName = DAY_NAMES[dayIdx - 1];
         const dayCode = DAY_CODES[dayIdx - 1];
-        let offDay = officialData?.wd?.[String(dayIdx)];
 
-        // Fallback for Monday Week 1 (31 August has 0 pairs on portal) from Monday Week 3 (odd week cycle)
-        if (w === 1 && dayIdx === 1) {
-          const w1HasCells = offDay?.at && Object.values(offDay.at as Record<string, any>).some((s: any) => s.Cells && s.Cells.length > 0);
-          const w3Monday = rawOfficialWeeks[3]?.wd?.['1'];
-          if (!w1HasCells && w3Monday) {
-            offDay = w3Monday;
-          }
+        const hasCells = (d: any) => d?.at && Object.values(d.at as Record<string, any>).some((s: any) => s.Cells && s.Cells.length > 0);
+        const dayLate = rawOfficialWeeksLate[w]?.wd?.[String(dayIdx)];
+        const dayEarly = rawOfficialWeeksEarly[w]?.wd?.[String(dayIdx)];
+        let offDay = hasCells(dayLate) ? dayLate : dayEarly;
+
+        // Fallback for Monday Week 1 (31 August has 0 pairs on portal)
+        if (w === 1 && dayIdx === 1 && !hasCells(offDay)) {
+          const w3Late = rawOfficialWeeksLate[3]?.wd?.['1'];
+          const w3Early = rawOfficialWeeksEarly[3]?.wd?.['1'];
+          offDay = hasCells(w3Late) ? w3Late : w3Early;
         }
 
         const offLessons: Lesson[] = [];
@@ -197,10 +215,11 @@ export async function runNightlySync() {
 
           let lessonCounter = 1;
           for (const { slotKey, slotData } of sortedSlots) {
+            if (!TIME_SLOTS[String(slotKey)]) continue; // строго звонки 1..6 (без 7-й пары)
             if (slotData.Cells && slotData.Cells.length > 0) {
               for (const cell of slotData.Cells) {
                 const parsed = parseCellName(cell.CellName);
-                const times = TIME_SLOTS[String(slotKey)] || { timeStart: '00:00', timeEnd: '00:00' };
+                const times = TIME_SLOTS[String(slotKey)];
                 const existingWeek = existingGroupSchedule[w] || [];
                 const teacher = findExistingTeacher(groupId, parsed.subject, parsed.type, existingWeek);
 

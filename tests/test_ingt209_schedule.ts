@@ -55,13 +55,14 @@ assert(SCHEDULE_REGISTRY['ingt-109'] === schedule, "Alias 'ingt-109' points to i
 console.log("\n--- Week 1 Details (Numerator) ---");
 const w1 = schedule[1];
 const w1Total = w1.reduce((acc, d) => acc + d.lessons.length, 0);
-assert(w1Total === 16, `Week 1 total lessons is 16 (got ${w1Total})`);
+assert(w1Total === 17, `Week 1 total lessons is 17 (got ${w1Total})`);
 
 const w1Mon = w1.find(d => d.dayName === 'Понедельник');
-assert(w1Mon?.lessons.length === 3, `W1 Monday has 3 lessons (got ${w1Mon?.lessons.length})`);
+assert(w1Mon?.lessons.length === 4, `W1 Monday has 4 lessons (got ${w1Mon?.lessons.length})`);
 assert(w1Mon?.lessons[0].subject === 'Физика' && w1Mon?.lessons[0].timeStart === '11:50', "W1 Mo L1: Physics prac (11:50-13:25)");
 assert(w1Mon?.lessons[1].subject === 'Защита информации' && w1Mon?.lessons[1].timeStart === '13:35', "W1 Mo L2: InfoSec prac (13:35-15:10)");
 assert(w1Mon?.lessons[2].subject === 'Математика' && w1Mon?.lessons[2].timeStart === '15:40', "W1 Mo L3: Math prac (15:40-17:15)");
+assert(w1Mon?.lessons[3].subject === 'Математика' && w1Mon?.lessons[3].timeStart === '17:25', "W1 Mo L4: Math prac (17:25-19:00)");
 
 const w1Tue = w1.find(d => d.dayName === 'Вторник');
 assert(w1Tue?.lessons.length === 2, `W1 Tuesday has 2 lessons (got ${w1Tue?.lessons.length})`);

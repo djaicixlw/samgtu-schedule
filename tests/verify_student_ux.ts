@@ -2,6 +2,8 @@ import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { STUDENTS_REGISTRY, getDayCalendarDate, getDayISODate } from '../attendance';
 import { getSeedSubjectTeachers, SEED_SUBJECT_TEACHERS_BY_GROUP } from '../defaultData';
 import { sanitizeTeachers, sanitizeOverrides } from '../utils/cloudSync';
+import { preloadAllSchedulesSync } from '../utils/scheduleNodeLoader';
+preloadAllSchedulesSync();
 
 interface CheckResult {
   category: string;
@@ -32,7 +34,7 @@ check('1. FAID Schedule', 'SCHEDULE_REGISTRY["faid-310"] существует', 
 // Проверка количества пар по неделям и дням
 const expectedLessonCounts: Record<number, Record<string, number>> = {
   1: { 'Понедельник': 4, 'Вторник': 4, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
-  2: { 'Понедельник': 5, 'Вторник': 1, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
+  2: { 'Понедельник': 5, 'Вторник': 2, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
   3: { 'Понедельник': 4, 'Вторник': 4, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
   4: { 'Понедельник': 5, 'Вторник': 2, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 }
 };
@@ -64,9 +66,9 @@ const calDateSep8 = getDayCalendarDate('Вторник', 2, '2026-08-31');
 const isoDateSep8 = getDayISODate('Вторник', 2, '2026-08-31');
 check('2. Critical Dates', '8 сентября (Вторник, Неделя 2) дата в календаре = "8 сент"', calDateSep8 === '8 сент', `получено: "${calDateSep8}"`);
 check('2. Critical Dates', '8 сентября (Вторник, Неделя 2) ISO дата = "2026-09-08"', isoDateSep8 === '2026-09-08', `получено: "${isoDateSep8}"`);
-check('2. Critical Dates', '8 сентября (Вторник, Неделя 2) содержит ровно 1 пару', w2Tue?.lessons.length === 1, `пар: ${w2Tue?.lessons.length}`);
+check('2. Critical Dates', '8 сентября (Вторник, Неделя 2) содержит ровно 2 пары', w2Tue?.lessons.length === 2, `пар: ${w2Tue?.lessons.length}`);
 const sep8Badge = `${w2Tue?.lessons.length} ${(w2Tue?.lessons.length === 1 ? 'пара' : (w2Tue?.lessons.length! >= 2 && w2Tue?.lessons.length! <= 4) ? 'пары' : 'пар')}`;
-check('2. Critical Dates', '8 сентября бейдж счетчика в UI: "1 пара"', sep8Badge === '1 пара', `бейдж: "${sep8Badge}"`);
+check('2. Critical Dates', '8 сентября бейдж счетчика в UI: "2 пары"', sep8Badge === '2 пары', `бейдж: "${sep8Badge}"`);
 check('2. Critical Dates', '8 сентября НЕ показывает "0 пар / В этот день занятий нет"', (w2Tue?.lessons.length || 0) > 0);
 
 // 2.2 Понедельник, Неделя 3 -> 14 сентября
@@ -170,8 +172,8 @@ check('3.1 Rooms', 'Евстратова (Компьютерные технол�
 );
 
 const stotskayaRooms = Array.from(new Set(allFaidLessons.filter(l => l.teacher.includes('Стоцкая')).map(l => l.location)));
-check('3.1 Rooms', 'Стоцкая (Философия): Корпус 12, 525 или Moodle',
-  stotskayaRooms.every(r => (r.includes('12') && r.includes('525')) || r.includes('Moodle')),
+check('3.1 Rooms', 'Стоцкая (Философия): Корпус 12, 525, Корпус 13, 0408 или Moodle',
+  stotskayaRooms.every(r => (r.includes('12') && r.includes('525')) || r.includes('Moodle') || (r.includes('13') && r.includes('0408'))),
   stotskayaRooms.join('; ')
 );
 

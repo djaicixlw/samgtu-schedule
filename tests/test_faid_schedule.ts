@@ -102,8 +102,8 @@ assert(w2Mon?.lessons[4].subject === 'Конструирование в диза
 
 // Week 2 Tuesday: 1 lesson (Практико-ориентированный проект)
 const w2Tue = faidSchedule[2].find(d => d.dayName === 'Вторник');
-assert(w2Tue?.lessons.length === 1, `Week 2 Tuesday has 1 lesson (got ${w2Tue?.lessons.length})`);
-assert(w2Tue?.lessons[0].subject === 'Практико-ориентированный проект' && w2Tue?.lessons[0].teacher === 'Смоленская Елена Олеговна', "W2 Tu L1: Project Smolenskaya");
+assert(w2Tue?.lessons.length === 2, `Week 2 Tuesday has 2 lessons (got ${w2Tue?.lessons.length})`);
+assert(w2Tue?.lessons.some(l => l.subject === 'Практико-ориентированный проект' && l.teacher === 'Смоленская Елена Олеговна'), "W2 Tu: Project Smolenskaya");
 
 // Week 2 Wednesday: 5 lessons
 const w2Wed = faidSchedule[2].find(d => d.dayName === 'Среда');
@@ -139,12 +139,12 @@ const w4Tue = faidSchedule[4].find(d => d.dayName === 'Вторник');
 assert(w4Tue?.lessons.length === 2, `Week 4 Tuesday has 2 lessons (got ${w4Tue?.lessons.length})`);
 assert(w4Tue?.lessons[1].subject === 'Практико-ориентированный проект' && w4Tue?.lessons[1].teacher === 'Смоленская Елена Олеговна', "W4 Tu L2: Project Smolenskaya");
 
-// Check total lessons across all 4 weeks = 69 (18 + 16 + 18 + 17)
+// Check total lessons across all 4 weeks = 70 (18 + 17 + 18 + 17)
 let totalFaidLessons = 0;
 for (let w = 1; w <= 4; w++) {
   faidSchedule[w].forEach(day => totalFaidLessons += day.lessons.length);
 }
-assert(totalFaidLessons === 69, `3-ФАИД-110 total lessons across 4 weeks is 69 (got ${totalFaidLessons})`);
+assert(totalFaidLessons === 70, `3-ФАИД-110 total lessons across 4 weeks is 70 (got ${totalFaidLessons})`);
 
 // Check that Kolibasov is strictly NOT in 101 and 103
 const ingt301 = SCHEDULE_REGISTRY['ingt-301'];
