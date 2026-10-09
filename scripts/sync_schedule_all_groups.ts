@@ -200,10 +200,12 @@ export function convertOfficialToWeekData(
 
         let lessonIdx = 1;
         for (const { slotKey, slotData } of sortedSlots) {
+          const times = TIME_SLOTS[String(slotKey)];
+          if (!times) continue; // Strictly exclude 7th pair and invalid slots
+
           if (slotData.Cells && Array.isArray(slotData.Cells) && slotData.Cells.length > 0) {
             for (const cell of slotData.Cells) {
               const parsed = parseCellName(cell.CellName || '');
-              const times = TIME_SLOTS[String(slotKey)] || { timeStart: '08:00', timeEnd: '09:35' };
 
               lessons.push({
                 id: `${canonicalId}-w${weekNum}-${dayCode}-${lessonIdx}`,

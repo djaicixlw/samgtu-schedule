@@ -296,7 +296,19 @@ export async function verifyAndSync() {
 
     for (let weekNum = 1; weekNum <= 4; weekNum++) {
       const officialData = rawWeeksData[weekNum];
-      const existingWeek = SCHEDULE_REGISTRY[groupId]?.[weekNum as 1|2|3|4] || [];
+      let existingWeek = SCHEDULE_REGISTRY[groupId]?.[weekNum as 1|2|3|4] || [];
+      const totalLessonsInReg = existingWeek.reduce((sum, d) => sum + (d.lessons?.length || 0), 0);
+      if (totalLessonsInReg === 0) {
+        const chunkPath = path.resolve(__dirname, `../public/schedules/${groupId}.json`);
+        if (fs.existsSync(chunkPath)) {
+          try {
+            const chunkData = JSON.parse(fs.readFileSync(chunkPath, 'utf8'));
+            if (chunkData && Array.isArray(chunkData[weekNum])) {
+              existingWeek = chunkData[weekNum];
+            }
+          } catch {}
+        }
+      }
 
       let officialLessonsCount = 0;
       let existingLessonsCount = 0;
@@ -311,13 +323,15 @@ export async function verifyAndSync() {
         existingLessonsCount += curLessons.length;
 
         // 31 августа - понедельник 1-й недели. Учеба начинается со вторника 1 сентября.
-        // Для 4-недельного цикла сохраняем пары понедельника числителя.
+        // Для 4-недельного цикла берем пары понедельника числителя из недели 3 (если в неделе 1 нет занятий)
+        const hasCells = (d: any) => d?.at && Object.values(d.at).some((slot: any) => slot.Cells && slot.Cells.length > 0);
+        if (weekNum === 1 && dayIdx === 1 && !hasCells(offDay)) {
+          offDay = rawWeeksData[3]?.wd?.['1'];
+        }
+
         const offLessons: Lesson[] = [];
 
-        if (weekNum === 1 && dayIdx === 1 && curLessons.length > 0) {
-          offLessons.push(...curLessons);
-          officialLessonsCount += curLessons.length;
-        } else if (offDay && offDay.at) {
+        if (offDay && offDay.at) {
           const sortedSlots = Object.entries(offDay.at as Record<string, any>)
             .map(([slotKey, slotData]) => ({ slotKey: Number(slotKey), slotData }))
             .sort((a, b) => a.slotKey - b.slotKey);
@@ -328,7 +342,7 @@ export async function verifyAndSync() {
               for (const cell of slotData.Cells) {
                 const parsed = parseCellName(cell.CellName);
                 const times = TIME_SLOTS[String(slotKey)] || { timeStart: '00:00', timeEnd: '00:00' };
-                const teacher = findExistingTeacher(groupId, parsed.subject, parsed.type);
+                const teacher = findExistingTeacher(groupId, parsed.subject, parsed.type, existingWeek);
 
                 offLessons.push({
                   id: `${prefix}-w${weekNum}-${dayCode}-${lessonCounter}`,
@@ -343,55 +357,6 @@ export async function verifyAndSync() {
                 officialLessonsCount++;
               }
             }
-          }
-        }
-
-        // LK timetable corrections for 3-ИНГТ-110 (ingt-310):
-        if (groupId === 'ingt-310') {
-          // 1. Tuesday odd weeks (1 & 3): LK has no 8:00 AM class, starts at 9:45
-          if ((weekNum === 1 || weekNum === 3) && dayIdx === 2) {
-            const idx = offLessons.findIndex(l => l.timeStart === '08:00');
-            if (idx >= 0) {
-              offLessons.splice(idx, 1);
-              officialLessonsCount--;
-            }
-          }
-          // 2. Monday odd weeks (1 & 3): No "Конструирование", strictly BZhD lab (13:35-15:10, note to 17:15) & lecture (17:25)
-          if ((weekNum === 1 || weekNum === 3) && dayIdx === 1) {
-            const pe = offLessons.find(l => l.timeStart === '11:50');
-            offLessons.length = 0;
-            if (pe) {
-              offLessons.push(pe);
-            } else {
-              offLessons.push({
-                id: `${prefix}-w${weekNum}-mo-1`,
-                timeStart: '11:50',
-                timeEnd: '13:25',
-                subject: 'Элективные курсы по физической культуре и спорту',
-                type: 'Практические занятия',
-                location: 'Спортивный комплекс',
-                teacher: 'Кафедра физического воспитания'
-              });
-            }
-            offLessons.push({
-              id: `${prefix}-w${weekNum}-mo-2`,
-              timeStart: '13:35',
-              timeEnd: '15:10',
-              subject: 'Безопасность жизнедеятельности',
-              type: 'Лабораторные работы',
-              location: 'Корпус № 6, 87',
-              teacher: 'Кривова Маргарита Андреевна',
-              note: 'пара до 17:15'
-            });
-            offLessons.push({
-              id: `${prefix}-w${weekNum}-mo-4`,
-              timeStart: '17:25',
-              timeEnd: '19:00',
-              subject: 'Безопасность жизнедеятельности',
-              type: 'Лекции',
-              location: 'Корпус № 1, 432',
-              teacher: 'Сорокина Людмила Владимировна'
-            });
           }
         }
 
@@ -473,6 +438,17 @@ export async function verifyAndSync() {
 
     fs.writeFileSync(CONSTANTS_PATH, fileContent, 'utf-8');
     console.log(`\nФайл constants.ts успешно обновлен и синхронизирован с официальным API СамГТУ!`);
+
+    // 3. Save On-Demand JSON files in public/schedules/
+    const schedulesDir = path.resolve(__dirname, '../public/schedules');
+    if (!fs.existsSync(schedulesDir)) {
+      fs.mkdirSync(schedulesDir, { recursive: true });
+    }
+    for (const [groupId, weeks] of Object.entries(updatedSchedules)) {
+      const jsonPath = path.join(schedulesDir, `${groupId}.json`);
+      fs.writeFileSync(jsonPath, JSON.stringify(weeks, null, 2), 'utf-8');
+      console.log(`  ✓ Обновлен файл public/schedules/${groupId}.json`);
+    }
   } else {
     console.log(`Режим аудита (--check). Файлы не изменялись.`);
     console.log(`Для применения изменений запустите: npx tsx scripts/sync_official_schedule.ts --apply\n`);

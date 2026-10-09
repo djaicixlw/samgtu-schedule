@@ -201,7 +201,8 @@ export async function runNightlySync() {
               for (const cell of slotData.Cells) {
                 const parsed = parseCellName(cell.CellName);
                 const times = TIME_SLOTS[String(slotKey)] || { timeStart: '00:00', timeEnd: '00:00' };
-                const teacher = findExistingTeacher(groupId, parsed.subject, parsed.type);
+                const existingWeek = existingGroupSchedule[w] || [];
+                const teacher = findExistingTeacher(groupId, parsed.subject, parsed.type, existingWeek);
 
                 offLessons.push({
                   id: `${prefix}-w${w}-${dayCode}-${lessonCounter}`,
