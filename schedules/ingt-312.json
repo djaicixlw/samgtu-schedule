@@ -346,24 +346,6 @@
       "lessons": [
         {
           "id": "ingt-312-w3-mo-1",
-          "timeStart": "08:00",
-          "timeEnd": "09:35",
-          "subject": "Коллоидная химия",
-          "type": "Лабораторные работы",
-          "location": "Корпус № 2, 56",
-          "teacher": ""
-        },
-        {
-          "id": "ingt-312-w3-mo-2",
-          "timeStart": "09:45",
-          "timeEnd": "11:20",
-          "subject": "Коллоидная химия",
-          "type": "Лабораторные работы",
-          "location": "Корпус № 2, 56",
-          "teacher": ""
-        },
-        {
-          "id": "ingt-312-w3-mo-3",
           "timeStart": "11:50",
           "timeEnd": "13:25",
           "subject": "Химия окружающей среды",
@@ -372,7 +354,7 @@
           "teacher": ""
         },
         {
-          "id": "ingt-312-w3-mo-4",
+          "id": "ingt-312-w3-mo-2",
           "timeStart": "13:35",
           "timeEnd": "15:10",
           "subject": "Рациональное природопользование",
