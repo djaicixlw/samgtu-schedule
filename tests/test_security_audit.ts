@@ -320,6 +320,7 @@ assert(!workerFileContent.includes('function hashPin'), 'Deprecated hashPin func
 const attStorageContent = fs.readFileSync(path.resolve(process.cwd(), 'utils/attendanceStorage.ts'), 'utf8');
 const cloudSyncContent = fs.readFileSync(path.resolve(process.cwd(), 'utils/cloudSync.ts'), 'utf8');
 assert(attStorageContent.includes('DEFAULT_PROD_WORKER_URL'), 'Default production worker URL configured in utils/attendanceStorage.ts (R-002)');
+assert(!attStorageContent.includes('alexeyberezin2'), 'Personal username alexeyberezin2 strictly purged from utils/attendanceStorage.ts');
 assert(!cloudSyncContent.includes('alexeyberezin2'), 'Hardcoded worker URL strictly purged from utils/cloudSync.ts (R-002)');
 
 const reportErrReq = new Request('https://worker.test/report-error', { method: 'OPTIONS' });

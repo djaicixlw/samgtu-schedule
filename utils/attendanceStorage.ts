@@ -2,7 +2,7 @@ import { Student } from '../types';
 import type { AttendanceRecord } from '../attendance';
 import { normalizeGroupId } from './groupAliases';
 
-const DEFAULT_PROD_WORKER_URL = 'https://floral-union-26d1.alexeyberezin2.workers.dev';
+const DEFAULT_PROD_WORKER_URL = 'https://floral-union-26d1.aghaskdbbb.workers.dev';
 
 const getDefaultWorkerBase = (): string => {
   if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WORKER_URL) {

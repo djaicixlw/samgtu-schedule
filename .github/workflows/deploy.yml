@@ -41,7 +41,7 @@ jobs:
 
       - name: Build production bundle
         env:
-          VITE_WORKER_URL: 'https://floral-union-26d1.alexeyberezin2.workers.dev'
+          VITE_WORKER_URL: 'https://floral-union-26d1.aghaskdbbb.workers.dev'
         run: npm run build
 
       - name: Verify build artifact integrity
