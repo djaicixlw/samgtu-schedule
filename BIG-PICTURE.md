@@ -101,11 +101,27 @@ _Measured 2026-10-08. Stages are dated where they stand; anything undated in thi
 - [x] Полная ликвидация легаси Firebase и ExtendsClass, переход на Cloudflare KV с изоляцией по `?groupId=`.
 - [x] Подавление ложных краш-алертов в Telegram от автотестов (`TEST_MODE: 'true'`).
 
-### Фаза 2: Масштабирование на Весь СамГТУ (Горизонт: 2-3 недели)
-- [x] On-Demand чанки расписания: раздельное хранение расписаний групп в легковесных JSON (`public/schedules/*.json`).
-- [x] Массовый генератор расписания всего университета через `sync_schedule_all_groups.ts` с Circuit Breaker.
-- [ ] Edge-кэширование на узлах Cloudflare Worker (`Cache-Control: public, max-age=60`) для экономии серверных вызовов.
-- [ ] Защита от коллизий параллельного редактирования старостами (ETag / revision counter).
+### 🎯 Актуальный спринт: Задачи из ревью (FULL-REVIEW-2026-10-12) и журнала решений
+
+#### Блок А: Базовые UX-доработки и интерфейс старосты (Немедленно)
+- [ ] **B-01**: Слот строго снизу под ФИО в `GroupManager.tsx` (единообразный столбец `flex-col items-start`).
+- [ ] **B-02**: Полная зачистка слова «JSON» из видимого интерфейса старосты в `GroupManager.tsx` и `attendanceStorage.ts` («Сохранить файл», «Скопировать список», «Восстановить список из файла», «Вставить список»).
+- [ ] **F-01-UX**: Онбординг-баннер в журнале посещаемости для старост: «Введите список студентов в разделе Группа» (устранение путаницы со «Студент 1–16»).
+- [ ] **F-02-AUTH**: Унификация flow авторизации: объединение полей ввода кода старосты/админа, зачистка старых упоминаний PIN.
+- [ ] **F-03-TOAST**: Корректный показ тостов: вызов `toast.error` вместо ошибочного `toast.success` при сбоях синхронизации.
+
+#### Блок Б: Новые функции контента и посещаемости
+- [ ] **F-02**: Раздел «Полезное» (`UsefulTracker.tsx`) внутри вкладки ДЗ через сегментный переключатель «Задания | Полезное» (закрепление, ссылки https, файлы/фото до 20 МБ, бессрочное хранение, KV `useful:{gid}`).
+- [ ] **F-01**: Табель посещаемости (`AttendanceMatrix.tsx`) — табличный вид посещаемости всей группы (все студенты, листание дней и пар).
+- [ ] **F-03**: Прикрепление файлов и методичек к конкретным парам (`EditLessonModal.tsx` / `ClassCard.tsx`).
+- [ ] **B-04**: Временные 10-минутные подписанные ссылки на файлы через `POST /v3/files/link` (защита от устаревания ссылок через 14 дней).
+
+#### Блок В: Безопасность и масштабирование бэкенда
+- [ ] **H-01**: Персистентный rate limiting на Cloudflare KV вместо in-memory.
+- [ ] **M-01**: Включение `strict: true` в `tsconfig.json`.
+- [ ] **M-03**: Захардкодить `parse_mode: 'HTML'` в Telegram бот-релее (`cloudflare-worker.js`).
+- [ ] **M-04**: Строгая валидация числового `groupId` в прокси `/samgtu-schedule` (SSRF defence).
+- [ ] **EDGE-01**: Edge-кэширование на узлах Cloudflare Worker (`Cache-Control: public, max-age=60`, stale-while-revalidate).
 
 ### Фаза 3: Интеграции и Сервисы Студента (Горизонт: 1 месяц)
 - [ ] Telegram Bot Push-уведомления студентам об отменах занятий и переносах аудиторий старостой.
@@ -116,5 +132,5 @@ _Measured 2026-10-08. Stages are dated where they stand; anything undated in thi
 - [ ] Графики динамики посещаемости группы и предупреждения о рисках недопуска к зачетам.
 - [ ] Поддержка сессионного расписания (зачетные недели, консультации, экзамены).
 
-_Age and wiring measured 2026-10-08, fresh this pass. Stage comes from session reports and is only as current as the date beside it._
+_Age and wiring measured 2026-10-12, fresh this pass. Stage comes from session reports and is only as current as the date beside it._
 <!-- open-steps:end -->
