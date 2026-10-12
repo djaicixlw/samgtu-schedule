@@ -248,7 +248,7 @@ export function importRosterBackup(
     try {
       parsed = JSON.parse(cleanStr);
     } catch (e: any) {
-      return { ok: false, error: `Ошибка парсинга JSON: ${e?.message || 'некорректный синтаксис'}` };
+      return { ok: false, error: `Неверный формат данных: ${e?.message || 'некорректный синтаксис'}` };
     }
 
     if (!parsed || typeof parsed !== 'object') {

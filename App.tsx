@@ -17,7 +17,7 @@ import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuPa
 import { normalizeGroupId } from './utils/groupAliases';
 import ScheduleState from './components/ScheduleState';
 import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason } from './utils/scheduleLoader';
-import { getLocalStudentLink, claimStaffRole } from './utils/attendanceStorage';
+import { getLocalStudentLink, claimStaffRole, getLocalStudents } from './utils/attendanceStorage';
 import {
   LogIn, LogOut, Calendar, BookOpen, Bug, ClipboardCheck, Sun, Moon,
   GraduationCap, Users, RefreshCw, Shield, User as UserIcon, Key, UserCheck, ChevronDown,
@@ -64,6 +64,7 @@ const ConsentModal = lazyWithRetry(() => import('./components/ConsentModal'));
 const StudentLinkModal = lazyWithRetry(() => import('./components/StudentLinkModal'));
 const MyAbsencesModal = lazyWithRetry(() => import('./components/MyAbsencesModal'));
 const PrivacyPolicyModal = lazyWithRetry(() => import('./components/PrivacyPolicyModal'));
+const StarostaOnboardingModal = lazyWithRetry(() => import('./components/StarostaOnboardingModal'));
 
 interface UserProfile {
   displayName?: string | null;
@@ -114,7 +115,8 @@ const App: React.FC = () => {
   const [isAuthReady, setIsAuthReady] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [quickPin, setQuickPin] = useState('');
+  const [isStarostaOnboardingOpen, setIsStarostaOnboardingOpen] = useState(false);
+  const [onboardingGroupName, setOnboardingGroupName] = useState('');
   const [isSubjectTeachersModalOpen, setIsSubjectTeachersModalOpen] = useState(false);
 
   // Student group binding: check if student has already bound their group
@@ -173,7 +175,9 @@ const App: React.FC = () => {
           return;
         }
         const assignedGid = normalizeGroupId(res.gid || targetGid);
-        toast.success('Права старосты подтверждены через Telegram!');
+        const grp = AVAILABLE_GROUPS.find(g => g.id === assignedGid);
+        const grpName = grp?.name || assignedGid;
+        toast.success(`Права старосты подтверждены (${grpName})`);
         setUserRole('starosta');
         setStarostaGroupId(assignedGid);
         setCurrentGroupId(assignedGid);
@@ -185,8 +189,16 @@ const App: React.FC = () => {
         localStorage.setItem('my_group_id', assignedGid);
         localStorage.setItem('selected_group_id', assignedGid);
         setGroupCodeInput('');
+
+        // F-01-UX: Check if group roster has real students; if empty, trigger welcome onboarding
+        const localRoster = getLocalStudents(assignedGid);
+        const hasStudents = localRoster.length > 0 && !localRoster.every(s => /^Студент\s+\d+$/i.test(s.name.trim()));
+        if (!hasStudents) {
+          setOnboardingGroupName(grpName);
+          setIsStarostaOnboardingOpen(true);
+        }
       } else {
-        toast.error(res.error || 'Неверный код группы или администратора');
+        toast.error(res.error || 'Неверный код доступа');
       }
     } catch (e: any) {
       toast.error(e?.message || 'Ошибка сети');
@@ -846,7 +858,7 @@ const App: React.FC = () => {
     setRefreshTrigger(prev => prev + 1);
     try {
       const cloud = await fetchGroupCloudData(true, currentGroupId);
-      if (cloud) {
+      if (cloud && cloud.fromNetwork) {
         if (cloud.scheduleOverrides !== undefined) {
           const cleanOv = sanitizeOverrides(cloud.scheduleOverrides);
           setScheduleOverrides(cleanOv);
@@ -861,48 +873,15 @@ const App: React.FC = () => {
             localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt));
           } catch (e) {}
         }
+        lastVisibilitySyncRef.current = Date.now();
+        toast.success('Данные обновлены');
+      } else {
+        toast.error('Не удалось обновить данные с сервера');
       }
-      lastVisibilitySyncRef.current = Date.now();
-      toast.success('Данные обновлены');
     } catch (e) {
       toast.error('Не удалось обновить данные с сервера');
     } finally {
       setTimeout(() => setIsRefreshing(false), 500);
-    }
-  };
-
-  const handleQuickPinLogin = async () => {
-    const code = quickPin.trim();
-    if (!code) return;
-
-    try {
-      const authRes = await claimStaffRole(normalizeGroupId(currentGroupId) || 'admin', code);
-      if (!authRes || !authRes.ok) {
-        toast.error(authRes?.error || 'Неверный код доступа');
-        return;
-      }
-
-      if (authRes.role === 'admin') {
-        setUserRole('admin');
-        localStorage.setItem('user_role', 'admin');
-        setStarostaGroupId(null);
-        localStorage.removeItem('starosta_group_id');
-        toast.success('Активирован режим ГЛАВНОГО АДМИНИСТРАТОРА (все группы)');
-        setQuickPin('');
-      } else if (authRes.role === 'starosta' && authRes.gid) {
-        const assignedGid = normalizeGroupId(authRes.gid);
-        setUserRole('starosta');
-        setStarostaGroupId(assignedGid);
-        localStorage.setItem('user_role', 'starosta');
-        localStorage.setItem('starosta_group_id', assignedGid);
-        setCurrentGroupId(assignedGid);
-        localStorage.setItem('my_group_id', assignedGid);
-        setBoundGroupId(assignedGid);
-        toast.success(`Активирован режим СТАРОСТЫ (${assignedGid})`);
-        setQuickPin('');
-      }
-    } catch {
-      toast.error('Ошибка проверки кода доступа');
     }
   };
 
@@ -1596,13 +1575,13 @@ const App: React.FC = () => {
                     Доступ только для старосты
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                    Журнал посещаемости и ведомости деканата защищены по стандарту 152-ФЗ. Для доступа введите код доступа в разделе «Вход».
+                    Отмечать посещаемость и формировать ведомости может только староста группы. Чтобы получить доступ, введите код доступа в разделе «Профиль».
                   </p>
                   <button
                     onClick={() => setActiveTab('profile')}
                     className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-colors"
                   >
-                    Перейти ко входу
+                    Перейти в профиль
                   </button>
                 </div>
               )}
@@ -1836,7 +1815,7 @@ const App: React.FC = () => {
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Введите секретный код группы или код администратора для подтверждения прав.
+                  Введите 16-значный код доступа для подтверждения прав старосты или администратора.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input
@@ -1845,6 +1824,7 @@ const App: React.FC = () => {
                     onChange={(e) => setGroupCodeInput(e.target.value.toUpperCase())}
                     onKeyDown={(e) => e.key === 'Enter' && handleClaimGroupCode()}
                     placeholder="XXXX-XXXX-XXXX-XXXX"
+                    maxLength={19}
                     className="flex-1 px-3 py-2.5 text-xs font-mono rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white uppercase tracking-wider focus:outline-none min-h-[44px]"
                   />
                   <button
@@ -2212,6 +2192,21 @@ const App: React.FC = () => {
           <PrivacyPolicyModal
             isOpen={isPrivacyModalOpen}
             onClose={() => setIsPrivacyModalOpen(false)}
+          />
+        </Suspense>
+      )}
+
+      {/* Starosta Onboarding Welcome Modal (F-01-UX) */}
+      {isStarostaOnboardingOpen && (
+        <Suspense fallback={null}>
+          <StarostaOnboardingModal
+            isOpen={isStarostaOnboardingOpen}
+            groupName={onboardingGroupName || currentGroupConfig.name}
+            onClose={() => setIsStarostaOnboardingOpen(false)}
+            onAddStudents={() => {
+              setIsStarostaOnboardingOpen(false);
+              setActiveTab('group');
+            }}
           />
         </Suspense>
       )}

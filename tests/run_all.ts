@@ -40,6 +40,7 @@ await import('./test_bell_schedule');
 await import('./test_attendance_merge');
 await import('./test_tma_word_export');
 await import('./test_friday_pair4_verification');
+await import('./test_block_a_ux');
 const { runHomeworkLifecycleStressTest } = await import('./test_homework_lifecycle_stress');
 await runHomeworkLifecycleStressTest();
 console.log("\n=================================================");

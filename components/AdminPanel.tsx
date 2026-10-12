@@ -19,7 +19,6 @@ interface AdminPanelProps {
 }
 
 const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, currentGroupId, onScheduleUpdated }) => {
-  const [pinCode, setPinCode] = useState('');
   const [selectedAuditGroup, setSelectedAuditGroup] = useState(currentGroupId && SAMGTU_GROUP_MAP[currentGroupId] ? currentGroupId : 'ingt-310');
   const [isCheckingOfficial, setIsCheckingOfficial] = useState(false);
   const [isApplyingOfficial, setIsApplyingOfficial] = useState(false);
@@ -51,8 +50,10 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
     }
   };
 
-  const handleVerifyPin = async () => {
-    const code = pinCode.trim();
+  const [accessCode, setAccessCode] = useState('');
+
+  const handleVerifyAccessCode = async () => {
+    const code = accessCode.trim();
     if (!code) return;
 
     try {
@@ -65,11 +66,11 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
       if (authRes.role === 'admin') {
         onRoleChange('admin');
         toast.success('Авторизован режим Главного Администратора');
-        setPinCode('');
+        setAccessCode('');
       } else if (authRes.role === 'starosta' && authRes.gid) {
         onRoleChange('starosta', authRes.gid);
         toast.success(`Авторизован режим Старосты (${authRes.gid})`);
-        setPinCode('');
+        setAccessCode('');
       }
     } catch {
       toast.error('Ошибка проверки кода доступа');
@@ -472,14 +473,14 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
                 type="password"
                 inputMode="text"
                 maxLength={19}
-                value={pinCode}
-                onChange={(e) => setPinCode(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleVerifyPin()}
+                value={accessCode}
+                onChange={(e) => setAccessCode(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleVerifyAccessCode()}
                 placeholder="XXXX-XXXX-XXXX-XXXX"
                 className="flex-1 px-4 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none min-h-[44px]"
               />
               <button
-                onClick={handleVerifyPin}
+                onClick={handleVerifyAccessCode}
                 className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm rounded-xl transition-all shadow-sm min-h-[44px]"
               >
                 Повысить до Админа
@@ -501,14 +502,14 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
               type="password"
               inputMode="text"
               maxLength={19}
-              value={pinCode}
-              onChange={(e) => setPinCode(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleVerifyPin()}
+              value={accessCode}
+              onChange={(e) => setAccessCode(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleVerifyAccessCode()}
               placeholder="XXXX-XXXX-XXXX-XXXX"
               className="flex-1 px-4 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none min-h-[44px]"
             />
             <button
-              onClick={handleVerifyPin}
+              onClick={handleVerifyAccessCode}
               className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm rounded-xl transition-all shadow-sm min-h-[44px]"
             >
               Подтвердить

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ClipboardCheck, Download, FileText, Table as TableIcon, Copy, Shield } from 'lucide-react';
+import { ClipboardCheck, Download, FileText, Table as TableIcon, Copy, Shield, Users } from 'lucide-react';
 import { STUDENTS_REGISTRY, useAttendance, BLOCKS, getSemesterWeek, getDayName, getSamaraISODate } from '../attendance';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES } from '../constants';
 import { Lesson, Student, GroupConfig } from '../types';
@@ -69,7 +69,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     setStudents(loadInitialStudents(currentGroupId));
   }, [currentGroupId, refreshTrigger]);
 
-  const isRosterAnonymous = students.length > 0 && students.every(s => /^Студент\s+\d+$/i.test(s.name.trim()));
+  const isRosterEmpty = students.length === 0 || students.every(s => /^Студент\s+\d+$/i.test(s.name.trim()));
 
   // Initial and reactive background sync with V3 Blind Server for starosta/admin
   useEffect(() => {
@@ -321,19 +321,19 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
         </div>
       </div>
 
-      {/* B-04 Onboarding Banner for Anonymous Placeholders */}
-      {isRosterAnonymous && (
+      {/* F-01-UX Onboarding Banner for Empty / Placeholder Roster */}
+      {isRosterEmpty && (
         <div className="bg-indigo-50/90 dark:bg-indigo-950/40 border border-indigo-200/90 dark:border-indigo-800/60 rounded-3xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
           <div className="flex items-start gap-3">
             <div className="p-2.5 bg-indigo-100 dark:bg-indigo-900/60 rounded-2xl text-indigo-600 dark:text-indigo-400 shrink-0">
-              <Shield className="w-5 h-5" />
+              <Users className="w-5 h-5" />
             </div>
             <div>
               <h4 className="text-xs font-bold text-indigo-950 dark:text-indigo-200">
-                Список студентов пока пуст
+                Список группы пуст
               </h4>
               <p className="text-xs text-indigo-800/80 dark:text-indigo-300/80 mt-0.5 leading-relaxed">
-                {canEdit ? 'Добавьте список вашей группы в разделе «Группа», чтобы отмечать посещаемость на занятиях.' : 'Староста группы ещё не добавил список студентов.'}
+                {canEdit ? 'Добавьте список вашей группы в разделе «Группа», чтобы отмечать посещаемость на занятиях.' : 'Староста группы ещё не добавил список одногруппников.'}
               </p>
             </div>
           </div>
@@ -342,7 +342,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
               onClick={onNavigateToGroup}
               className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shrink-0 transition-colors shadow-xs cursor-pointer"
             >
-              Настроить список группы
+              Добавить студентов
             </button>
           )}
         </div>

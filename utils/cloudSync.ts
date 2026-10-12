@@ -25,6 +25,7 @@ export interface GroupCloudData {
   subjectTeachers: Record<string, string>;
   attendance: AttendanceRecord[];
   lastUpdated?: number;
+  fromNetwork?: boolean;
 }
 
 import { SEED_SCHEDULE_OVERRIDES, SEED_SUBJECT_TEACHERS, SEED_ATTENDANCE, SEED_HOMEWORK, getSeedSubjectTeachers } from '../defaultData';
@@ -371,6 +372,8 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
       }
     }
 
+    const isNetworkSuccess = (schedRes.status === 'fulfilled' && Boolean(schedRes.value)) || (hwRes.status === 'fulfilled' && Boolean(hwRes.value));
+
     const cloudAttendance: AttendanceRecord[] = localBackup.attendance || [];
 
     const result: GroupCloudData = {
@@ -379,7 +382,8 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
       scheduleOverrides: cloudScheduleOverrides,
       subjectTeachers: cloudSubjectTeachers,
       attendance: cloudAttendance,
-      lastUpdated: serverTimestamp
+      lastUpdated: serverTimestamp,
+      fromNetwork: isNetworkSuccess
     };
 
     lastFetchedDataMap[groupId] = result;
@@ -388,7 +392,8 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
   } catch (e) {
     if (signal?.aborted) return null;
     console.warn('Cloud sync parallel fetch error:', e);
-    return lastFetchedDataMap[groupId] || localBackup;
+    const fallback = lastFetchedDataMap[groupId] || localBackup;
+    return { ...fallback, fromNetwork: false };
   }
 };
 

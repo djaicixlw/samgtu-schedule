@@ -20,7 +20,7 @@ export const MaintenanceScreen: React.FC<MaintenanceScreenProps> = ({
 }) => {
   const [isChecking, setIsChecking] = useState(false);
   const [isAdminInputVisible, setIsAdminInputVisible] = useState(false);
-  const [adminPin, setAdminPin] = useState('');
+  const [adminCode, setAdminCode] = useState('');
   const [authError, setAuthError] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
 
@@ -57,13 +57,13 @@ export const MaintenanceScreen: React.FC<MaintenanceScreenProps> = ({
 
   const handleAdminAuth = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adminPin.trim()) return;
+    if (!adminCode.trim()) return;
 
     setIsAuthenticating(true);
     setAuthError('');
 
     try {
-      const code = adminPin.trim();
+      const code = adminCode.trim();
       const result = await claimStaffRole(code, 'admin');
       if (result && result.ok && result.role === 'admin') {
         sessionStorage.setItem('admin_maintenance_bypass', 'true');
@@ -170,15 +170,15 @@ export const MaintenanceScreen: React.FC<MaintenanceScreenProps> = ({
                 type="password"
                 inputMode="text"
                 maxLength={19}
-                value={adminPin}
-                onChange={(e) => setAdminPin(e.target.value)}
+                value={adminCode}
+                onChange={(e) => setAdminCode(e.target.value)}
                 placeholder="XXXX-XXXX-XXXX-XXXX"
                 className="flex-1 px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                 autoFocus
               />
               <button
                 type="submit"
-                disabled={isAuthenticating || !adminPin.trim()}
+                disabled={isAuthenticating || !adminCode.trim()}
                 className="px-4 py-2 bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600 text-white font-bold text-xs rounded-xl transition-all disabled:opacity-50 cursor-pointer"
               >
                 {isAuthenticating ? 'Проверка...' : 'Войти'}
