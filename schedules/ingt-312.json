@@ -313,6 +313,15 @@
           "type": "Практические занятия",
           "location": "Корпус № 10, 302",
           "teacher": ""
+        },
+        {
+          "id": "ingt-312-w2-fr-4",
+          "timeStart": "17:25",
+          "timeEnd": "19:00",
+          "subject": "Философия",
+          "type": "Лекции",
+          "location": "Moodle, ауд. не указана",
+          "teacher": ""
         }
       ]
     },
