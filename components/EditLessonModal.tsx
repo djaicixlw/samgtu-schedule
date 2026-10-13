@@ -38,6 +38,7 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
   const [newLinkUrl, setNewLinkUrl] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const isUploadingRef = useRef(false);
 
   if (!isOpen) return null;
 
@@ -61,10 +62,13 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    if (isUploadingRef.current) return;
+    isUploadingRef.current = true;
     const file = files[0];
 
     if (attachments.length >= 10) {
       toast.error('Максимум 10 материалов к одной паре');
+      isUploadingRef.current = false;
       return;
     }
 
@@ -80,6 +84,7 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
       toast.error(err.message || 'Не удалось загрузить файл', { id: toastId });
     } finally {
       setIsUploading(false);
+      isUploadingRef.current = false;
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }

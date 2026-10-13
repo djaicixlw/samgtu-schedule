@@ -313,6 +313,21 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
         cloudScheduleOverrides = sanitizeOverrides(cloudScheduleOverrides);
         cloudSubjectTeachers = sanitizeTeachers(cloudSubjectTeachers, groupId);
 
+        // Preserve local attachments if cloud data temporarily omitted them
+        if (localBackup.scheduleOverrides) {
+          for (const [id, localOv] of Object.entries(localBackup.scheduleOverrides)) {
+            if (localOv?.attachments && localOv.attachments.length > 0) {
+              if (cloudScheduleOverrides[id]) {
+                if (!cloudScheduleOverrides[id].attachments || cloudScheduleOverrides[id].attachments.length === 0) {
+                  cloudScheduleOverrides[id].attachments = localOv.attachments;
+                }
+              } else {
+                cloudScheduleOverrides[id] = localOv;
+              }
+            }
+          }
+        }
+
         try { localStorage.setItem(`schedule_overrides_${groupId}`, JSON.stringify(cloudScheduleOverrides)); } catch (e) {}
         try { localStorage.setItem(`subject_teachers_${groupId}`, JSON.stringify(cloudSubjectTeachers)); } catch (e) {}
       }

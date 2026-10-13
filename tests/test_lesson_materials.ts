@@ -44,6 +44,7 @@ export async function runLessonMaterialsTests() {
   assert(editModalContent.includes('type="file"'), 'EditLessonModal has file input for uploading materials');
   assert(editModalContent.includes('Прикрепить файл'), 'EditLessonModal has user-facing button to attach files');
   assert(editModalContent.includes('handleFileUpload'), 'EditLessonModal defines handleFileUpload');
+  assert(editModalContent.includes('isUploadingRef'), 'EditLessonModal guards handleFileUpload with isUploadingRef mutex lock');
   assert(editModalContent.includes('attachments'), 'EditLessonModal persists attachments in onSave');
   assert(editModalContent.includes('Paperclip'), 'EditLessonModal imports and uses Paperclip icon');
 
@@ -59,7 +60,7 @@ export async function runLessonMaterialsTests() {
   assert(classCardContent.includes('lesson.attachments.length'), 'ClassCard dynamically counts attached materials');
 
   // --- 4. Cloudflare Worker B-04 Endpoint Verification ---
-  console.log('\n--- 4. Verification of Cloudflare Worker B-04 Endpoint ---');
+  console.log('\n--- 4. Verification of Cloudflare Worker B-04 Endpoint & Overrides ---');
   const workerPath = join(process.cwd(), 'cloudflare-worker.js');
   assert(existsSync(workerPath), 'cloudflare-worker.js exists');
   const workerContent = readFileSync(workerPath, 'utf-8');
@@ -68,6 +69,26 @@ export async function runLessonMaterialsTests() {
   assert(workerContent.includes('deriveFileSigningKey'), 'Worker uses deriveFileSigningKey for HMAC');
   assert(workerContent.includes('signFileUrl'), 'Worker calls signFileUrl with expiration');
   assert(workerContent.includes('600'), 'Worker sets 10-minute (600s) TTL for signed URLs');
+  assert(workerContent.includes('disable_notification'), 'Worker mutes Telegram upload notifications (disable_notification)');
+
+  // Verify worker sanitizeScheduleOverride supports attachments
+  // @ts-ignore
+  const { sanitizeScheduleOverride } = await import('../cloudflare-worker.js');
+  const cleanOverride = sanitizeScheduleOverride({
+    subject: 'Тестовый предмет',
+    note: 'Тестовая заметка',
+    attachments: [
+      { id: 'att_1', name: 'лекция1.pdf', type: 'file', url: 'https://example.com/f.pdf', size: '1.5 МБ' }
+    ]
+  });
+  assert(Array.isArray(cleanOverride?.attachments), 'sanitizeScheduleOverride retains attachments array');
+  assert(cleanOverride?.attachments?.length === 1, 'sanitizeScheduleOverride preserves attached file count');
+  assert(cleanOverride?.attachments?.[0]?.name === 'лекция1.pdf', 'sanitizeScheduleOverride preserves attachment filename');
+
+  // Verify utils/cloudSync.ts preserves local attachments
+  const cloudSyncPath = join(process.cwd(), 'utils', 'cloudSync.ts');
+  const cloudSyncContent = readFileSync(cloudSyncPath, 'utf-8');
+  assert(cloudSyncContent.includes('localOv.attachments'), 'utils/cloudSync.ts preserves local attachments during sync');
 
   // --- 5. Anti-Bureaucracy and Clean UI Tone ---
   console.log('\n--- 5. Anti-Bureaucratic & Tone Compliance Check ---');

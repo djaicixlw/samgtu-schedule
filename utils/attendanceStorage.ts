@@ -282,13 +282,16 @@ export function importRosterBackup(
         const cleanedName = line.replace(/^\s*(?:\d+[\.\)\-:\s]+|[-*•]\s+)/, '').trim();
         if (cleanedName.length >= 2 && /[а-яА-Яa-zA-Z]/.test(cleanedName)) {
           parsedStudents.push({
-            id: nextId++,
+            id: 0,
             name: cleanedName
           });
         }
       }
 
       if (parsedStudents.length > 0) {
+        // Sort alphabetically by Russian locale (Q9: strictly alphabetical roster)
+        parsedStudents.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+        parsedStudents.forEach((s, idx) => { s.id = idx + 1; });
         const rosterWithSlots = ensureGroupSlots(groupId, parsedStudents);
         saveLocalStudents(groupId, rosterWithSlots);
         return { ok: true, count: rosterWithSlots.length };

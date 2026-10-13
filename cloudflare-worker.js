@@ -89,6 +89,20 @@ export function sanitizeScheduleOverride(ov) {
   if (ov.isCancelled !== undefined) res.isCancelled = Boolean(ov.isCancelled);
   if (ov.isHidden !== undefined) res.isHidden = Boolean(ov.isHidden);
   if (ov.note !== undefined) res.note = String(ov.note).slice(0, 500);
+  if (Array.isArray(ov.attachments)) {
+    res.attachments = ov.attachments.slice(0, 10).map(att => {
+      if (!att || typeof att !== 'object') return null;
+      return {
+        id: String(att.id || '').slice(0, 100),
+        name: String(att.name || '').slice(0, 200),
+        type: String(att.type || 'file').slice(0, 30),
+        size: typeof att.size === 'number' || typeof att.size === 'string' ? String(att.size).slice(0, 30) : undefined,
+        url: String(att.url || '').slice(0, 1000),
+        tgUrl: att.tgUrl ? String(att.tgUrl).slice(0, 1000) : undefined,
+        fileId: att.fileId ? String(att.fileId).slice(0, 200) : undefined
+      };
+    }).filter(Boolean);
+  }
   return res;
 }
 
@@ -2272,6 +2286,7 @@ export default {
           });
         }
         formData.set("chat_id", targetChat);
+        formData.set("disable_notification", "true");
 
         let data;
         let resStatus = 200;
