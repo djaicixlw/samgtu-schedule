@@ -13,7 +13,8 @@ import {
   createGroupInvites,
   registerSlotsWithServer,
   publishInvitesWithServer,
-  StudentInvite
+  StudentInvite,
+  syncRosterToCloud
 } from '../utils/attendanceStorage';
 
 interface GroupManagerProps {
@@ -64,6 +65,7 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
     const slotted = ensureGroupSlots(currentGroupId, updated);
     saveLocalStudents(currentGroupId, slotted);
     setStudents(slotted);
+    syncRosterToCloud(currentGroupId, slotted).catch(() => {});
   };
 
   const handleDownloadBackup = () => {
@@ -94,7 +96,9 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
       }
       const res = importRosterBackup(currentGroupId, content);
       if (res.ok) {
-        setStudents(getLocalStudents(currentGroupId));
+        const restored = getLocalStudents(currentGroupId);
+        setStudents(restored);
+        syncRosterToCloud(currentGroupId, restored).catch(() => {});
         toast.success(`Список успешно восстановлен (${res.count ?? 0} студентов)`);
       } else {
         toast.error(`Ошибка восстановления: ${res.error}`);
@@ -172,7 +176,9 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
     }
     const res = importRosterBackup(currentGroupId, textBackupInput);
     if (res.ok) {
-      setStudents(getLocalStudents(currentGroupId));
+      const restored = getLocalStudents(currentGroupId);
+      setStudents(restored);
+      syncRosterToCloud(currentGroupId, restored).catch(() => {});
       toast.success(`Список успешно восстановлен (${res.count ?? 0} студентов)`);
       setIsTextImportModalOpen(false);
       setTextBackupInput('');

@@ -1,6 +1,8 @@
 import { Student } from '../types';
 import type { AttendanceRecord } from '../attendance';
 import { normalizeGroupId } from './groupAliases';
+import { getSemesterWeek, getDayName } from './samaraDate';
+import { SCHEDULE_REGISTRY } from '../constants';
 
 const DEFAULT_PROD_WORKER_URL = 'https://floral-union-26d1.aghaskdbbb.workers.dev';
 
@@ -310,13 +312,42 @@ export function getTelegramInitData(): string {
   return '';
 }
 
-function getAuthHeaders(): Record<string, string> {
+export function getSavedStaffToken(groupId?: string): string {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (groupId) {
+        const byGroup = localStorage.getItem(`staff_token_${normalizeGroupId(groupId).toLowerCase()}`);
+        if (byGroup) return byGroup;
+      }
+      return localStorage.getItem('staff_token') || '';
+    }
+  } catch {}
+  return '';
+}
+
+export function saveStaffToken(token: string, groupId?: string): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('staff_token', token);
+      if (groupId) {
+        localStorage.setItem(`staff_token_${normalizeGroupId(groupId).toLowerCase()}`, token);
+      }
+    }
+  } catch {}
+}
+
+export function getAuthHeaders(groupId?: string): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
   };
   const initData = getTelegramInitData();
   if (initData) {
     headers['X-Telegram-Init-Data'] = initData;
+  }
+  const token = getSavedStaffToken(groupId);
+  if (token) {
+    headers['X-Staff-Token'] = token;
+    headers['Authorization'] = `Bearer ${token}`;
   }
   return headers;
 }
@@ -642,7 +673,14 @@ export async function claimStaffRole(
     if (!res.ok) {
       return { ok: false, error: json.error || 'Неверный код группы или администратора' };
     }
-    return { ok: true, role: json.role || 'starosta', gid: json.gid || canonicalGid };
+    const finalGid = json.gid || canonicalGid;
+    if (json.token) {
+      saveStaffToken(json.token, finalGid);
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(`group_code_${finalGid}`, cleanCode);
+    }
+    return { ok: true, role: json.role || 'starosta', gid: finalGid, token: json.token };
   } catch (err: any) {
     return { ok: false, error: err?.message || 'Ошибка сети' };
   }
@@ -745,5 +783,378 @@ export async function syncAttendanceRecordsToV3(
     return { ok: false, error: err?.message || 'Sync failed' };
   }
 }
+
+const safeBtoa = (str: string): string => {
+  if (typeof btoa !== 'undefined') return btoa(str);
+  if (typeof Buffer !== 'undefined') return Buffer.from(str, 'binary').toString('base64');
+  return '';
+};
+
+const safeAtob = (b64: string): string => {
+  if (typeof atob !== 'undefined') return atob(b64);
+  if (typeof Buffer !== 'undefined') return Buffer.from(b64, 'base64').toString('binary');
+  return '';
+};
+
+/**
+ * Derives an AES-GCM 256-bit CryptoKey from an 80-bit group access code using PBKDF2 with SHA-256.
+ */
+async function deriveRosterCryptoKey(accessCode: string, salt: Uint8Array): Promise<CryptoKey> {
+  const normalized = (accessCode || '').trim().toUpperCase().replace(/[^0-9A-Z]/g, '');
+  const enc = new TextEncoder();
+  const c = typeof crypto !== 'undefined' ? crypto : (globalThis as any).crypto;
+  const keyMaterial = await c.subtle.importKey(
+    'raw',
+    enc.encode(normalized),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return await c.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: 100000,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+/**
+ * Encrypt student roster using AES-256-GCM.
+ * Zero-Knowledge: plaintext names NEVER leave the client unencrypted.
+ */
+export async function encryptRosterE2EE(
+  students: Student[],
+  accessCode: string
+): Promise<{ data: string; iv: string; salt: string }> {
+  const c = typeof crypto !== 'undefined' ? crypto : (globalThis as any).crypto;
+  const salt = new Uint8Array(16);
+  const iv = new Uint8Array(12);
+  if (c && c.getRandomValues) {
+    c.getRandomValues(salt);
+    c.getRandomValues(iv);
+  } else {
+    for (let i = 0; i < 16; i++) salt[i] = Math.floor(Math.random() * 256);
+    for (let i = 0; i < 12; i++) iv[i] = Math.floor(Math.random() * 256);
+  }
+
+  const key = await deriveRosterCryptoKey(accessCode, salt);
+  const enc = new TextEncoder();
+  const plaintext = JSON.stringify(students);
+  const ciphertextBuffer = await c.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    enc.encode(plaintext)
+  );
+
+  return {
+    data: safeBtoa(String.fromCharCode(...new Uint8Array(ciphertextBuffer))),
+    iv: safeBtoa(String.fromCharCode(...iv)),
+    salt: safeBtoa(String.fromCharCode(...salt))
+  };
+}
+
+/**
+ * Decrypt student roster using AES-256-GCM.
+ */
+export async function decryptRosterE2EE(
+  payload: { data: string; iv: string; salt: string },
+  accessCode: string
+): Promise<Student[] | null> {
+  try {
+    if (!payload || !payload.data || !payload.iv || !payload.salt) return null;
+    const c = typeof crypto !== 'undefined' ? crypto : (globalThis as any).crypto;
+    const saltRaw = safeAtob(payload.salt);
+    const salt = Uint8Array.from(saltRaw, ch => ch.charCodeAt(0));
+    const ivRaw = safeAtob(payload.iv);
+    const iv = Uint8Array.from(ivRaw, ch => ch.charCodeAt(0));
+    const cipherRaw = safeAtob(payload.data);
+    const ciphertext = Uint8Array.from(cipherRaw, ch => ch.charCodeAt(0));
+
+    const key = await deriveRosterCryptoKey(accessCode, salt);
+    const decryptedBuffer = await c.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      ciphertext
+    );
+    const decryptedStr = new TextDecoder().decode(decryptedBuffer);
+    const parsed = JSON.parse(decryptedStr);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter(s => s && typeof s.id === 'number');
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Save encrypted roster to Cloudflare KV.
+ * PUT /v3/roster
+ */
+export async function saveEncryptedRosterV3(
+  groupId: string,
+  payload: { data: string; iv: string; salt: string }
+): Promise<{ ok: boolean; ver?: number; error?: string }> {
+  try {
+    const base = getAttendanceApiBase();
+    const res = await fetch(`${base}/v3/roster`, {
+      method: 'PUT',
+      headers: getAuthHeaders(groupId),
+      body: JSON.stringify({
+        gid: normalizeGroupId(groupId),
+        data: payload.data,
+        iv: payload.iv,
+        salt: payload.salt
+      })
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: json.error || `HTTP ${res.status}` };
+    }
+    return { ok: true, ver: json.ver };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Network error' };
+  }
+}
+
+/**
+ * Fetch encrypted roster from Cloudflare KV.
+ * GET /v3/roster?gid=...
+ */
+export async function fetchEncryptedRosterV3(
+  groupId: string
+): Promise<{ ok: boolean; roster?: any; error?: string }> {
+  try {
+    const base = getAttendanceApiBase();
+    const res = await fetch(`${base}/v3/roster?gid=${encodeURIComponent(normalizeGroupId(groupId))}`, {
+      method: 'GET',
+      headers: getAuthHeaders(groupId)
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: json.error || `HTTP ${res.status}` };
+    }
+    return { ok: true, roster: json.roster };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Network error' };
+  }
+}
+
+/**
+ * Sync local students to cloud in encrypted E2EE format.
+ */
+export async function syncRosterToCloud(
+  groupId: string,
+  students: Student[],
+  accessCode?: string
+): Promise<boolean> {
+  try {
+    const canonicalGid = normalizeGroupId(groupId);
+    const code = accessCode || (typeof localStorage !== 'undefined' ? localStorage.getItem(`group_code_${canonicalGid}`) || localStorage.getItem('access_code') : '') || '';
+    if (!code) return false;
+    const slotted = ensureGroupSlots(canonicalGid, students);
+    const encrypted = await encryptRosterE2EE(slotted, code);
+    const res = await saveEncryptedRosterV3(canonicalGid, encrypted);
+    return Boolean(res.ok);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Restore roster from cloud using access code, decrypt and save to localStorage.
+ */
+export async function restoreRosterFromCloud(
+  groupId: string,
+  accessCode: string
+): Promise<{ ok: boolean; count?: number; error?: string }> {
+  try {
+    const canonicalGid = normalizeGroupId(groupId);
+    const res = await fetchEncryptedRosterV3(canonicalGid);
+    if (!res.ok || !res.roster) {
+      return { ok: false, error: res.error || 'Резервная копия ростера не найдена в облаке' };
+    }
+    const decrypted = await decryptRosterE2EE(res.roster, accessCode);
+    if (!decrypted || decrypted.length === 0) {
+      return { ok: false, error: 'Не удалось расшифровать список студентов' };
+    }
+    const slotted = ensureGroupSlots(canonicalGid, decrypted);
+    saveLocalStudents(canonicalGid, slotted);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(`group_code_${canonicalGid}`, accessCode);
+    }
+    return { ok: true, count: slotted.length };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'Ошибка восстановления ростера' };
+  }
+}
+
+/**
+ * Pull attendance records from Cloudflare Worker API v3 (Blind Server).
+ * Reconstructs AttendanceRecord[] from anonymous slots for the current semester.
+ */
+export async function pullAttendanceRecordsFromV3(
+  groupId: string
+): Promise<AttendanceRecord[]> {
+  try {
+    const gid = normalizeGroupId(groupId).trim().toLowerCase();
+    let students = getLocalStudents(gid);
+
+    // Active semester months in Samara timezone (UTC+4)
+    const now = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    const curYear = now.getUTCFullYear();
+    const curMonth = now.getUTCMonth() + 1; // 1..12
+
+    let monthsToFetch: string[] = [];
+    if (curMonth >= 8 || curMonth === 1) {
+      // Fall semester (August - January)
+      const yr = curMonth === 1 ? curYear - 1 : curYear;
+      monthsToFetch = [
+        `${yr}-08`,
+        `${yr}-09`,
+        `${yr}-10`,
+        `${yr}-11`,
+        `${yr}-12`,
+        `${yr + 1}-01`
+      ];
+    } else {
+      // Spring semester (February - July)
+      monthsToFetch = [
+        `${curYear}-02`,
+        `${curYear}-03`,
+        `${curYear}-04`,
+        `${curYear}-05`,
+        `${curYear}-06`,
+        `${curYear}-07`
+      ];
+    }
+
+    // Build slot-to-student mapping
+    let slotToStudentId = new Map<string, number>();
+    for (const s of students) {
+      if (s.slot) {
+        slotToStudentId.set(s.slot.trim().toUpperCase(), s.id);
+      }
+    }
+
+    const recordsByLesson = new Map<string, AttendanceRecord>();
+
+    for (const monthStr of monthsToFetch) {
+      const res = await fetchMonthAttendanceV3(gid, monthStr);
+      if (!res.ok || !res.data) continue;
+
+      const data = res.data;
+      const slots: Record<string, Record<string, 'e' | 'u'>> = (data.slots && typeof data.slots === 'object') ? data.slots : {};
+      const cancelledSet = new Set<string>(Array.isArray(data.cancelled) ? data.cancelled : []);
+
+      const serverSlots = Object.keys(slots);
+      if (serverSlots.length === 0 && cancelledSet.size === 0) continue;
+
+      // If local roster has missing slots or is completely empty, populate fallback roster
+      let rosterModified = false;
+      serverSlots.sort().forEach(slot => {
+        const cleanSlot = slot.trim().toUpperCase();
+        if (!slotToStudentId.has(cleanSlot)) {
+          const nextId = students.length > 0 ? Math.max(...students.map(s => s.id)) + 1 : 1;
+          const fallbackStu: Student = {
+            id: nextId,
+            name: `Студент ${nextId}`,
+            slot: cleanSlot
+          };
+          students.push(fallbackStu);
+          slotToStudentId.set(cleanSlot, nextId);
+          rosterModified = true;
+        }
+      });
+
+      if (rosterModified) {
+        saveLocalStudents(gid, students);
+      }
+
+      // Collect all lesson keys present in this month
+      const allLessonKeys = new Set<string>(cancelledSet);
+      for (const [slot, lessonMarks] of Object.entries(slots)) {
+        if (lessonMarks && typeof lessonMarks === 'object') {
+          for (const lk of Object.keys(lessonMarks)) {
+            allLessonKeys.add(lk);
+          }
+        }
+      }
+
+      // For each lesson key (format "MM-DD.P"), reconstruct AttendanceRecord
+      for (const lessonKey of allLessonKeys) {
+        const dotIdx = lessonKey.lastIndexOf('.');
+        if (dotIdx === -1) continue;
+        const mmdd = lessonKey.slice(0, dotIdx);
+        const pairNum = lessonKey.slice(dotIdx + 1);
+        const yearPart = monthStr.slice(0, 4);
+        const dateStr = `${yearPart}-${mmdd}`;
+
+        const isCancelled = cancelledSet.has(lessonKey);
+        const absentStudentIds: number[] = [];
+        const excusedStudentIds: number[] = [];
+
+        for (const [slot, marks] of Object.entries(slots)) {
+          const cleanSlot = slot.trim().toUpperCase();
+          const studentId = slotToStudentId.get(cleanSlot);
+          if (!studentId) continue;
+
+          const mark = marks[lessonKey];
+          if (mark === 'u') {
+            absentStudentIds.push(studentId);
+          } else if (mark === 'e') {
+            excusedStudentIds.push(studentId);
+          }
+        }
+
+        // Generate canonical lesson ID matching group schedule if available
+        let matchedLessonId = `${gid}-${pairNum}`;
+        try {
+          const [yr, m, d] = dateStr.split('-').map(Number);
+          const dt = new Date(yr, (m || 1) - 1, d || 1, 12, 0, 0);
+          const week = getSemesterWeek(dt, gid);
+          const dayName = getDayName(dt);
+          const scheduleDays = (SCHEDULE_REGISTRY as any)[gid]?.[week];
+          if (Array.isArray(scheduleDays)) {
+            const dayObj = scheduleDays.find((sd: any) => sd.dayName === dayName);
+            if (dayObj && Array.isArray(dayObj.lessons)) {
+              const num = Number(pairNum);
+              const foundLesson = dayObj.lessons.find((l: any) => {
+                if (l.order === num) return true;
+                const mMatch = (l.id || '').match(/(\d+)$/);
+                return mMatch && Number(mMatch[1]) === num;
+              });
+              if (foundLesson && foundLesson.id) {
+                matchedLessonId = foundLesson.id;
+              }
+            }
+          }
+        } catch {}
+
+        const recKey = `${dateStr}_${matchedLessonId}`;
+        recordsByLesson.set(recKey, {
+          docId: `${gid}_${dateStr}_${matchedLessonId}`,
+          groupId: gid,
+          date: dateStr,
+          lessonId: matchedLessonId,
+          absentStudentIds,
+          excusedStudentIds,
+          isCancelled,
+          updatedAt: Date.now()
+        });
+      }
+    }
+
+    return Array.from(recordsByLesson.values());
+  } catch (err) {
+    console.warn('Failed to pull attendance from v3:', err);
+    return [];
+  }
+}
+
 
 

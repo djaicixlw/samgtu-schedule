@@ -17,7 +17,7 @@ import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuPa
 import { normalizeGroupId } from './utils/groupAliases';
 import ScheduleState from './components/ScheduleState';
 import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason } from './utils/scheduleLoader';
-import { getLocalStudentLink, claimStaffRole, getLocalStudents } from './utils/attendanceStorage';
+import { getLocalStudentLink, claimStaffRole, getLocalStudents, restoreRosterFromCloud } from './utils/attendanceStorage';
 import {
   LogIn, LogOut, Calendar, BookOpen, Bug, ClipboardCheck, Sun, Moon,
   GraduationCap, Users, RefreshCw, Shield, User as UserIcon, Key, UserCheck, ChevronDown,
@@ -189,6 +189,14 @@ const App: React.FC = () => {
         localStorage.setItem('my_group_id', assignedGid);
         localStorage.setItem('selected_group_id', assignedGid);
         setGroupCodeInput('');
+
+        // Automatically restore encrypted roster from cloud if available (e.g. PC logging into group created on phone)
+        try {
+          const restoreRes = await restoreRosterFromCloud(assignedGid, clean);
+          if (restoreRes.ok && restoreRes.count) {
+            toast.success(`Список группы восстановлен (${restoreRes.count} студентов)`);
+          }
+        } catch {}
 
         // F-01-UX: Check if group roster has real students; if empty, trigger welcome onboarding
         const localRoster = getLocalStudents(assignedGid);

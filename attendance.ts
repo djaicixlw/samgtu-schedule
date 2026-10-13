@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Student, Registry } from './types';
-import { syncAttendanceRecordsToV3 } from './utils/attendanceStorage';
+import { syncAttendanceRecordsToV3, pullAttendanceRecordsFromV3 } from './utils/attendanceStorage';
 import { getSamaraISODate } from './utils/samaraDate';
 import { SEED_ATTENDANCE } from './defaultData';
 
@@ -207,11 +207,31 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
       setRecords(local);
       recordsRef.current = local;
       try {
-        await syncAttendanceRecordsToV3(currentGroupId, local);
-        if (isMounted) {
-          localStorage.removeItem(`attendance_dirty_${currentGroupId}`);
+        // 1. PULL latest attendance from Cloudflare Worker API v3
+        const remote = await pullAttendanceRecordsFromV3(currentGroupId);
+        if (!isMounted) return;
+
+        let merged = local;
+        if (remote && remote.length > 0) {
+          merged = mergeAttendance(local, remote, currentGroupId);
+          setRecords(merged);
+          recordsRef.current = merged;
+          try {
+            localStorage.setItem(`attendance_${currentGroupId}`, JSON.stringify(merged));
+          } catch {}
         }
-      } catch (e) {}
+
+        // 2. PUSH any local marks that may have been created or are marked dirty
+        const dirty = typeof localStorage !== 'undefined' && localStorage.getItem(`attendance_dirty_${currentGroupId}`) === 'true';
+        if (dirty || (local.length > 0 && (!remote || remote.length === 0))) {
+          await syncAttendanceRecordsToV3(currentGroupId, merged);
+          if (isMounted) {
+            localStorage.removeItem(`attendance_dirty_${currentGroupId}`);
+          }
+        }
+      } catch (e) {
+        console.warn('Attendance cloud sync error:', e);
+      }
     };
 
     const setupSubscription = async () => {

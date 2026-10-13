@@ -309,7 +309,7 @@ export function getCorsHeaders(request, env, pathname = '') {
   return {
     "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Accept, Cache-Control, Pragma, Authorization, X-App-Key, X-Telegram-Init-Data",
+    "Access-Control-Allow-Headers": "Content-Type, Accept, Cache-Control, Pragma, Authorization, X-App-Key, X-Telegram-Init-Data, X-Staff-Token",
     "Vary": "Origin",
   };
 }
@@ -375,6 +375,64 @@ export async function sha256Hex(str) {
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
 }
+
+export async function createStaffToken(pepper, payload) {
+  const enc = new TextEncoder();
+  const rawData = JSON.stringify(payload);
+  const dataB64 = btoa(unescape(encodeURIComponent(rawData)));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(String(pepper || "staff-token-pepper")),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sigBuffer = await crypto.subtle.sign("HMAC", key, enc.encode(dataB64));
+  const sig = Array.from(new Uint8Array(sigBuffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `${dataB64}.${sig}`;
+}
+
+export async function verifyStaffToken(token, pepper) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [dataB64, sig] = parts;
+  try {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(String(pepper || "staff-token-pepper")),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    const sigBytes = new Uint8Array(sig.match(/.{1,2}/g)?.map(b => parseInt(b, 16)) || []);
+    const isValid = await crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(dataB64));
+    if (!isValid) return null;
+    const rawData = decodeURIComponent(escape(atob(dataB64)));
+    const payload = JSON.parse(rawData);
+    if (payload.exp && Date.now() > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+export function isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload) {
+  if (tokenPayload) {
+    if (tokenPayload.role === 'admin') return true;
+    if (tokenPayload.role === 'starosta' && tokenPayload.gid && String(tokenPayload.gid).toLowerCase() === String(gid).toLowerCase()) {
+      return true;
+    }
+  }
+  if (userBlindId && Array.isArray(groupData?.staff) && groupData.staff.includes(userBlindId)) {
+    return true;
+  }
+  return false;
+}
+
 
 export async function blindId(env, tgId) {
   const pepper = env?.ID_PEPPER;
@@ -657,27 +715,35 @@ export default {
       // 0b. API v3 ("Blind Server" Architecture)
       if (url.pathname.startsWith("/v3/")) {
         const initDataStr = extractInitDataFromRequest(request);
-        if (!initDataStr) {
-          return new Response(JSON.stringify({ error: "Missing or invalid X-Telegram-Init-Data header" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
+        const authHeader = request.headers.get("Authorization") || "";
+        const staffTokenHeader = request.headers.get("X-Staff-Token") || (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "");
+
+        let tokenPayload = null;
+        if (staffTokenHeader) {
+          tokenPayload = await verifyStaffToken(staffTokenHeader, env?.ID_PEPPER || "staff-token-pepper");
         }
 
-        const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN);
-        if (!verifyResult.ok) {
-          return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
+        let userBlindId = null;
+        if (initDataStr) {
+          const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN);
+          if (!verifyResult.ok) {
+            return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
+              status: 401,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+          if (verifyResult.user?.id) {
+            userBlindId = await blindId(env, verifyResult.user.id);
+          }
         }
 
-        const user = verifyResult.user;
-        if (!user || !user.id) {
-          return new Response(JSON.stringify({ error: "Missing user in Telegram initData" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
+        if (url.pathname !== "/v3/staff/claim") {
+          if (!userBlindId && !tokenPayload) {
+            return new Response(JSON.stringify({ error: "Missing or invalid authorization" }), {
+              status: 401,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
         }
 
         if (!env || !env.APP_DATA) {
@@ -686,8 +752,6 @@ export default {
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
-
-        const userBlindId = await blindId(env, user.id);
 
         // 1. POST /v3/staff/claim
         if (url.pathname === "/v3/staff/claim" && request.method === "POST") {
@@ -789,7 +853,12 @@ export default {
                 adminData.staff.push(userBlindId);
                 await env.APP_DATA.put("g:admin", JSON.stringify(adminData));
               }
-              return new Response(JSON.stringify({ ok: true, role: "admin" }), {
+              const staffToken = await createStaffToken(env?.ID_PEPPER || "staff-token-pepper", {
+                gid: "admin",
+                role: "admin",
+                exp: Date.now() + 30 * 86400000
+              });
+              return new Response(JSON.stringify({ ok: true, role: "admin", token: staffToken }), {
                 status: 200,
                 headers: { ...corsHeaders, "Content-Type": "application/json" }
               });
@@ -893,12 +962,18 @@ export default {
 
           await env.APP_DATA.delete(rlKey);
           groupData.staff = Array.isArray(groupData.staff) ? groupData.staff : [];
-          if (!groupData.staff.includes(userBlindId)) {
+          if (userBlindId && !groupData.staff.includes(userBlindId)) {
             groupData.staff.push(userBlindId);
           }
           await env.APP_DATA.put("g:" + targetGid, JSON.stringify(groupData));
 
-          return new Response(JSON.stringify({ ok: true, role: "starosta", gid: targetGid }), {
+          const staffToken = await createStaffToken(env?.ID_PEPPER || "staff-token-pepper", {
+            gid: targetGid,
+            role: "starosta",
+            exp: Date.now() + 30 * 86400000
+          });
+
+          return new Response(JSON.stringify({ ok: true, role: "starosta", gid: targetGid, token: staffToken }), {
             status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -942,7 +1017,7 @@ export default {
             });
           }
 
-          if (!Array.isArray(groupData.staff) || !groupData.staff.includes(userBlindId)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1014,7 +1089,7 @@ export default {
             });
           }
 
-          if (!Array.isArray(groupData.staff) || !groupData.staff.includes(userBlindId)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1069,7 +1144,7 @@ export default {
             });
           }
 
-          if (!Array.isArray(groupData.staff) || !groupData.staff.includes(userBlindId)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1133,7 +1208,7 @@ export default {
             });
           }
 
-          if (!Array.isArray(groupData.staff) || !groupData.staff.includes(userBlindId)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1461,7 +1536,7 @@ export default {
             });
           }
 
-          if (!Array.isArray(groupData.staff) || !groupData.staff.includes(userBlindId)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1511,6 +1586,88 @@ export default {
           }
 
           return new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        // 9. GET /v3/roster (Encrypted Zero-Knowledge Roster Backup)
+        if (url.pathname === "/v3/roster" && request.method === "GET") {
+          const gid = url.searchParams.get("gid");
+          if (!gid) {
+            return new Response(JSON.stringify({ error: "Missing gid query parameter" }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+          const canonicalGid = gid.trim().toLowerCase();
+          const groupRaw = await env.APP_DATA.get("g:" + canonicalGid);
+          let groupData = null;
+          try { if (groupRaw) groupData = JSON.parse(groupRaw); } catch {}
+
+          if (!isAuthorizedStaff(groupData, canonicalGid, userBlindId, tokenPayload)) {
+            return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
+              status: 403,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
+          const rosterRaw = await env.APP_DATA.get("r:" + canonicalGid);
+          let rosterData = null;
+          if (rosterRaw) {
+            try { rosterData = JSON.parse(rosterRaw); } catch {}
+          }
+
+          return new Response(JSON.stringify({ ok: true, roster: rosterData }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        // 10. PUT /v3/roster (Encrypted Zero-Knowledge Roster Backup)
+        if (url.pathname === "/v3/roster" && request.method === "PUT") {
+          let body;
+          try { body = await request.json(); } catch {
+            return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+          const { gid, data, iv, salt, ver } = body || {};
+          if (!gid || !data || !iv || !salt) {
+            return new Response(JSON.stringify({ error: "Missing required fields (gid, data, iv, salt)" }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+          const canonicalGid = String(gid).trim().toLowerCase();
+          const groupRaw = await env.APP_DATA.get("g:" + canonicalGid);
+          let groupData = null;
+          try { if (groupRaw) groupData = JSON.parse(groupRaw); } catch {}
+
+          if (!isAuthorizedStaff(groupData, canonicalGid, userBlindId, tokenPayload)) {
+            return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
+              status: 403,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
+          const existingRaw = await env.APP_DATA.get("r:" + canonicalGid);
+          let existingVer = 0;
+          if (existingRaw) {
+            try { existingVer = JSON.parse(existingRaw)?.ver || 0; } catch {}
+          }
+          const nextVer = existingVer + 1;
+          const payloadToStore = {
+            ver: nextVer,
+            data: String(data).slice(0, 50000),
+            iv: String(iv).slice(0, 100),
+            salt: String(salt).slice(0, 100),
+            updatedAt: Date.now()
+          };
+          await env.APP_DATA.put("r:" + canonicalGid, JSON.stringify(payloadToStore));
+
+          return new Response(JSON.stringify({ ok: true, ver: nextVer }), {
             status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
