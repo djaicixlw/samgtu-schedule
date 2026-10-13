@@ -644,7 +644,7 @@ export async function unlinkStudentV3(month?: string): Promise<{
 export async function claimStaffRole(
   gidOrCode: string,
   codeOrRole?: string
-): Promise<{ ok: boolean; role?: 'admin' | 'starosta'; gid?: string; error?: string }> {
+): Promise<{ ok: boolean; role?: 'admin' | 'starosta'; gid?: string; token?: string; error?: string }> {
   try {
     const base = getAttendanceApiBase();
     let targetGid = gidOrCode;
