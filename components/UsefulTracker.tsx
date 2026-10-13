@@ -8,6 +8,7 @@ import { UsefulItem, UsefulLink, HomeworkAttachment } from '../types';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, getGroupTag } from '../constants';
 import { toast } from 'sonner';
 import { WORKER_BASE } from '../utils/cloudSync';
+import { openAttachmentSafe } from '../utils/upload';
 import {
   getLocalUsefulItems,
   saveLocalUsefulItems,
@@ -1015,7 +1016,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    handleOpenLink(previewAttachment.url!);
+                    openAttachmentSafe(previewAttachment);
                     setPreviewAttachment(null);
                   }}
                   className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-all cursor-pointer"

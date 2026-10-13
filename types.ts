@@ -75,6 +75,7 @@ export interface HomeworkAttachment {
   data?: string; // base64 string for offline storage
   type?: string;
   size?: string | number;
+  fileId?: string;
 }
 
 export interface HomeworkItem {

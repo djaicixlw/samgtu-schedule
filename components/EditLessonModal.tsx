@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { X, Check, RotateCcw, Link2, Plus, Trash2, ExternalLink } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { X, Check, RotateCcw, Link2, Plus, Trash2, ExternalLink, Paperclip, Upload, FileText, Image, Loader2 } from 'lucide-react';
 import { Lesson, HomeworkAttachment } from '../types';
+import { uploadAttachmentFile } from '../utils/upload';
+import { toast } from 'sonner';
 
 export type TeacherAssignmentScope = 'none' | 'type' | 'all';
 
@@ -34,6 +36,8 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
   const [isAddingLink, setIsAddingLink] = useState(false);
   const [newLinkTitle, setNewLinkTitle] = useState('');
   const [newLinkUrl, setNewLinkUrl] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   if (!isOpen) return null;
 
@@ -52,6 +56,34 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
 
   const handleRemoveAttachment = (idx: number) => {
     setAttachments(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+
+    if (attachments.length >= 10) {
+      toast.error('Максимум 10 материалов к одной паре');
+      return;
+    }
+
+    setIsUploading(true);
+    const toastId = toast.loading(`Загрузка «${file.name}»...`);
+
+    try {
+      const caption = `📎 Материалы к паре: ${subject} (${lesson.timeStart})`;
+      const uploaded = await uploadAttachmentFile(file, caption);
+      setAttachments(prev => [...prev, uploaded]);
+      toast.success(`Файл «${file.name}» прикреплен`, { id: toastId });
+    } catch (err: any) {
+      toast.error(err.message || 'Не удалось загрузить файл', { id: toastId });
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
   };
 
   const handleSubmit = (e?: React.FormEvent) => {
@@ -187,25 +219,51 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
 
           {/* Attachments / Files / Links Section */}
           <div className="p-3.5 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/60 rounded-2xl space-y-3">
-            <div className="flex items-center justify-between">
+            {/* Hidden file input for uploads */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">
-                <Link2 className="w-3.5 h-3.5 text-indigo-500" />
-                <span>Материалы и ссылки к паре</span>
+                <Paperclip className="w-3.5 h-3.5 text-indigo-500" />
+                <span>Материалы и методички</span>
                 {attachments.length > 0 && (
                   <span className="ml-1 text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.2 rounded-full font-bold">
                     {attachments.length}
                   </span>
                 )}
               </div>
-              {!isAddingLink && (
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsAddingLink(true)}
-                  className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline disabled:opacity-50 cursor-pointer"
                 >
-                  <Plus className="w-3 h-3" /> Добавить ссылку
+                  {isUploading ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin" /> Загрузка...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-3 h-3" /> Прикрепить файл
+                    </>
+                  )}
                 </button>
-              )}
+                {!isAddingLink && (
+                  <button
+                    type="button"
+                    onClick={() => setIsAddingLink(true)}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" /> Ссылка
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Existing Attachments List */}
@@ -217,16 +275,27 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
                     className="flex items-center justify-between gap-2 p-2 bg-white dark:bg-slate-800 rounded-xl border border-slate-200/80 dark:border-slate-700/50 text-xs"
                   >
                     <div className="flex items-center gap-2 min-w-0">
-                      <ExternalLink className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                      {att.type === 'image' ? (
+                        <Image className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                      ) : att.type === 'file' ? (
+                        <FileText className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                      ) : (
+                        <ExternalLink className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                      )}
                       <span className="truncate font-medium text-slate-800 dark:text-slate-200">
                         {att.name}
                       </span>
+                      {att.size && (
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0">
+                          ({att.size})
+                        </span>
+                      )}
                     </div>
                     <button
                       type="button"
                       onClick={() => handleRemoveAttachment(idx)}
                       className="text-slate-400 hover:text-red-500 transition-colors p-1"
-                      title="Удалить ссылку"
+                      title="Удалить материал"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

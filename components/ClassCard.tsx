@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Lesson } from '../types';
-import { MapPin, User, Users, Info, Edit3, ExternalLink, Link2 } from 'lucide-react';
+import { MapPin, User, Users, Info, Edit3, ExternalLink, Link2, Paperclip } from 'lucide-react';
 import EditLessonModal, { TeacherAssignmentScope } from './EditLessonModal';
+import { openAttachmentSafe } from '../utils/upload';
 
 interface ClassCardProps {
   lesson: Lesson;
@@ -58,6 +59,15 @@ const ClassCard: React.FC<ClassCardProps> = ({
               {isCancelled && (
                 <span className="px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wide bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800">
                   Отменена
+                </span>
+              )}
+              {lesson.attachments && lesson.attachments.length > 0 && (
+                <span 
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/60"
+                  title={`Прикреплено материалов: ${lesson.attachments.length}`}
+                >
+                  <Paperclip className="w-3 h-3 text-indigo-500" />
+                  <span>{lesson.attachments.length}</span>
                 </span>
               )}
               <span className={`px-2.5 py-0.5 rounded-lg text-[10px] uppercase font-bold tracking-wide ${getTypeColor(lesson.type)}`}>
@@ -120,13 +130,7 @@ const ClassCard: React.FC<ClassCardProps> = ({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (att.url) {
-                        if (typeof window !== 'undefined' && window.Telegram?.WebApp?.openLink) {
-                          window.Telegram.WebApp.openLink(att.url);
-                        } else {
-                          window.open(att.url, '_blank', 'noopener,noreferrer');
-                        }
-                      }
+                      openAttachmentSafe(att);
                     }}
                     className="flex items-center gap-1 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-indigo-700 dark:text-indigo-300 text-[11px] font-semibold rounded-lg transition-all border border-indigo-200/60 dark:border-slate-700 cursor-pointer"
                   >

@@ -2234,6 +2234,63 @@ export default {
         });
       }
 
+      // 2c. Dynamic 10-Minute Signed File Link (B-04: Prevents stale links after 14 days)
+      if (url.pathname === "/v3/files/link") {
+        let fileId = null;
+        let fileName = "file";
+        if (request.method === "POST") {
+          try {
+            const body = await request.json();
+            fileId = body.file_id || body.fileId;
+            fileName = body.filename || body.fileName || "file";
+          } catch (e) {
+            return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+        } else if (request.method === "GET") {
+          fileId = url.searchParams.get("file_id") || url.searchParams.get("fileId");
+          fileName = url.searchParams.get("filename") || url.searchParams.get("name") || "file";
+        } else {
+          return new Response(JSON.stringify({ error: "Method not allowed" }), {
+            status: 405,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        if (!fileId || typeof fileId !== "string" || fileId.length < 5) {
+          return new Response(JSON.stringify({ error: "Missing or invalid file_id" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        if (!env || !env.ID_PEPPER) {
+          return new Response(JSON.stringify({ error: "Internal server error: ID_PEPPER missing" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        const signingKey = await deriveFileSigningKey(env.ID_PEPPER);
+        const exp = Math.floor(Date.now() / 1000) + 600; // 10 minutes TTL
+        const sig = await signFileUrl(fileId, exp, signingKey);
+        const directUrl = `${url.origin}/file?file_id=${fileId}&exp=${exp}&sig=${sig}&download=1&filename=${encodeURIComponent(fileName)}`;
+
+        return new Response(JSON.stringify({
+          ok: true,
+          file_id: fileId,
+          filename: fileName,
+          exp: exp,
+          sig: sig,
+          direct_url: directUrl
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
       // 3. Direct File Streaming (Bypasses RKN / Works in Russia without VPN!)
       if (url.pathname === "/file") {
         const fileId = url.searchParams.get("file_id");

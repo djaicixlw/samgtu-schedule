@@ -9,6 +9,7 @@ import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, getGroupTag } from '../constants';
 import { getSamaraDate, getSamaraISODate, getSamaraFutureISODate } from '../attendance';
 import { toast } from 'sonner';
 import { fetchGroupCloudData, pushGroupCloudData, WORKER_BASE } from '../utils/cloudSync';
+import { openAttachmentSafe } from '../utils/upload';
 import { SEED_HOMEWORK } from '../defaultData';
 
 interface HomeworkTrackerProps {
@@ -969,14 +970,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    const url = previewAttachment.url;
-                    if (!url || (!url.startsWith('https://') && !url.startsWith('http://'))) return;
-                    const tg = (window as any).Telegram?.WebApp;
-                    if (tg && typeof tg.openLink === 'function') {
-                      tg.openLink(url);
-                    } else {
-                      window.open(url, '_blank', 'noopener,noreferrer');
-                    }
+                    openAttachmentSafe(previewAttachment);
                   }}
                   className="flex-1 min-w-[140px] flex items-center justify-center gap-1.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm cursor-pointer"
                 >

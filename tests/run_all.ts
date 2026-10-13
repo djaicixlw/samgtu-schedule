@@ -43,6 +43,8 @@ await import('./test_friday_pair4_verification');
 await import('./test_block_a_ux');
 await import('./test_useful_tracker');
 await import('./test_attendance_matrix');
+const { runLessonMaterialsTests } = await import('./test_lesson_materials');
+await runLessonMaterialsTests();
 const { runHomeworkLifecycleStressTest } = await import('./test_homework_lifecycle_stress');
 await runHomeworkLifecycleStressTest();
 console.log("\n=================================================");
