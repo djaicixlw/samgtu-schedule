@@ -61,3 +61,4 @@ kv-group-codes.json
 # Резервные копии KV (scripts/kv-backup.mjs)
 backups/
 *.kvbackup
+*.zip
