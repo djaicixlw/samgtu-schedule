@@ -5,6 +5,7 @@ import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES } from '../constants';
 import { Lesson, Student, GroupConfig } from '../types';
 import { toast } from 'sonner';
 import { getLocalStudents, syncAttendanceRecordsToV3 } from '../utils/attendanceStorage';
+import { AttendanceMatrix } from './AttendanceMatrix';
 
 interface AttendanceTrackerProps {
   isAuthenticated: boolean;
@@ -378,7 +379,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
               : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
           }`}
         >
-          Сводка по парам
+          Табель и сводка
         </button>
       </div>
 
@@ -626,54 +627,39 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
         </div>
       )}
 
-      {/* TAB 3: PAIR DETAILS TABLE */}
+      {/* TAB 3: ATTENDANCE MATRIX & SEMESTER SUMMARY */}
       {activeTab === 'details' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/90 dark:border-slate-800 overflow-hidden p-6 space-y-4 shadow-xs">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-white dark:bg-slate-900 p-5 rounded-3xl border border-slate-200/90 dark:border-slate-800 shadow-xs">
             <div>
-              <h3 className="font-bold text-base text-slate-900 dark:text-white">Сводная таблица по всем занятиям</h3>
-              <span className="text-xs text-slate-400">Всего студентов: {students.length}</span>
+              <h3 className="font-bold text-base text-slate-900 dark:text-white">Табель посещаемости и сводка</h3>
+              <p className="text-xs text-slate-400 mt-0.5">Детальная сетка недели и кумулятивный учет часов по блокам</p>
             </div>
-            <button
-              onClick={handleCopyTextSummary}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer"
-              title="Скопировать сводку текстом"
-            >
-              <Copy className="w-4 h-4" />
-              <span>Скопировать сводку текстом</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={handleCopyTextSummary}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer"
+                title="Скопировать сводку текстом"
+              >
+                <Copy className="w-4 h-4" />
+                <span>Скопировать сводку</span>
+              </button>
+              <button
+                onClick={handleExportWord}
+                disabled={isExporting}
+                className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm cursor-pointer disabled:opacity-60"
+              >
+                <Download className="w-4 h-4" />
+                <span>{isExporting ? 'Формирование...' : 'Выгрузить Word (.docx)'}</span>
+              </button>
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 dark:bg-slate-800 text-slate-400 font-bold uppercase">
-                <tr>
-                  <th className="p-3">№</th>
-                  <th className="p-3">Студент</th>
-                  <th className="p-3 text-center">Всего Н (часов)</th>
-                  <th className="p-3 text-center">Всего УП (часов)</th>
-                  <th className="p-3 text-center">Итого пропусков</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200/80 dark:divide-slate-800">
-                {reportData.map((row, idx) => {
-                  const totalAbs = row.totalAllTimeAbs;
-                  const totalExc = row.totalAllTimeExc;
-                  const grandTotal = totalAbs + totalExc;
-
-                  return (
-                    <tr key={row.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                      <td className="p-3 font-bold text-slate-400">{idx + 1}</td>
-                      <td className="p-3 font-semibold text-slate-900 dark:text-white">{row.name}</td>
-                      <td className="p-3 text-center font-bold text-red-500">{totalAbs} ч.</td>
-                      <td className="p-3 text-center font-bold text-amber-500">{totalExc} ч.</td>
-                      <td className="p-3 text-center font-bold text-indigo-600 dark:text-indigo-400">{grandTotal} ч.</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <AttendanceMatrix
+            currentGroupId={currentGroupId}
+            userRole={userRole}
+            refreshTrigger={refreshTrigger}
+          />
         </div>
       )}
     </div>

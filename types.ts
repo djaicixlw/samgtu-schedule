@@ -91,3 +91,23 @@ export interface HomeworkItem {
   createdAt: string;
   createdBy?: string;
 }
+
+export interface UsefulLink {
+  title: string;
+  url: string;
+}
+
+export interface UsefulItem {
+  id: string;
+  groupId: string;
+  title: string;          // до 100 знаков
+  text: string;           // до 2000 знаков
+  subject?: string;       // привязка к предмету (опционально)
+  tags?: string[];        // теги (#сессия, #лабы, #контакты)
+  isPinned?: boolean;     // закрепление наверху
+  links?: UsefulLink[];   // до 10 ссылок (https)
+  attachments?: HomeworkAttachment[]; // до 10 файлов/фото
+  createdAt: string;
+  updatedAt?: string;
+  createdBy?: string;
+}

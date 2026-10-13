@@ -262,7 +262,7 @@ export function formatTelegramErrorHtml({ message, stack, component, group, plat
   return text;
 }
 
-export const KV_TYPES = new Set(["schedule", "homework", "attendance"]);
+export const KV_TYPES = new Set(["schedule", "homework", "attendance", "useful"]);
 export const GROUP_ID_RE = /^[a-z0-9-]{1,64}$/;
 
 export async function safeEqual(a, b) {

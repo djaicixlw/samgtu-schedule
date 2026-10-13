@@ -41,6 +41,8 @@ await import('./test_attendance_merge');
 await import('./test_tma_word_export');
 await import('./test_friday_pair4_verification');
 await import('./test_block_a_ux');
+await import('./test_useful_tracker');
+await import('./test_attendance_matrix');
 const { runHomeworkLifecycleStressTest } = await import('./test_homework_lifecycle_stress');
 await runHomeworkLifecycleStressTest();
 console.log("\n=================================================");

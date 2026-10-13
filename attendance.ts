@@ -344,6 +344,15 @@ export const BLOCKS = [
   { id: 4, name: "Блок 4 (21.11 - 31.12)", start: "2026-11-21", end: "2026-12-31" } // было 2026-12-25
 ];
 
+export const TIME_SLOTS: Record<string, { timeStart: string; timeEnd: string }> = {
+  '1': { timeStart: '08:00', timeEnd: '09:35' },
+  '2': { timeStart: '09:45', timeEnd: '11:20' },
+  '3': { timeStart: '11:50', timeEnd: '13:25' },
+  '4': { timeStart: '13:35', timeEnd: '15:10' },
+  '5': { timeStart: '15:40', timeEnd: '17:15' },
+  '6': { timeStart: '17:25', timeEnd: '19:00' },
+};
+
 export {
   getSamaraDate,
   getSamaraISODate,

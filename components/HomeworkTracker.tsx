@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   BookOpen, Plus, Calendar, Clock, Paperclip, Link as LinkIcon, 
-  Trash2, Edit3, X, Check, Download, AlertCircle, FileText, ExternalLink, Filter 
+  Trash2, Edit3, X, Check, Download, AlertCircle, FileText, ExternalLink, Filter, Bookmark 
 } from 'lucide-react';
+import UsefulTracker from './UsefulTracker';
 import { HomeworkItem, HomeworkAttachment } from '../types';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, getGroupTag } from '../constants';
 import { getSamaraDate, getSamaraISODate, getSamaraFutureISODate } from '../attendance';
@@ -59,6 +60,9 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       return [];
     }
   });
+
+  // Section state: Tasks or Useful
+  const [activeSection, setActiveSection] = useState<'tasks' | 'useful'>('tasks');
 
   // Filter state
   const [filterMode, setFilterMode] = useState<'all' | 'upcoming' | 'past'>('upcoming');
@@ -460,7 +464,43 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
 
   return (
     <div className="space-y-5 w-full max-w-full">
-      {/* Top Banner & Action */}
+      {/* Top Segmented Switch: Задания | Полезное */}
+      <div className="flex bg-slate-100 dark:bg-slate-800/80 p-1 rounded-2xl w-full max-w-xs">
+        <button
+          type="button"
+          onClick={() => setActiveSection('tasks')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+            activeSection === 'tasks'
+              ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
+              : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+          }`}
+        >
+          <BookOpen className="w-3.5 h-3.5" />
+          <span>Задания</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveSection('useful')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+            activeSection === 'useful'
+              ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
+              : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+          }`}
+        >
+          <Bookmark className="w-3.5 h-3.5" />
+          <span>Полезное</span>
+        </button>
+      </div>
+
+      {activeSection === 'useful' ? (
+        <UsefulTracker
+          currentGroupId={currentGroupId}
+          userRole={userRole}
+          refreshTrigger={refreshTrigger}
+        />
+      ) : (
+        <>
+          {/* Top Banner & Action */}
       <div className="bg-white dark:bg-slate-900 p-5 rounded-3xl border border-slate-200/90 dark:border-slate-800 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
@@ -972,6 +1012,8 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );
