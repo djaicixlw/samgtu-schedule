@@ -954,14 +954,20 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
             <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800 flex flex-wrap gap-2">
               {previewAttachment.tgUrl && (
                 <button
-                  onClick={() => {
-                    const url = previewAttachment.tgUrl;
-                    if (!url || (!url.startsWith('https://') && !url.startsWith('http://'))) return;
-                    const tg = (window as any).Telegram?.WebApp;
-                    if (tg?.openLink) tg.openLink(url);
-                    else window.open(url, '_blank', 'noopener,noreferrer');
+                  type="button"
+                  onClick={async () => {
+                    const target = previewAttachment.tgUrl;
+                    if (!target) return;
+                    if (target.startsWith('https://t.me/') || target.startsWith('tg://')) {
+                      const tg = (window as any).Telegram?.WebApp;
+                      if (tg?.openTelegramLink) tg.openTelegramLink(target);
+                      else if (tg?.openLink) tg.openLink(target);
+                      else window.open(target, '_blank', 'noopener,noreferrer');
+                      return;
+                    }
+                    openAttachmentSafe(previewAttachment);
                   }}
-                  className="flex-1 min-w-[140px] flex items-center justify-center gap-1.5 py-2.5 bg-blue-500 hover:bg-blue-600 text-white font-bold text-xs rounded-xl transition-all shadow-sm"
+                  className="flex-1 min-w-[140px] flex items-center justify-center gap-1.5 py-2.5 bg-blue-500 hover:bg-blue-600 text-white font-bold text-xs rounded-xl transition-all shadow-sm cursor-pointer"
                 >
                   <ExternalLink className="w-4 h-4" /> В Telegram
                 </button>

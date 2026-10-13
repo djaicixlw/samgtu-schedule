@@ -64,6 +64,19 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   const [subjectFilter, setSubjectFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
+  // Dynamic chips combining presets + unique tags from actual items
+  const dynamicTagChips = useMemo(() => {
+    const set = new Set<string>(PRESET_TAG_CHIPS);
+    items.forEach(it => {
+      (it.tags || []).forEach(t => {
+        if (!t) return;
+        const normalized = t.startsWith('#') ? t.toLowerCase() : `#${t.toLowerCase()}`;
+        set.add(normalized);
+      });
+    });
+    return Array.from(set);
+  }, [items]);
+
   // Reset subject filter when switching group
   useEffect(() => {
     setSubjectFilter('all');
@@ -474,7 +487,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       <div className="space-y-3">
         {/* Quick Tag Chips */}
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-          {PRESET_TAG_CHIPS.map(chip => {
+          {dynamicTagChips.map(chip => {
             const isActive = activeTagFilter === chip;
             return (
               <button

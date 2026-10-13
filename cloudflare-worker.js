@@ -377,12 +377,15 @@ export async function sha256Hex(str) {
 }
 
 export async function createStaffToken(pepper, payload) {
+  if (!pepper || typeof pepper !== 'string' || pepper === 'staff-token-pepper') {
+    throw new Error("Server configuration error: ID_PEPPER is not configured");
+  }
   const enc = new TextEncoder();
   const rawData = JSON.stringify(payload);
   const dataB64 = btoa(unescape(encodeURIComponent(rawData)));
   const key = await crypto.subtle.importKey(
     "raw",
-    enc.encode(String(pepper || "staff-token-pepper")),
+    enc.encode(pepper),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
@@ -395,7 +398,7 @@ export async function createStaffToken(pepper, payload) {
 }
 
 export async function verifyStaffToken(token, pepper) {
-  if (!token || typeof token !== 'string') return null;
+  if (!token || typeof token !== 'string' || !pepper || pepper === 'staff-token-pepper') return null;
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const [dataB64, sig] = parts;
@@ -403,7 +406,7 @@ export async function verifyStaffToken(token, pepper) {
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(
       "raw",
-      enc.encode(String(pepper || "staff-token-pepper")),
+      enc.encode(pepper),
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["verify"]
@@ -720,7 +723,9 @@ export default {
 
         let tokenPayload = null;
         if (staffTokenHeader) {
-          tokenPayload = await verifyStaffToken(staffTokenHeader, env?.ID_PEPPER || "staff-token-pepper");
+          if (env?.ID_PEPPER) {
+            tokenPayload = await verifyStaffToken(staffTokenHeader, env.ID_PEPPER);
+          }
         }
 
         let userBlindId = null;
@@ -737,7 +742,8 @@ export default {
           }
         }
 
-        if (url.pathname !== "/v3/staff/claim") {
+        const isPublicV3 = url.pathname === "/v3/staff/claim" || url.pathname === "/v3/files/link";
+        if (!isPublicV3) {
           if (!userBlindId && !tokenPayload) {
             return new Response(JSON.stringify({ error: "Missing or invalid authorization" }), {
               status: 401,
@@ -774,40 +780,10 @@ export default {
           }
 
           const rawCode = code.trim().toUpperCase();
-
-          // Crockford Base32 visual confusion tolerance (5 <-> S, 0 <-> O, 1 <-> I)
-          const baseVariants = new Set([rawCode]);
-          if (rawCode.includes('5')) baseVariants.add(rawCode.replace(/5/g, 'S'));
-          if (rawCode.includes('S')) baseVariants.add(rawCode.replace(/S/g, '5'));
-          if (rawCode.includes('0')) baseVariants.add(rawCode.replace(/0/g, 'O'));
-          if (rawCode.includes('O')) baseVariants.add(rawCode.replace(/O/g, '0'));
-          if (rawCode.includes('1')) baseVariants.add(rawCode.replace(/1/g, 'I'));
-          if (rawCode.includes('I')) baseVariants.add(rawCode.replace(/I/g, '1'));
-
-          // Compound substitutions if code has multiple confusable characters
-          baseVariants.add(
-            rawCode
-              .replace(/5/g, 'S')
-              .replace(/O/g, '0')
-              .replace(/I/g, '1')
-          );
-          baseVariants.add(
-            rawCode
-              .replace(/S/g, '5')
-              .replace(/0/g, 'O')
-              .replace(/I/g, '1')
-          );
-
-          // Format each variant as rawCode, stripped (alphanumeric only), formatted (with hyphens if 16 chars)
-          const candidatesSet = new Set();
-          for (const variant of baseVariants) {
-            candidatesSet.add(variant);
-            const strippedVar = variant.replace(/[^0-9A-Z]/g, '');
-            candidatesSet.add(strippedVar);
-            if (strippedVar.length === 16) {
-              const formattedVar = `${strippedVar.slice(0, 4)}-${strippedVar.slice(4, 8)}-${strippedVar.slice(8, 12)}-${strippedVar.slice(12, 16)}`;
-              candidatesSet.add(formattedVar);
-            }
+          const strippedCode = rawCode.replace(/[^0-9A-Z]/g, '');
+          const candidatesSet = new Set([rawCode, strippedCode]);
+          if (strippedCode.length === 16) {
+            candidatesSet.add(`${strippedCode.slice(0, 4)}-${strippedCode.slice(4, 8)}-${strippedCode.slice(8, 12)}-${strippedCode.slice(12, 16)}`);
           }
           const candidates = Array.from(candidatesSet);
 
@@ -853,7 +829,13 @@ export default {
                 adminData.staff.push(userBlindId);
                 await env.APP_DATA.put("g:admin", JSON.stringify(adminData));
               }
-              const staffToken = await createStaffToken(env?.ID_PEPPER || "staff-token-pepper", {
+              if (!env?.ID_PEPPER) {
+                return new Response(JSON.stringify({ error: "Server configuration error: ID_PEPPER missing" }), {
+                  status: 500,
+                  headers: { ...corsHeaders, "Content-Type": "application/json" }
+                });
+              }
+              const staffToken = await createStaffToken(env.ID_PEPPER, {
                 gid: "admin",
                 role: "admin",
                 exp: Date.now() + 30 * 86400000
@@ -967,7 +949,14 @@ export default {
           }
           await env.APP_DATA.put("g:" + targetGid, JSON.stringify(groupData));
 
-          const staffToken = await createStaffToken(env?.ID_PEPPER || "staff-token-pepper", {
+          if (!env?.ID_PEPPER) {
+            return new Response(JSON.stringify({ error: "Server configuration error: ID_PEPPER missing" }), {
+              status: 500,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
+          const staffToken = await createStaffToken(env.ID_PEPPER, {
             gid: targetGid,
             role: "starosta",
             exp: Date.now() + 30 * 86400000
@@ -1159,7 +1148,8 @@ export default {
               monthData = {
                 ver: Number(parsed.ver) || 0,
                 slots: (parsed.slots && typeof parsed.slots === 'object') ? parsed.slots : {},
-                cancelled: Array.isArray(parsed.cancelled) ? parsed.cancelled : []
+                cancelled: Array.isArray(parsed.cancelled) ? parsed.cancelled : [],
+                updatedAt: Number(parsed.updatedAt) || 0
               };
             } catch {}
           }
@@ -1216,14 +1206,15 @@ export default {
           }
 
           const attRaw = await env.APP_DATA.get(`a:${gid}:${month}`);
-          let current = { ver: 0, slots: {}, cancelled: [] };
+          let current = { ver: 0, slots: {}, cancelled: [], updatedAt: 0 };
           if (attRaw) {
             try {
               const parsed = JSON.parse(attRaw);
               current = {
                 ver: Number(parsed.ver) || 0,
                 slots: (parsed.slots && typeof parsed.slots === 'object') ? parsed.slots : {},
-                cancelled: Array.isArray(parsed.cancelled) ? parsed.cancelled : []
+                cancelled: Array.isArray(parsed.cancelled) ? parsed.cancelled : [],
+                updatedAt: Number(parsed.updatedAt) || 0
               };
             } catch {}
           }
@@ -1235,7 +1226,8 @@ export default {
               currentVer: current.ver,
               ver: current.ver,
               slots: current.slots,
-              cancelled: current.cancelled
+              cancelled: current.cancelled,
+              updatedAt: current.updatedAt
             }), {
               status: 409,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1275,13 +1267,14 @@ export default {
 
           const newVer = (current.ver || 0) + 1;
           current.ver = newVer;
+          current.updatedAt = Date.now();
 
           const TTL_200_DAYS = 17280000;
           await env.APP_DATA.put(`a:${gid}:${month}`, JSON.stringify(current), {
             expirationTtl: TTL_200_DAYS
           });
 
-          return new Response(JSON.stringify({ ok: true, ver: newVer }), {
+          return new Response(JSON.stringify({ ok: true, ver: newVer, updatedAt: current.updatedAt }), {
             status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -1289,6 +1282,12 @@ export default {
 
         // 6. POST /v3/student/link (and /v3/me/claim)
         if ((url.pathname === "/v3/student/link" || url.pathname === "/v3/me/claim") && request.method === "POST") {
+          if (!userBlindId) {
+            return new Response(JSON.stringify({ error: "Unauthorized: Telegram WebApp context is required for student linking" }), {
+              status: 401,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
           let body;
           try {
             body = await request.json();
@@ -1366,6 +1365,12 @@ export default {
 
         // 7. GET /v3/me
         if (url.pathname === "/v3/me" && request.method === "GET") {
+          if (!userBlindId) {
+            return new Response(JSON.stringify({ error: "Unauthorized: Telegram WebApp context is required" }), {
+              status: 401,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
           const userRaw = await env.APP_DATA.get("u:" + userBlindId);
           if (!userRaw) {
             return new Response(JSON.stringify({ ok: true, linked: false }), {
@@ -1447,6 +1452,12 @@ export default {
 
         // 8. DELETE /v3/me
         if (url.pathname === "/v3/me" && request.method === "DELETE") {
+          if (!userBlindId) {
+            return new Response(JSON.stringify({ error: "Unauthorized: Telegram WebApp context is required" }), {
+              status: 401,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
           const userRaw = await env.APP_DATA.get("u:" + userBlindId);
           if (!userRaw) {
             return new Response(JSON.stringify({ ok: true, deleted: false }), {
@@ -1668,6 +1679,63 @@ export default {
           await env.APP_DATA.put("r:" + canonicalGid, JSON.stringify(payloadToStore));
 
           return new Response(JSON.stringify({ ok: true, ver: nextVer }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        // 11. GET/POST /v3/files/link (Dynamic 10-Minute Signed File Link)
+        if (url.pathname === "/v3/files/link") {
+          let fileId = null;
+          let fileName = "file";
+          if (request.method === "POST") {
+            try {
+              const body = await request.json();
+              fileId = body.file_id || body.fileId;
+              fileName = body.filename || body.fileName || "file";
+            } catch (e) {
+              return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+                status: 400,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+          } else if (request.method === "GET") {
+            fileId = url.searchParams.get("file_id") || url.searchParams.get("fileId");
+            fileName = url.searchParams.get("filename") || url.searchParams.get("name") || "file";
+          } else {
+            return new Response(JSON.stringify({ error: "Method not allowed" }), {
+              status: 405,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
+          if (!fileId || typeof fileId !== "string" || fileId.length < 5) {
+            return new Response(JSON.stringify({ error: "Missing or invalid file_id" }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
+          if (!env || !env.ID_PEPPER) {
+            return new Response(JSON.stringify({ error: "Internal server error: ID_PEPPER missing" }), {
+              status: 500,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
+          const signingKey = await deriveFileSigningKey(env.ID_PEPPER);
+          const exp = Math.floor(Date.now() / 1000) + 600; // 10 minutes TTL
+          const sig = await signFileUrl(fileId, exp, signingKey);
+          const directUrl = `${url.origin}/file?file_id=${fileId}&exp=${exp}&sig=${sig}&download=1&filename=${encodeURIComponent(fileName)}`;
+
+          return new Response(JSON.stringify({
+            ok: true,
+            file_id: fileId,
+            filename: fileName,
+            exp: exp,
+            sig: sig,
+            direct_url: directUrl
+          }), {
             status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -1902,6 +1970,13 @@ export default {
         // For attendance routes, verify Telegram initData authentication or X-App-Key
         const hasAppKey = await requireAppKey(request, APP_SECRET);
         const initDataHeader = extractInitDataFromRequest(request);
+        const authHeader = request.headers.get("Authorization") || "";
+        const staffTokenHeader = request.headers.get("X-Staff-Token") || (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "");
+        let tokenPayload = null;
+        if (staffTokenHeader && env?.ID_PEPPER) {
+          tokenPayload = await verifyStaffToken(staffTokenHeader, env.ID_PEPPER);
+        }
+
         if (type === "attendance" && !hasAppKey) {
           if (!initDataHeader) {
             return new Response(JSON.stringify({ error: "Access denied to group attendance" }), {
@@ -1985,9 +2060,14 @@ export default {
 
           let userBlindId = null;
 
-          if (!hasAppKey) {
+          const isStaffAuthorized = Boolean(tokenPayload && (
+            tokenPayload.role === 'admin' ||
+            (tokenPayload.role === 'starosta' && String(tokenPayload.gid).toLowerCase() === String(groupId).toLowerCase())
+          ));
+
+          if (!hasAppKey && !isStaffAuthorized) {
             if (!initDataHeader) {
-              return new Response(JSON.stringify({ error: "Unauthorized: Missing X-App-Key or Telegram initData" }), {
+              return new Response(JSON.stringify({ error: "Unauthorized: Missing X-App-Key, Telegram initData, or valid Staff Token" }), {
                 status: 401,
                 headers: { ...corsHeaders, "Content-Type": "application/json" }
               });
@@ -2031,8 +2111,8 @@ export default {
           }
 
           if (type !== "attendance" && !hasAppKey) {
-            let isAdmin = Boolean(env && env.ADMIN_BLIND_ID && userBlindId === env.ADMIN_BLIND_ID);
-            if (!isAdmin) {
+            let isAdmin = Boolean(tokenPayload?.role === 'admin') || Boolean(env && env.ADMIN_BLIND_ID && userBlindId === env.ADMIN_BLIND_ID);
+            if (!isAdmin && userBlindId) {
               const adminRaw = await env.APP_DATA.get("g:admin");
               if (adminRaw) {
                 try {
@@ -2043,8 +2123,8 @@ export default {
                 } catch {}
               }
             }
-            let isStaff = false;
-            if (groupId) {
+            let isStaff = isStaffAuthorized;
+            if (!isStaff && groupId && userBlindId) {
               const groupRaw = await env.APP_DATA.get("g:" + groupId.toLowerCase());
               if (groupRaw) {
                 try {
@@ -2391,62 +2471,6 @@ export default {
         });
       }
 
-      // 2c. Dynamic 10-Minute Signed File Link (B-04: Prevents stale links after 14 days)
-      if (url.pathname === "/v3/files/link") {
-        let fileId = null;
-        let fileName = "file";
-        if (request.method === "POST") {
-          try {
-            const body = await request.json();
-            fileId = body.file_id || body.fileId;
-            fileName = body.filename || body.fileName || "file";
-          } catch (e) {
-            return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-              status: 400,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-        } else if (request.method === "GET") {
-          fileId = url.searchParams.get("file_id") || url.searchParams.get("fileId");
-          fileName = url.searchParams.get("filename") || url.searchParams.get("name") || "file";
-        } else {
-          return new Response(JSON.stringify({ error: "Method not allowed" }), {
-            status: 405,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        if (!fileId || typeof fileId !== "string" || fileId.length < 5) {
-          return new Response(JSON.stringify({ error: "Missing or invalid file_id" }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        if (!env || !env.ID_PEPPER) {
-          return new Response(JSON.stringify({ error: "Internal server error: ID_PEPPER missing" }), {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        const signingKey = await deriveFileSigningKey(env.ID_PEPPER);
-        const exp = Math.floor(Date.now() / 1000) + 600; // 10 minutes TTL
-        const sig = await signFileUrl(fileId, exp, signingKey);
-        const directUrl = `${url.origin}/file?file_id=${fileId}&exp=${exp}&sig=${sig}&download=1&filename=${encodeURIComponent(fileName)}`;
-
-        return new Response(JSON.stringify({
-          ok: true,
-          file_id: fileId,
-          filename: fileName,
-          exp: exp,
-          sig: sig,
-          direct_url: directUrl
-        }), {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
 
       // 3. Direct File Streaming (Bypasses RKN / Works in Russia without VPN!)
       if (url.pathname === "/file") {
@@ -2533,29 +2557,65 @@ export default {
       if (url.pathname === "/samgtu-schedule" && request.method === "GET") {
         const samgtuGroupId = url.searchParams.get("groupId");
         const weekNumber = url.searchParams.get("week") || "1";
-        if (!samgtuGroupId) {
-          return new Response(JSON.stringify({ error: "Missing groupId query param" }), {
+
+        if (!samgtuGroupId || !/^[a-zA-Z0-9-]{1,32}$/.test(samgtuGroupId)) {
+          return new Response(JSON.stringify({ error: "Invalid or missing groupId parameter" }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
 
+        if (!/^\d{1,2}$/.test(weekNumber) || Number(weekNumber) < 1 || Number(weekNumber) > 30) {
+          return new Response(JSON.stringify({ error: "Invalid week parameter" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        // IP Rate Limiting for schedule proxy (max 60 req/min)
+        const clientIp = request.headers.get("CF-Connecting-IP") || "unknown";
+        if (env?.APP_DATA) {
+          const rlKey = `rl:samgtu:${clientIp}`;
+          const reqCount = Number(await env.APP_DATA.get(rlKey)) || 0;
+          if (reqCount > 60) {
+            return new Response(JSON.stringify({ error: "Too many schedule proxy requests. Please wait." }), {
+              status: 429,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+          await env.APP_DATA.put(rlKey, String(reqCount + 1), { expirationTtl: 60 });
+        }
+
         const targetUrl = `https://samgtu.ru/students/getschedule?GroupID=${encodeURIComponent(samgtuGroupId)}&WeekNumber=${encodeURIComponent(weekNumber)}`;
-        const samgtuRes = await fetch(targetUrl, {
-          headers: {
-            "Accept": "application/json, text/plain, */*",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          }
-        });
-        const samgtuData = await samgtuRes.text();
-        return new Response(samgtuData, {
-          status: samgtuRes.status,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-            "Cache-Control": "public, max-age=3600"
-          }
-        });
+        
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 7000);
+
+          const samgtuRes = await fetch(targetUrl, {
+            signal: controller.signal,
+            headers: {
+              "Accept": "application/json, text/plain, */*",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+          });
+          clearTimeout(timeout);
+
+          const samgtuData = await samgtuRes.text();
+          return new Response(samgtuData, {
+            status: samgtuRes.status,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+              "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"
+            }
+          });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: "Failed to reach official SamGTU portal", details: err?.message || 'timeout' }), {
+            status: 502,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
       }
 
       // 5. Telegram Notification Endpoint (for nightly sync / system alerts)
@@ -2574,7 +2634,16 @@ export default {
           });
         }
 
-        const body = await request.json();
+        let body;
+        try {
+          body = await request.json();
+        } catch {
+          return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
         const text = body.message || body.text;
         if (!text) {
           return new Response(JSON.stringify({ error: "Missing message text" }), {
@@ -2601,7 +2670,7 @@ export default {
           body: JSON.stringify({
             chat_id: targetChatId,
             text: text,
-            parse_mode: body.parse_mode || "HTML"
+            parse_mode: "HTML"
           })
         });
         const tgJson = await tgRes.json();

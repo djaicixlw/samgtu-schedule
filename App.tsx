@@ -156,7 +156,7 @@ const App: React.FC = () => {
   const [isClaimingStaff, setIsClaimingStaff] = useState(false);
 
   const handleClaimGroupCode = async () => {
-    const clean = groupCodeInput.trim().toUpperCase();
+    const clean = groupCodeInput.replace(/\s+/g, '').toUpperCase();
     if (!clean) {
       toast.error('Введите код группы или администратора');
       return;
@@ -893,6 +893,23 @@ const App: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      toast.warning('Срок действия сессии истек', {
+        description: 'Введите код доступа повторно для продолжения работы. Ваши локальные данные сохранены.',
+        action: {
+          label: 'Ввести код',
+          onClick: () => setActiveTab('profile')
+        },
+        duration: 8000
+      });
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('samgtu:auth-expired', handleAuthExpired);
+      return () => window.removeEventListener('samgtu:auth-expired', handleAuthExpired);
+    }
+  }, []);
+
   const handleLogout = async () => {
     setUserRole('student');
     setUser(null);
@@ -904,9 +921,18 @@ const App: React.FC = () => {
       localStorage.removeItem('starosta_group_id');
       localStorage.removeItem('auth_group');
       sessionStorage.removeItem('admin_maintenance_bypass');
+      // Wipe staff tokens and group access codes so session is cleanly purged
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (k.startsWith('staff_token') || k.startsWith('group_code_') || k === 'access_code')) {
+          keysToRemove.push(k);
+        }
+      }
+      keysToRemove.forEach(k => localStorage.removeItem(k));
     } catch (e) {}
     setActiveTab('schedule');
-    toast.success('Вы вышли из системы. Включен режим Студента (Гостя)');
+    toast.success('Вы вышли из системы. Включен режим Студента');
   };
 
   const handleClearScheduleCache = async () => {

@@ -557,7 +557,7 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
               <textarea
                 value={textBackupInput}
                 onChange={(e) => setTextBackupInput(e.target.value)}
-                placeholder='Вставьте сохраненный список студентов (например, скопированный текст резервной копии)...'
+                placeholder="Вставьте список студентов: обычный текст (1. Иванов Иван...) или файл резервной копии..."
                 rows={8}
                 className="w-full p-3 font-mono text-xs rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none resize-y"
               />

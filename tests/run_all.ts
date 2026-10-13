@@ -51,3 +51,4 @@ await runHomeworkLifecycleStressTest();
 console.log("\n=================================================");
 console.log("       ALL TEST SUITES COMPLETED SUCCESSFULLY  ");
 console.log("=================================================");
+process.exit(0);

@@ -214,14 +214,24 @@ const putJson = async (url: string, body: any, timeoutMs = 7000) => {
       || (typeof globalThis !== 'undefined' && (globalThis as any).Telegram?.WebApp?.initData)
       || '';
 
+    const staffToken = typeof localStorage !== 'undefined'
+      ? (localStorage.getItem('staff_token') || '')
+      : '';
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      ...(initData ? { 'X-Telegram-Init-Data': initData } : {}),
+      ...(staffToken ? {
+        'X-Staff-Token': staffToken,
+        'Authorization': `Bearer ${staffToken}`
+      } : {})
+    };
+
     const res = await fetch(url, {
       method: 'PUT',
       signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        ...(initData ? { 'X-Telegram-Init-Data': initData } : {})
-      },
+      headers,
       body: JSON.stringify(body)
     });
     clearTimeout(id);

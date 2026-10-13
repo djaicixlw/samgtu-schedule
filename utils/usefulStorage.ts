@@ -196,11 +196,18 @@ export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]):
     }));
 
     const tgInitData = (window as any).Telegram?.WebApp?.initData || '';
+    const staffToken = typeof localStorage !== 'undefined'
+      ? (localStorage.getItem(`staff_token_${groupId.toLowerCase()}`) || localStorage.getItem('staff_token') || '')
+      : '';
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
     };
     if (tgInitData) {
       headers['X-Telegram-Init-Data'] = tgInitData;
+    }
+    if (staffToken) {
+      headers['X-Staff-Token'] = staffToken;
+      headers['Authorization'] = `Bearer ${staffToken}`;
     }
 
     const res = await fetch(url, {

@@ -129,18 +129,47 @@ export async function openAttachmentSafe(attachment: HomeworkAttachment): Promis
   const target = attachment.fileId || attachment.url || attachment.tgUrl;
   if (!target) return;
 
-  const freshUrl = await getFreshFileUrl(target, attachment.name);
-  if (!freshUrl) return;
-
   const tg = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp) || null;
-  if (tg && typeof tg.openLink === 'function' && freshUrl.startsWith('https://')) {
+
+  // In non-Telegram browsers, pre-open window synchronously to retain user activation gesture
+  let newWin: Window | null = null;
+  if (!tg && typeof window !== 'undefined') {
     try {
-      tg.openLink(freshUrl);
-      return;
-    } catch (e) {
-      // Fallback to window.open
-    }
+      newWin = window.open('about:blank', '_blank');
+    } catch {}
   }
 
-  window.open(freshUrl, '_blank', 'noopener,noreferrer');
+  try {
+    const freshUrl = await getFreshFileUrl(target, attachment.name);
+    if (!freshUrl) {
+      if (newWin && !newWin.closed) newWin.close();
+      return;
+    }
+
+    if (tg && typeof tg.openLink === 'function' && freshUrl.startsWith('https://')) {
+      try {
+        tg.openLink(freshUrl);
+        if (newWin && !newWin.closed) newWin.close();
+        return;
+      } catch (e) {
+        // Fallback below
+      }
+    }
+
+    if (newWin && !newWin.closed) {
+      newWin.location.href = freshUrl;
+    } else if (typeof window !== 'undefined') {
+      const a = document.createElement('a');
+      a.href = freshUrl;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  } catch (err) {
+    if (newWin && !newWin.closed) {
+      try { newWin.close(); } catch {}
+    }
+  }
 }

@@ -120,6 +120,8 @@ export function mergeAttendance(
   return Array.from(map.values());
 }
 
+let globalSyncQueue: Promise<void> = Promise.resolve();
+
 export const useAttendance = (isAuthenticated: boolean, currentGroupId: string | null, refreshTrigger: number = 0) => {
   const sanitizeGroupRecords = (recs: AttendanceRecord[], gid: string): AttendanceRecord[] => {
     if (!Array.isArray(recs)) return [];
@@ -211,9 +213,13 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
         const remote = await pullAttendanceRecordsFromV3(currentGroupId);
         if (!isMounted) return;
 
+        const dirty = typeof localStorage !== 'undefined' && localStorage.getItem(`attendance_dirty_${currentGroupId}`) === 'true';
         let merged = local;
         if (remote && remote.length > 0) {
-          merged = mergeAttendance(local, remote, currentGroupId);
+          // If local records are dirty/unpushed, prioritize local over remote in collision
+          merged = dirty 
+            ? mergeAttendance(remote, local, currentGroupId)
+            : mergeAttendance(local, remote, currentGroupId);
           setRecords(merged);
           recordsRef.current = merged;
           try {
@@ -222,7 +228,6 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
         }
 
         // 2. PUSH any local marks that may have been created or are marked dirty
-        const dirty = typeof localStorage !== 'undefined' && localStorage.getItem(`attendance_dirty_${currentGroupId}`) === 'true';
         if (dirty || (local.length > 0 && (!remote || remote.length === 0))) {
           await syncAttendanceRecordsToV3(currentGroupId, merged);
           if (isMounted) {
@@ -317,17 +322,22 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
       localStorage.setItem(`attendance_${groupId}`, JSON.stringify(updatedRecords));
     } catch (e) {}
 
-    // 4. Push to v3 Blind Server (anonymous slots only, 152-FZ safe)
-    try {
-      const res = await syncAttendanceRecordsToV3(groupId, updatedRecords);
-      if (res && res.ok) {
-        localStorage.removeItem(`attendance_dirty_${groupId}`);
-      } else {
+    // 4. Linearize cloud push requests through promise queue to prevent race conditions
+    globalSyncQueue = globalSyncQueue.then(async () => {
+      try {
+        const res = await syncAttendanceRecordsToV3(groupId, updatedRecords);
+        if (res && res.ok) {
+          localStorage.removeItem(`attendance_dirty_${groupId}`);
+        } else {
+          localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
+          if ((res as any)?.status === 401 && typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('samgtu:auth-expired'));
+          }
+        }
+      } catch (e) {
         localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
       }
-    } catch (e) {
-      localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
-    }
+    });
   };
 
   const markAttendance = async (

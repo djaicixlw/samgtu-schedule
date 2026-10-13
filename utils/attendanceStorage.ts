@@ -107,9 +107,6 @@ export async function hashInviteCode(code: string): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/**
- * Get local students roster for a group from localStorage.
- */
 export function getLocalStudents(groupId: string): Student[] {
   try {
     if (typeof localStorage !== 'undefined') {
@@ -117,13 +114,34 @@ export function getLocalStudents(groupId: string): Student[] {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          return parsed
+          const all = parsed
             .filter(s => s && typeof s === 'object' && typeof s.id === 'number')
             .map(s => ({
               id: s.id,
               name: String(s.name || '').trim(),
               ...(s.slot ? { slot: String(s.slot).trim().toUpperCase() } : {})
             }));
+
+          // Self-healing: if real named students exist along with phantom "Студент N"
+          // created by earlier slot desync bugs, transfer any slots and purge phantoms!
+          const isAnon = (name: string) => /^Студент\s+\d+$/i.test(name.trim());
+          const realStudents = all.filter(s => !isAnon(s.name));
+          const phantomStudents = all.filter(s => isAnon(s.name));
+
+          if (realStudents.length > 0 && phantomStudents.length > 0) {
+            // Transfer slots from phantoms to real students who lack slots
+            phantomStudents.forEach((phantom, idx) => {
+              if (phantom.slot && realStudents[idx] && !realStudents[idx].slot) {
+                realStudents[idx].slot = phantom.slot;
+              }
+            });
+            try {
+              localStorage.setItem(`students_${groupId}`, JSON.stringify(realStudents));
+            } catch {}
+            return realStudents;
+          }
+
+          return all;
         }
       }
     }
@@ -250,6 +268,32 @@ export function importRosterBackup(
     try {
       parsed = JSON.parse(cleanStr);
     } catch (e: any) {
+      if (cleanStr.startsWith('{') || cleanStr.startsWith('[')) {
+        return { ok: false, error: `Неверный формат данных: ${e?.message || 'некорректный синтаксис'}` };
+      }
+
+      // Universal plain text line-by-line parsing (e.g. copied from Word/Excel/dekanat: "1. Иванов Иван")
+      const lines = cleanStr.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const parsedStudents: Student[] = [];
+      let nextId = 1;
+
+      for (const line of lines) {
+        // Strip leading numbering/bullets e.g. "1. ", "1) ", "1 - ", "- ", "* "
+        const cleanedName = line.replace(/^\s*(?:\d+[\.\)\-:\s]+|[-*•]\s+)/, '').trim();
+        if (cleanedName.length >= 2 && /[а-яА-Яa-zA-Z]/.test(cleanedName)) {
+          parsedStudents.push({
+            id: nextId++,
+            name: cleanedName
+          });
+        }
+      }
+
+      if (parsedStudents.length > 0) {
+        const rosterWithSlots = ensureGroupSlots(groupId, parsedStudents);
+        saveLocalStudents(groupId, rosterWithSlots);
+        return { ok: true, count: rosterWithSlots.length };
+      }
+
       return { ok: false, error: `Неверный формат данных: ${e?.message || 'некорректный синтаксис'}` };
     }
 
@@ -409,7 +453,7 @@ export async function publishInvitesWithServer(
 export async function fetchMonthAttendanceV3(
   groupId: string,
   month: string
-): Promise<{ ok: boolean, data?: any, error?: string }> {
+): Promise<{ ok: boolean, data?: any, error?: string, status?: number }> {
   try {
     const base = getAttendanceApiBase();
     const params = new URLSearchParams({ gid: groupId, month });
@@ -419,9 +463,9 @@ export async function fetchMonthAttendanceV3(
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
-      return { ok: false, error: json.error || `HTTP ${res.status}` };
+      return { ok: false, error: json.error || `HTTP ${res.status}`, status: res.status };
     }
-    return { ok: true, data: json };
+    return { ok: true, data: json, status: res.status };
   } catch (err: any) {
     return { ok: false, error: err?.message || 'Network error' };
   }
@@ -437,7 +481,7 @@ export async function saveMonthAttendanceV3(
   baseVer: number,
   patch: any,
   cancel: any
-): Promise<{ ok: boolean, ver?: number, conflict?: boolean, error?: string }> {
+): Promise<{ ok: boolean, ver?: number, conflict?: boolean, error?: string, status?: number }> {
   try {
     const base = getAttendanceApiBase();
     const res = await fetch(`${base}/v3/att`, {
@@ -457,13 +501,14 @@ export async function saveMonthAttendanceV3(
         ok: false,
         conflict: true,
         ver: json.ver ?? json.currentVer,
-        error: json.error || 'Version conflict'
+        error: json.error || 'Version conflict',
+        status: 409
       };
     }
     if (!res.ok) {
-      return { ok: false, error: json.error || `HTTP ${res.status}` };
+      return { ok: false, error: json.error || `HTTP ${res.status}`, status: res.status };
     }
-    return { ok: true, ver: json.ver };
+    return { ok: true, ver: json.ver, status: res.status };
   } catch (err: any) {
     return { ok: false, error: err?.message || 'Network error' };
   }
@@ -693,7 +738,7 @@ export async function claimStaffRole(
 export async function syncAttendanceRecordsToV3(
   groupId: string,
   records?: AttendanceRecord[]
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; status?: number }> {
   try {
     const gid = groupId.trim().toLowerCase();
     let students = getLocalStudents(gid);
@@ -702,6 +747,9 @@ export async function syncAttendanceRecordsToV3(
     }
 
     students = ensureGroupSlots(gid, students);
+
+    // Auto-sync encrypted E2EE roster backup to cloud so slots match across all devices
+    syncRosterToCloud(gid, students).catch(() => {});
 
     // Register slots with server if needed
     const slots = students.map(s => s.slot).filter(Boolean) as string[];
@@ -734,48 +782,75 @@ export async function syncAttendanceRecordsToV3(
     });
 
     for (const [month, monthRecs] of byMonth.entries()) {
-      const fetchRes = await fetchMonthAttendanceV3(gid, month);
-      const baseVer = (fetchRes.ok && fetchRes.data?.ver) ? fetchRes.data.ver : 0;
-      const currentSlots = (fetchRes.ok && fetchRes.data?.slots) ? fetchRes.data.slots : {};
-      const currentCancelled: string[] = (fetchRes.ok && Array.isArray(fetchRes.data?.cancelled)) ? fetchRes.data.cancelled : [];
+      let attempts = 0;
+      let success = false;
+      let lastError = '';
 
-      const patch: Record<string, Record<string, 'e' | 'u' | null>> = {};
-      const cancelSet = new Set<string>(currentCancelled);
-
-      // Initialize patch objects for known slots
-      slots.forEach(slot => {
-        patch[slot] = {};
-      });
-
-      for (const rec of monthRecs) {
-        const pairMatch = (rec.lessonId || '').match(/(\d+)$/);
-        const pairNum = pairMatch ? pairMatch[1] : '1';
-        const mmdd = rec.date.slice(5);
-        const lessonKey = `${mmdd}.${pairNum}`;
-
-        if (rec.isCancelled) {
-          cancelSet.add(lessonKey);
-        } else {
-          cancelSet.delete(lessonKey);
+      while (attempts < 3 && !success) {
+        attempts++;
+        const fetchRes = await fetchMonthAttendanceV3(gid, month);
+        if (!fetchRes.ok && fetchRes.status === 401) {
+          return { ok: false, error: fetchRes.error, status: 401 };
         }
 
-        const absentIds = new Set(rec.absentStudentIds || []);
-        const excusedIds = new Set(rec.excusedStudentIds || []);
+        const baseVer = (fetchRes.ok && fetchRes.data?.ver) ? fetchRes.data.ver : 0;
+        const currentSlots = (fetchRes.ok && fetchRes.data?.slots) ? fetchRes.data.slots : {};
+        const currentCancelled: string[] = (fetchRes.ok && Array.isArray(fetchRes.data?.cancelled)) ? fetchRes.data.cancelled : [];
 
-        for (const [studentId, slot] of slotMap.entries()) {
-          if (absentIds.has(studentId)) {
-            patch[slot][lessonKey] = 'u'; // 'u' = unexcused / неуважительная (Н)
-          } else if (excusedIds.has(studentId)) {
-            patch[slot][lessonKey] = 'e'; // 'e' = excused / уважительная (УП)
+        const patch: Record<string, Record<string, 'e' | 'u' | null>> = {};
+        const cancelSet = new Set<string>(currentCancelled);
+
+        // Initialize patch objects for known slots
+        slots.forEach(slot => {
+          patch[slot] = {};
+        });
+
+        for (const rec of monthRecs) {
+          const pairMatch = (rec.lessonId || '').match(/(\d+)$/);
+          const pairNum = pairMatch ? pairMatch[1] : '1';
+          const mmdd = rec.date.slice(5);
+          const lessonKey = `${mmdd}.${pairNum}`;
+
+          if (rec.isCancelled) {
+            cancelSet.add(lessonKey);
           } else {
-            if (currentSlots[slot] && currentSlots[slot][lessonKey]) {
-              patch[slot][lessonKey] = null;
+            cancelSet.delete(lessonKey);
+          }
+
+          const absentIds = new Set(rec.absentStudentIds || []);
+          const excusedIds = new Set(rec.excusedStudentIds || []);
+
+          for (const [studentId, slot] of slotMap.entries()) {
+            if (absentIds.has(studentId)) {
+              patch[slot][lessonKey] = 'u'; // 'u' = unexcused / неуважительная (Н)
+            } else if (excusedIds.has(studentId)) {
+              patch[slot][lessonKey] = 'e'; // 'e' = excused / уважительная (УП)
+            } else {
+              if (currentSlots[slot] && currentSlots[slot][lessonKey]) {
+                patch[slot][lessonKey] = null;
+              }
             }
           }
         }
+
+        const saveRes = await saveMonthAttendanceV3(gid, month, baseVer, patch, Array.from(cancelSet));
+        if (saveRes.ok) {
+          success = true;
+        } else if (saveRes.conflict) {
+          // Version changed in background, retry with fresh version
+          continue;
+        } else {
+          if (saveRes.status === 401) {
+            return { ok: false, error: saveRes.error, status: 401 };
+          }
+          lastError = saveRes.error || 'Save failed';
+          break;
+        }
       }
 
-      await saveMonthAttendanceV3(gid, month, baseVer, patch, Array.from(cancelSet));
+      if (!success) {
+        return { ok: false, error: lastError || 'Version conflict retry failed' };
+      }
     }
 
     return { ok: true };
@@ -1054,22 +1129,37 @@ export async function pullAttendanceRecordsFromV3(
       const serverSlots = Object.keys(slots);
       if (serverSlots.length === 0 && cancelledSet.size === 0) continue;
 
-      // If local roster has missing slots or is completely empty, populate fallback roster
+      // If students exist in the roster, bind unmapped server slots to students without slots
       let rosterModified = false;
-      serverSlots.sort().forEach(slot => {
-        const cleanSlot = slot.trim().toUpperCase();
-        if (!slotToStudentId.has(cleanSlot)) {
-          const nextId = students.length > 0 ? Math.max(...students.map(s => s.id)) + 1 : 1;
-          const fallbackStu: Student = {
-            id: nextId,
-            name: `Студент ${nextId}`,
-            slot: cleanSlot
-          };
-          students.push(fallbackStu);
-          slotToStudentId.set(cleanSlot, nextId);
-          rosterModified = true;
+      if (students.length > 0) {
+        const unslottedStudents = students.filter(s => !s.slot);
+        const unassignedServerSlots = serverSlots.filter(s => !slotToStudentId.has(s.trim().toUpperCase()));
+        if (unslottedStudents.length > 0 && unassignedServerSlots.length > 0) {
+          const count = Math.min(unslottedStudents.length, unassignedServerSlots.length);
+          for (let i = 0; i < count; i++) {
+            const cleanSlot = unassignedServerSlots[i].trim().toUpperCase();
+            unslottedStudents[i].slot = cleanSlot;
+            slotToStudentId.set(cleanSlot, unslottedStudents[i].id);
+            rosterModified = true;
+          }
         }
-      });
+      } else {
+        // ONLY if local roster is completely empty (e.g. cold start on new device without roster)
+        serverSlots.sort().forEach(slot => {
+          const cleanSlot = slot.trim().toUpperCase();
+          if (!slotToStudentId.has(cleanSlot)) {
+            const nextId = students.length > 0 ? Math.max(...students.map(s => s.id)) + 1 : 1;
+            const fallbackStu: Student = {
+              id: nextId,
+              name: `Студент ${nextId}`,
+              slot: cleanSlot
+            };
+            students.push(fallbackStu);
+            slotToStudentId.set(cleanSlot, nextId);
+            rosterModified = true;
+          }
+        });
+      }
 
       if (rosterModified) {
         saveLocalStudents(gid, students);
@@ -1144,7 +1234,7 @@ export async function pullAttendanceRecordsFromV3(
           absentStudentIds,
           excusedStudentIds,
           isCancelled,
-          updatedAt: Date.now()
+          updatedAt: Number(data.updatedAt) || 0
         });
       }
     }

@@ -224,6 +224,7 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
               type="file"
               ref={fileInputRef}
               onChange={handleFileUpload}
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar,.7z,.jpg,.jpeg,.png,.webp"
               className="hidden"
             />
 
@@ -431,9 +432,18 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
           <button
             type="button"
             onClick={() => handleSubmit()}
-            className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md shadow-indigo-200 dark:shadow-none transition-all min-h-[44px] cursor-pointer"
+            disabled={isUploading}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md shadow-indigo-200 dark:shadow-none transition-all min-h-[44px] cursor-pointer"
           >
-            <Check className="w-4 h-4" /> Сохранить для группы
+            {isUploading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" /> Загрузка вложений...
+              </>
+            ) : (
+              <>
+                <Check className="w-4 h-4" /> Сохранить для группы
+              </>
+            )}
           </button>
         </div>
       </div>

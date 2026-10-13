@@ -56,6 +56,14 @@ function getLessonSlotNumber(lesson: Lesson): number {
   return 1;
 }
 
+const SEMESTER_MONTHS = [
+  { id: '2026-09', name: 'Сентябрь', refDate: '2026-09-15' },
+  { id: '2026-10', name: 'Октябрь', refDate: '2026-10-15' },
+  { id: '2026-11', name: 'Ноябрь', refDate: '2026-11-15' },
+  { id: '2026-12', name: 'Декабрь', refDate: '2026-12-15' },
+  { id: '2027-01', name: 'Январь', refDate: '2027-01-15' }
+] as const;
+
 export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
   currentGroupId,
   userRole = 'student',
@@ -80,6 +88,20 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
   }, [currentGroupId]);
 
   const [selectedWeek, setSelectedWeek] = useState<number>(currentWeekNumber);
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
+    const now = new Date();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const y = now.getFullYear();
+    const currentKey = `${y}-${m}`;
+    const found = SEMESTER_MONTHS.find(sm => sm.id === currentKey);
+    return found ? found.id : '2026-10';
+  });
+
+  const activeReferenceDate = useMemo(() => {
+    const m = SEMESTER_MONTHS.find(sm => sm.id === selectedMonth);
+    return m ? m.refDate : undefined;
+  }, [selectedMonth]);
+
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -294,7 +316,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
     const groupName = AVAILABLE_GROUPS.find(g => g.id === currentGroupId)?.name || currentGroupId;
 
     if (mode === 'week') {
-      const weekRange = getWeekDateRange(selectedWeek);
+      const weekRange = getWeekDateRange(selectedWeek, activeReferenceDate);
       const lines: string[] = [
         `Табель посещаемости — Группа ${groupName}`,
         `Неделя ${selectedWeek} (${weekRange})`,
@@ -306,7 +328,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
         let excusedHours = 0;
 
         DAYS_OF_WEEK.forEach(dayName => {
-          const dayISO = getDayISODate(dayName, selectedWeek);
+          const dayISO = getDayISODate(dayName, selectedWeek, activeReferenceDate);
           const activeSchedule = (scheduleData && Object.keys(scheduleData).length > 0)
             ? scheduleData
             : (SCHEDULE_REGISTRY[currentGroupId] || {});
@@ -427,39 +449,63 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
       {/* ========================================================================= */}
       {mode === 'week' && (
         <div className="space-y-4">
-          {/* Week Selector Bar */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 bg-slate-50 dark:bg-slate-900/60 rounded-2xl border border-slate-200 dark:border-slate-800">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-              <div>
-                <span className="text-xs font-bold text-slate-900 dark:text-white">
-                  Неделя {selectedWeek}
-                </span>
-                <span className="text-xs text-slate-500 dark:text-slate-400 ml-2">
-                  ({getWeekDateRange(selectedWeek)})
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-1.5">
-              {[1, 2, 3, 4].map(w => {
-                const isSelected = selectedWeek === w;
-                const isCurrent = currentWeekNumber === w;
+          {/* Week & Month Selector Bar */}
+          <div className="space-y-3 p-4 bg-slate-50 dark:bg-slate-900/60 rounded-2xl border border-slate-200 dark:border-slate-800">
+            {/* Month Selector Chips */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mr-1 shrink-0">Месяц:</span>
+              {SEMESTER_MONTHS.map(m => {
+                const isSelected = selectedMonth === m.id;
                 return (
                   <button
-                    key={w}
+                    key={m.id}
                     type="button"
-                    onClick={() => setSelectedWeek(w)}
-                    className={`px-3 py-1.5 text-xs rounded-xl font-semibold transition-all cursor-pointer ${
+                    onClick={() => setSelectedMonth(m.id)}
+                    className={`px-3 py-1 text-xs rounded-xl font-semibold whitespace-nowrap transition-all cursor-pointer ${
                       isSelected
                         ? 'bg-indigo-600 text-white shadow-xs font-bold'
-                        : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
+                        : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
                     }`}
                   >
-                    Неделя {w} {isCurrent && <span className="text-[10px] opacity-80">(тек.)</span>}
+                    {m.name}
                   </button>
                 );
               })}
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pt-2.5 border-t border-slate-200/60 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <div>
+                  <span className="text-xs font-bold text-slate-900 dark:text-white">
+                    Неделя {selectedWeek}
+                  </span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400 ml-2">
+                    ({getWeekDateRange(selectedWeek, activeReferenceDate)})
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                {[1, 2, 3, 4].map(w => {
+                  const isSelected = selectedWeek === w;
+                  const isCurrent = currentWeekNumber === w;
+                  return (
+                    <button
+                      key={w}
+                      type="button"
+                      onClick={() => setSelectedWeek(w)}
+                      className={`px-3 py-1.5 text-xs rounded-xl font-semibold transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white shadow-xs font-bold'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      Неделя {w} {isCurrent && <span className="text-[10px] opacity-80">(тек.)</span>}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
@@ -478,7 +524,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
                     </th>
 
                     {DAYS_OF_WEEK.map(dayName => {
-                      const dayLabel = getDayCalendarDate(dayName, selectedWeek);
+                      const dayLabel = getDayCalendarDate(dayName, selectedWeek, activeReferenceDate);
                       return (
                         <th
                           key={dayName}
@@ -556,7 +602,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
 
                           {/* Grid cells: Days x Pairs */}
                           {DAYS_OF_WEEK.map(dayName => {
-                            const dayISO = getDayISODate(dayName, selectedWeek);
+                            const dayISO = getDayISODate(dayName, selectedWeek, activeReferenceDate);
                             const daySchedule = activeWeekSchedule.find(d => d.dayName === dayName);
 
                             return PAIRS.map(pairNum => {

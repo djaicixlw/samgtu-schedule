@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { ClipboardCheck, Download, FileText, Table as TableIcon, Copy, Shield, Users } from 'lucide-react';
-import { STUDENTS_REGISTRY, useAttendance, BLOCKS, getSemesterWeek, getDayName, getSamaraISODate } from '../attendance';
+import { STUDENTS_REGISTRY, useAttendance, BLOCKS, getSemesterWeek, getDayName, getSamaraISODate, TIME_SLOTS } from '../attendance';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES } from '../constants';
 import { Lesson, Student, GroupConfig } from '../types';
 import { toast } from 'sonner';
@@ -92,7 +92,65 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   
   const scheduleForWeek = SCHEDULE_REGISTRY[currentGroupId]?.[week] || [];
   const daySchedule = scheduleForWeek.find(d => d.dayName === dayName);
-  const lessons = daySchedule ? daySchedule.lessons : [];
+
+  // Load schedule overrides from localStorage
+  const scheduleOverrides: Record<string, Partial<Lesson>> = useMemo(() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(`schedule_overrides_${currentGroupId}`) : null;
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  }, [currentGroupId, refreshTrigger]);
+
+  const lessons: Lesson[] = useMemo(() => {
+    let sourceLessons = daySchedule && Array.isArray(daySchedule.lessons) ? daySchedule.lessons : [];
+    // Fallback for Monday if week 1 Monday is empty: pull from week 3
+    if (dayName === 'Понедельник' && sourceLessons.length === 0) {
+      const w3Mon = SCHEDULE_REGISTRY[currentGroupId]?.[3]?.find(d => d.dayName === 'Понедельник');
+      if (w3Mon && Array.isArray(w3Mon.lessons) && w3Mon.lessons.length > 0) {
+        sourceLessons = w3Mon.lessons;
+      }
+    }
+
+    const standardLessons = sourceLessons.map(lesson => {
+      if (!lesson || !lesson.id) return lesson;
+      const override = scheduleOverrides[lesson.id] || {};
+      return {
+        ...lesson,
+        ...override,
+        isHidden: !!override.isHidden
+      };
+    }).filter(l => !l.isHidden);
+
+    // Include dynamically added custom lessons for this day/week
+    const customLessons: Lesson[] = Object.entries(scheduleOverrides)
+      .filter(([id, rawOv]) => {
+        const ov = rawOv as Partial<Lesson> & { dayName?: string };
+        const isCustom = id.includes('_extra_') || id.includes('_custom_');
+        const matchesDay = ov.dayName === dayName || id.startsWith(`${dayName.toLowerCase()}_w${week}_`);
+        return isCustom && matchesDay && !ov.isHidden;
+      })
+      .map(([id, rawOv]) => {
+        const ov = rawOv as Partial<Lesson> & { dayName?: string };
+        const orderNum = ov.order || 1;
+        const timeSlot = (TIME_SLOTS as any)[String(orderNum)] || { timeStart: '08:30', timeEnd: '10:00' };
+        return {
+          id,
+          subject: ov.subject || 'Пользовательская пара',
+          type: ov.type || 'Практические занятия',
+          timeStart: ov.timeStart || timeSlot.timeStart,
+          timeEnd: ov.timeEnd || timeSlot.timeEnd,
+          location: ov.location || 'Ауд.',
+          teacher: ov.teacher || '',
+          order: orderNum,
+          isCancelled: !!ov.isCancelled,
+          note: ov.note
+        } as Lesson;
+      });
+
+    return [...standardLessons, ...customLessons].sort((a, b) => (a.order || 1) - (b.order || 1));
+  }, [daySchedule, dayName, currentGroupId, week, scheduleOverrides]);
 
   const handleLessonSelect = (lesson: Lesson) => {
     setSelectedLesson(lesson);

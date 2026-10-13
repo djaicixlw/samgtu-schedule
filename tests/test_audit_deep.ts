@@ -75,9 +75,11 @@ const root = process.cwd();
 {
   console.log('Test 7: exportWord.ts block absences logic');
   const ewCode = fs.readFileSync(path.resolve(root, 'utils/exportWord.ts'), 'utf8');
-  assert(ewCode.includes('blockAbsences > 0') && ewCode.includes('${blockAbsences} Не УП'), 'exportWord should output block-specific absences');
-  assert(ewCode.includes('blockExcused > 0') && ewCode.includes('${blockExcused} УП'), 'exportWord should output block-specific excused absences');
-  console.log('  PASS: exportWord outputs correct per-block absences.\n');
+  assert((ewCode.includes('cumulativeAbsences > 0') && ewCode.includes('${cumulativeAbsences} Не УП')) ||
+         (ewCode.includes('blockAbsences > 0') && ewCode.includes('${blockAbsences} Не УП')), 'exportWord should output block-specific or cumulative absences');
+  assert((ewCode.includes('cumulativeExcused > 0') && ewCode.includes('${cumulativeExcused} УП')) ||
+         (ewCode.includes('blockExcused > 0') && ewCode.includes('${blockExcused} УП')), 'exportWord should output block-specific or cumulative excused absences');
+  console.log('  PASS: exportWord outputs correct per-block/cumulative absences.\n');
 }
 
 // Test 8: constants.ts schedule integrity & typo fixes

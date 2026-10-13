@@ -87,6 +87,22 @@ export function isLocallyThrottled(message: string, component?: string, now = Da
 }
 
 /**
+ * Scrub PII (student names, tokens, secrets) from text before sending crash telemetry.
+ */
+export function scrubPII(text: string): string {
+  if (!text) return '';
+  return text
+    // Redact Bearer tokens, passwords, pins, access codes
+    .replace(/(?:bearer|token|pin|code|secret|auth)\s*[:=]\s*['"]?[a-zA-Z0-9_\-\.]{8,}['"]?/gi, '[REDACTED_SECRET]')
+    // Redact potential 16-character access codes (e.g. XXXX-XXXX-XXXX-XXXX)
+    .replace(/\b[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}\b/g, '[REDACTED_CODE]')
+    // Redact 64-char hex tokens / hashes
+    .replace(/\b[a-fA-F0-9]{64}\b/g, '[REDACTED_HEX]')
+    // Redact full Russian FIO patterns in stack traces or errors (e.g. Иванов Иван Иванович)
+    .replace(/\b[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b/g, '[REDACTED_NAME]');
+}
+
+/**
  * Fire-and-forget telemetry crash report sender.
  * Never throws an error outside, handles local deduplication (2 min), and sends POST to ${WORKER_BASE}/report-error.
  */
@@ -97,7 +113,7 @@ export async function sendCrashReport(errorData: {
   group?: string;
 }): Promise<void> {
   try {
-    const rawMessage = errorData.message || 'Unknown error';
+    const rawMessage = scrubPII(errorData.message || 'Unknown error');
     const component = errorData.component || 'Unknown component';
 
     // 1. Local deduplication check: no duplicate errors within 2 minutes
@@ -112,7 +128,7 @@ export async function sendCrashReport(errorData: {
     // 2. Prepare payload
     const payload: CrashReportPayload = {
       message: rawMessage,
-      stack: errorData.stack,
+      stack: errorData.stack ? scrubPII(errorData.stack) : undefined,
       component: component,
       group: errorData.group || getCurrentGroup(),
       platform: getTelemetryPlatform(),
