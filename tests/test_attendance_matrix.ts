@@ -58,12 +58,12 @@ assert(matrixSrc.includes('деканат'), "Must indicate Block 2 cumulative t
 
 // Test Cumulative Math using simulated records
 const mockRecords: AttendanceRecord[] = [
-  // Block 1 (2026-08-31 to 2026-09-20)
+  // Block 1 (2026-08-31 to 2026-09-27)
   { groupId: 'ingt-310', date: '2026-09-02', lessonId: '310-w1-we-1', absentStudentIds: [1], excusedStudentIds: [] }, // 2h abs
   { groupId: 'ingt-310', date: '2026-09-05', lessonId: '310-w1-sa-1', absentStudentIds: [], excusedStudentIds: [1] }, // 2h exc
-  // Block 2 (2026-09-21 to 2026-10-20)
-  { groupId: 'ingt-310', date: '2026-09-23', lessonId: '310-w4-we-1', absentStudentIds: [1], excusedStudentIds: [] }, // 2h abs
-  { groupId: 'ingt-310', date: '2026-09-26', lessonId: '310-w4-sa-1', absentStudentIds: [1], excusedStudentIds: [] }, // 2h abs
+  // Block 2 (2026-09-28 to 2026-10-25)
+  { groupId: 'ingt-310', date: '2026-09-30', lessonId: '310-w4-we-1', absentStudentIds: [1], excusedStudentIds: [] }, // 2h abs
+  { groupId: 'ingt-310', date: '2026-10-03', lessonId: '310-w4-sa-1', absentStudentIds: [1], excusedStudentIds: [] }, // 2h abs
 ];
 
 let b1Abs = 0;

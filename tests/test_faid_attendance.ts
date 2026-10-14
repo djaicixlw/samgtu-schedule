@@ -606,13 +606,13 @@ assert(s1Report.absences[1] === 0, `Student 1 Block 2 absences: 0h (got: ${s1Rep
 assert(s5Report.absences[0] === 10, `Student 5 Block 1 absences: 10h (got: ${s5Report.absences[0]}h)`);
 assert(s5Report.absences[1] === 0, `Student 5 Block 2 absences: 0h (got: ${s5Report.absences[1]}h)`);
 
-// Student 7 (W4 Mo): Block 1 = 0h, Block 2 = 10h
-assert(s7Report.absences[0] === 0, `Student 7 Block 1 absences: 0h (got: ${s7Report.absences[0]}h)`);
-assert(s7Report.absences[1] === 10, `Student 7 Block 2 absences: 10h (got: ${s7Report.absences[1]}h)`);
+// Student 7 (W4 Mo 2026-09-21): Falls in Block 1 (31.08 - 27.09) -> Block 1 = 10h, Block 2 = 0h
+assert(s7Report.absences[0] === 10, `Student 7 Block 1 absences: 10h (got: ${s7Report.absences[0]}h)`);
+assert(s7Report.absences[1] === 0, `Student 7 Block 2 absences: 0h (got: ${s7Report.absences[1]}h)`);
 
-// Student 8 (W4 Mo): Block 1 = 0h, Block 2 = 10h excused
-assert(s8Report.excused[0] === 0, `Student 8 Block 1 excused: 0h (got: ${s8Report.excused[0]}h)`);
-assert(s8Report.excused[1] === 10, `Student 8 Block 2 excused: 10h (got: ${s8Report.excused[1]}h)`);
+// Student 8 (W4 Mo 2026-09-21): Falls in Block 1 (31.08 - 27.09) -> Block 1 = 10h, Block 2 = 0h excused
+assert(s8Report.excused[0] === 10, `Student 8 Block 1 excused: 10h (got: ${s8Report.excused[0]}h)`);
+assert(s8Report.excused[1] === 0, `Student 8 Block 2 excused: 0h (got: ${s8Report.excused[1]}h)`);
 
 // Sum of blocks matches total all time
 for (const s of currentReport) {

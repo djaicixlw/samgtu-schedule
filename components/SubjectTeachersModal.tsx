@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { X, Check, UserCheck, RotateCcw, Search, BookOpen, PenTool, FlaskConical, Copy } from 'lucide-react';
 import { SCHEDULE_REGISTRY } from '../constants';
 import { toast } from 'sonner';
@@ -74,6 +74,21 @@ const SubjectTeachersModal: React.FC<SubjectTeachersModalProps> = ({
     });
     return initial;
   });
+
+  useEffect(() => {
+    if (isOpen) {
+      const initial: Record<string, string> = { ...subjectTeachers };
+      subjectGroups.forEach(group => {
+        group.types.forEach(t => {
+          const key = `${group.subject}::${t.type}`;
+          if (!initial[key]) {
+            initial[key] = subjectTeachers[group.subject] || t.defaultTeacher || '';
+          }
+        });
+      });
+      setTeachers(initial);
+    }
+  }, [isOpen, currentGroupId, subjectGroups, subjectTeachers]);
 
   const [searchQuery, setSearchQuery] = useState('');
 

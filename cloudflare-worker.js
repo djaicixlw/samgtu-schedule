@@ -25,6 +25,18 @@ export function recordUploadSent(now = Date.now()) {
   recentUploadTimestamps.push(now);
 }
 
+export function normalizeAccessCode(raw) {
+  const upper = String(raw || "").trim().toUpperCase();
+  const stripped = upper
+    .replace(/[^0-9A-Z]/g, "")
+    .replace(/O/g, "0")
+    .replace(/[IL]/g, "1");
+  if (stripped.length === 16) {
+    return stripped.match(/.{1,4}/g)?.join("-") || stripped;
+  }
+  return upper;
+}
+
 // Strict Whitelist DTO Sanitizers (Video 2: Protection against Mass Assignment / Extra Fields)
 export function sanitizeHomeworkItem(item, fallbackGroupId = '') {
   if (!item || typeof item !== 'object') return null;
@@ -794,10 +806,17 @@ export default {
           }
 
           const rawCode = code.trim().toUpperCase();
-          const strippedCode = rawCode.replace(/[^0-9A-Z]/g, '');
-          const candidatesSet = new Set([rawCode, strippedCode]);
-          if (strippedCode.length === 16) {
-            candidatesSet.add(`${strippedCode.slice(0, 4)}-${strippedCode.slice(4, 8)}-${strippedCode.slice(8, 12)}-${strippedCode.slice(12, 16)}`);
+          const cleanCode = normalizeAccessCode(code);
+          const strippedCode = cleanCode.replace(/-/g, '');
+          const candidatesSet = new Set([
+            cleanCode,
+            strippedCode,
+            rawCode,
+            rawCode.replace(/[^0-9A-Z]/g, '')
+          ]);
+          if (rawCode.replace(/[^0-9A-Z]/g, '').length === 16) {
+            const rawStripped = rawCode.replace(/[^0-9A-Z]/g, '');
+            candidatesSet.add(`${rawStripped.slice(0, 4)}-${rawStripped.slice(4, 8)}-${rawStripped.slice(8, 12)}-${rawStripped.slice(12, 16)}`);
           }
           const candidates = Array.from(candidatesSet);
 
@@ -1488,41 +1507,16 @@ export default {
           await env.APP_DATA.delete("u:" + userBlindId);
 
           if (userData && userData.gid && userData.slot) {
-            const targetMonths = new Set();
-            if (url.searchParams.get("month")) {
-              targetMonths.add(url.searchParams.get("month"));
-            }
-            const now = new Date(Date.now() + 4 * 60 * 60 * 1000);
-            const y = now.getUTCFullYear();
-            for (let m = 1; m <= 12; m++) {
-              targetMonths.add(`${y}-${String(m).padStart(2, '0')}`);
-              targetMonths.add(`${y - 1}-${String(m).padStart(2, '0')}`);
-            }
-            if (typeof env.APP_DATA.list === 'function') {
+            const slotsRaw = await env.APP_DATA.get("s:" + userData.gid);
+            if (slotsRaw) {
               try {
-                const listRes = await env.APP_DATA.list({ prefix: `a:${userData.gid}:` });
-                if (listRes && Array.isArray(listRes.keys)) {
-                  for (const k of listRes.keys) {
-                    const mMatch = k.name.replace(`a:${userData.gid}:`, '');
-                    if (mMatch) targetMonths.add(mMatch);
-                  }
+                const slotsData = JSON.parse(slotsRaw);
+                if (slotsData.slots && slotsData.slots[userData.slot]) {
+                  delete slotsData.slots[userData.slot].claimedAt;
+                  delete slotsData.slots[userData.slot].claimed;
+                  await env.APP_DATA.put("s:" + userData.gid, JSON.stringify(slotsData), { expirationTtl: 17280000 });
                 }
               } catch {}
-            }
-
-            for (const monthStr of targetMonths) {
-              const attKey = `a:${userData.gid}:${monthStr}`;
-              const attRaw = await env.APP_DATA.get(attKey);
-              if (attRaw) {
-                try {
-                  const parsed = JSON.parse(attRaw);
-                  if (parsed.slots && parsed.slots[userData.slot]) {
-                    delete parsed.slots[userData.slot];
-                    parsed.ver = (parsed.ver || 0) + 1;
-                    await env.APP_DATA.put(attKey, JSON.stringify(parsed), { expirationTtl: 17280000 });
-                  }
-                } catch {}
-              }
             }
           }
 
@@ -2052,12 +2046,28 @@ export default {
               groupData = {};
             }
           }
-          return new Response(JSON.stringify({ byGroup: { [groupId]: groupData }, updatedAt: groupData.updatedAt || 0 }), {
+          const responseBody = JSON.stringify({ byGroup: { [groupId]: groupData }, updatedAt: groupData.updatedAt || 0 });
+          const etag = `"${await sha256Hex(responseBody)}"`;
+          const clientEtag = request.headers.get("If-None-Match");
+
+          if (clientEtag && (clientEtag === etag || clientEtag === `W/${etag}`)) {
+            return new Response(null, {
+              status: 304,
+              headers: {
+                ...corsHeaders,
+                "ETag": etag,
+                "Cache-Control": "public, max-age=60, stale-while-revalidate=300"
+              }
+            });
+          }
+
+          return new Response(responseBody, {
+            status: 200,
             headers: {
               ...corsHeaders,
               "Content-Type": "application/json",
-              "Cache-Control": "no-cache, no-store, must-revalidate",
-              "Pragma": "no-cache"
+              "ETag": etag,
+              "Cache-Control": "public, max-age=60, stale-while-revalidate=300"
             }
           });
         }

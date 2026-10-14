@@ -45,6 +45,7 @@ export interface AttendanceRecord {
   absentStudentIds: number[];
   excusedStudentIds?: number[];
   isCancelled?: boolean;
+  hours?: number;
   timestamp?: number;
   updatedAt?: any;
   updatedBy?: string;
@@ -277,6 +278,7 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
     absentStudentIds: number[];
     excusedStudentIds?: number[];
     isCancelled?: boolean;
+    hours?: number;
   }>) => {
     if (!updates || updates.length === 0) return;
     const groupId = currentGroupId || 'ingt-310';
@@ -298,6 +300,7 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
 
     for (const update of updates) {
       const recordId = `${groupId}_${update.date}_${update.lessonId}`;
+      const existing = map.get(`${update.date}_${update.lessonId}`);
       const newRecord: AttendanceRecord = {
         docId: recordId,
         groupId,
@@ -306,6 +309,7 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
         absentStudentIds: update.absentStudentIds,
         excusedStudentIds: update.excusedStudentIds || [],
         isCancelled: update.isCancelled ?? false,
+        hours: update.hours ?? (existing?.hours ?? 2),
         updatedAt: new Date().toISOString(),
         updatedBy: 'starosta_pin'
       };
@@ -345,14 +349,16 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
     lessonId: string, 
     absentStudentIds: number[], 
     excusedStudentIds: number[] = [], 
-    isCancelled: boolean = false
+    isCancelled: boolean = false,
+    hours: number = 2
   ) => {
     await markBatchAttendance([{
       date,
       lessonId,
       absentStudentIds,
       excusedStudentIds,
-      isCancelled
+      isCancelled,
+      hours
     }]);
 
     toast.success(isCancelled ? 'Пара отмечена как отмененная' : 'Посещаемость сохранена');
@@ -368,10 +374,10 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
 };
 
 export const BLOCKS = [
-  { id: 1, name: "Блок 1 (31.08 - 20.09)", start: "2026-08-31", end: "2026-09-20" },
-  { id: 2, name: "Блок 2 (21.09 - 20.10)", start: "2026-09-21", end: "2026-10-20" },
-  { id: 3, name: "Блок 3 (21.10 - 20.11)", start: "2026-10-21", end: "2026-11-20" },
-  { id: 4, name: "Блок 4 (21.11 - 31.12)", start: "2026-11-21", end: "2026-12-31" } // было 2026-12-25
+  { id: 1, name: "Блок 1 (31.08 - 27.09)", start: "2026-08-31", end: "2026-09-27" },
+  { id: 2, name: "Блок 2 (28.09 - 25.10)", start: "2026-09-28", end: "2026-10-25" },
+  { id: 3, name: "Блок 3 (26.10 - 22.11)", start: "2026-10-26", end: "2026-11-22" },
+  { id: 4, name: "Блок 4 (23.11 - 31.12)", start: "2026-11-23", end: "2026-12-31" }
 ];
 
 export const TIME_SLOTS: Record<string, { timeStart: string; timeEnd: string }> = {
@@ -407,7 +413,8 @@ export const getSamaraFutureISODate = (daysToAdd: number = 7): string => {
 
 /**
  * Calculates student absence hours with collision protection and priority of excused absences.
- * If a student is in both absent and excused arrays, counts strictly once as excused (2 hours).
+ * If a student is in both absent and excused arrays, counts strictly once as excused.
+ * Supports configurable lesson hours (default 2h, or 4h for double lessons).
  */
 export function calculateStudentAbsenceHours(records: AttendanceRecord[], studentId: number) {
   let totalAbs = 0;
@@ -419,18 +426,19 @@ export function calculateStudentAbsenceHours(records: AttendanceRecord[], studen
     if (record.isCancelled) return;
     const isExcused = (record.excusedStudentIds || []).includes(studentId);
     const isAbsent = !isExcused && record.absentStudentIds.includes(studentId);
+    const lessonHours = (record as any).hours ?? 2;
 
     if (isExcused) {
-      totalExc += 2;
+      totalExc += lessonHours;
     } else if (isAbsent) {
-      totalAbs += 2;
+      totalAbs += lessonHours;
     }
 
     if (isAbsent || isExcused) {
       BLOCKS.forEach((block, index) => {
         if (record.date >= block.start && record.date <= block.end) {
-          if (isExcused) excusedByBlock[index] += 2;
-          else if (isAbsent) absencesByBlock[index] += 2;
+          if (isExcused) excusedByBlock[index] += lessonHours;
+          else if (isAbsent) absencesByBlock[index] += lessonHours;
         }
       });
     }

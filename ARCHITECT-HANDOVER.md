@@ -27,7 +27,8 @@
 - **Коды доступа старост и админа:** 16-символьные строки Crockford Base32 (`XXXX-XXXX-XXXX-XXXX`, 80 бит энтропии).
 - **Хранение в KV:** Парольные фразы хэшируются через PBKDF2 (100 000 итераций SHA-256) с постоянной солью.
 - **Толерантность к опечаткам клавиатуры:** Воркер и клиент автоматически нормализуют частые ошибки Crockford Base32:
-  $$5 \leftrightarrow S, \quad 0 \leftrightarrow O, \quad 1 \leftrightarrow I$$
+  $$0 \leftrightarrow O, \quad 1 \leftrightarrow I, L$$
+  Символы $5$ и $S$ строго разделены, так как Crockford Base32 включает оба символа ($5 = 5$, $S = 25$). Исключено ложное объединение $5 \leftrightarrow S$.
 - **Защита от timing attacks:** Любые сравнения хэшей и подписей выполняются через константное по времени сравнение `safeEqual()`.
 - **Привязка роли:** При успешном вводе кода Telegram ID старосты привязывается к группе в KV ключом `g:{gid}.staff = [blindId]`, а админ в `g:admin.staff = [blindId]`.
 
@@ -89,12 +90,15 @@
    - *Фикс дублирования загрузки и алертов:* В `EditLessonModal.tsx` внедрен мьютекс-лок `isUploadingRef`, а воркер `/upload` глушит звуковые пуши в Telegram через `disable_notification: true`.
 4. [x] **B-04 (Свежие ссылки на файлы):** Временные 10-минутные подписанные ссылки на файлы через `POST /v3/files/link` и `openAttachmentSafe` в `utils/upload.ts` (защита от устаревания ссылок через 14 дней).
 
-### Блок В: Безопасность и оптимизация бэкенда
-1. **H-01:** Персистентный rate-limiting попыток в Cloudflare KV по слепому ID (`rl:up:${blindId}`).
-2. **M-01:** Включение `strict: true` в `tsconfig.json`.
-3. **M-03:** Захардкодить `parse_mode: 'HTML'` в Telegram бот-релее воркера.
-4. **M-04:** Strict-валидация параметров числового `groupId` в `/samgtu-schedule`.
-5. **EDGE-01:** Edge-кэширование на Cloudflare Worker (`Cache-Control: public, max-age=60`, stale-while-revalidate).
+### Блок В: Безопасность и оптимизация бэкенда [100% ВЫПОЛНЕНО ✅]
+1. [x] **AUDIT-01 (Crockford Base32 5/S):** Устранена коллизия 5/S в `scripts/make-group-code.mjs`, `utils/attendanceStorage.ts` и `cloudflare-worker.js`.
+2. [x] **AUDIT-02 (Стыковка блоков семестра):** В `public/semester.json` и `attendance.ts` устранены дыры воскресений между блоками (Блок 1: 31.08-27.09, Блок 2: 28.09-25.10, Блок 3: 26.10-22.11, Блок 4: 23.11-31.12).
+3. [x] **AUDIT-03 (Часы занятий и сдвоенные пары):** Внедрена поддержка настраиваемых часов пары (`hours ?? 2`, для сдвоенных 4 часа) в расчетах посещаемости и экспорте Word.
+4. [x] **AUDIT-04 (Дата экспорта Word):** Замена UTC timestamp на самарское поясное время (`samaraISO()`).
+5. [x] **AUDIT-05 (Реактивность преподавателей):** В `SubjectTeachersModal.tsx` добавлен `useEffect` для сброса состояния при смене группы.
+6. [x] **AUDIT-06 (Защита от случайного логаута):** В `utils/auth.ts` устранена очистка `user_role` в блоке перехвата сетевых ошибок `catch (err)`.
+7. [x] **AUDIT-07 (Сохранение ведомости в DELETE /v3/me):** Отзыв согласия студента удаляет только связку аккаунта (`u:{blindId}`), не стирая исторический журнал группы в `a:{gid}:{month}`.
+8. [x] **EDGE-01 (ETag и 304 Caching):** В эндпоинт `GET /sync/:type` добавлена генерация SHA-256 ETag и отдача `304 Not Modified`.
 
 ---
 

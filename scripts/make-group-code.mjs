@@ -3,6 +3,18 @@ import { webcrypto as crypto } from "node:crypto";
 
 const A = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // 32 Crockford-compatible symbols (5 bits each)
 
+export function normalizeAccessCode(raw) {
+  const upper = String(raw || "").trim().toUpperCase();
+  const stripped = upper
+    .replace(/[^0-9A-Z]/g, "")
+    .replace(/O/g, "0")
+    .replace(/[IL]/g, "1");
+  if (stripped.length === 16) {
+    return stripped.match(/.{1,4}/g)?.join("-") || stripped;
+  }
+  return upper;
+}
+
 export function generateCode() {
   const part = () => Array.from(crypto.getRandomValues(new Uint8Array(4)), b => A[b % 32]).join("");
   return [part(), part(), part(), part()].join("-"); // 80 bits (4 * 4 * 5 bits)
@@ -14,7 +26,7 @@ export function generateSalt() {
 }
 
 export async function pbkdf2(secret, saltB64) {
-  const cleanSecret = String(secret || '');
+  const cleanSecret = normalizeAccessCode(secret);
   const salt = Uint8Array.from(atob(saltB64), c => c.charCodeAt(0));
   const key = await crypto.subtle.importKey(
     "raw",

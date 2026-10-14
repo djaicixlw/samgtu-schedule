@@ -236,7 +236,7 @@ check(Array.isArray(config.blocks) && config.blocks.length === 4, `blocks has 4 
 const b1 = config.blocks.find(b => b.id === 1);
 check(b1 !== undefined, "Block 1 is present");
 check(b1?.start === '2026-08-31', `Block 1 start is '2026-08-31' (got: ${b1?.start})`);
-check(b1?.end === '2026-09-26', `Block 1 end is '2026-09-26' (got: ${b1?.end})`);
+check(b1?.end === '2026-09-27', `Block 1 end is '2026-09-27' (got: ${b1?.end})`);
 
 // getSemesterWeek() integration with loaded config
 const weekFromConfig = getSemesterWeek('2026-09-01');

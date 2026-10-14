@@ -19,6 +19,23 @@ const getDefaultWorkerBase = (): string => {
 export const WORKER_BASE = getDefaultWorkerBase();
 export const CROCKFORD_BASE32_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
+/**
+ * Canonical Crockford Base32 Access Code normalizer.
+ * Safely maps O -> 0, I -> 1, L -> 1, strips non-alphanumeric separators, and groups into XXXX-XXXX-XXXX-XXXX.
+ * Strictly avoids merging 5 and S!
+ */
+export function normalizeAccessCode(raw: string): string {
+  const upper = String(raw || "").trim().toUpperCase();
+  const stripped = upper
+    .replace(/[^0-9A-Z]/g, "")
+    .replace(/O/g, "0")
+    .replace(/[IL]/g, "1");
+  if (stripped.length === 16) {
+    return stripped.match(/.{1,4}/g)?.join("-") || stripped;
+  }
+  return upper;
+}
+
 let customApiBaseUrl: string | null = null;
 
 export function setAttendanceApiBase(url: string | null): void {
@@ -704,7 +721,7 @@ export async function claimStaffRole(
       code = gidOrCode;
       targetGid = 'admin';
     }
-    const cleanCode = (code || '').trim().toUpperCase();
+    const cleanCode = normalizeAccessCode(code);
     const canonicalGid = normalizeGroupId(targetGid).trim().toLowerCase();
     const res = await fetch(`${base}/v3/staff/claim`, {
       method: 'POST',
@@ -878,7 +895,7 @@ const safeAtob = (b64: string): string => {
  * Derives an AES-GCM 256-bit CryptoKey from an 80-bit group access code using PBKDF2 with SHA-256.
  */
 async function deriveRosterCryptoKey(accessCode: string, salt: Uint8Array): Promise<CryptoKey> {
-  const normalized = (accessCode || '').trim().toUpperCase().replace(/[^0-9A-Z]/g, '');
+  const normalized = normalizeAccessCode(accessCode);
   const enc = new TextEncoder();
   const c = typeof crypto !== 'undefined' ? crypto : (globalThis as any).crypto;
   const keyMaterial = await c.subtle.importKey(

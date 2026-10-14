@@ -71,12 +71,7 @@ export async function verifyPinCode(inputPin: string, targetGroupId?: string): P
     } catch (e) {}
     return null;
   } catch (err) {
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem('user_role');
-        localStorage.removeItem('starosta_group_id');
-      }
-    } catch (e) {}
+    console.warn('Network or temporary server error during verifyPinCode:', err);
     return null;
   }
 }

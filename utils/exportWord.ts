@@ -2,6 +2,7 @@ import { Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, Align
 import { AttendanceRecord, BLOCKS } from '../attendance';
 import { Student, GroupConfig, Faculty } from '../types';
 import { WORKER_BASE } from './cloudSync';
+import { samaraISO } from './samaraDate';
 
 export interface ExportWordResult {
   success: boolean;
@@ -87,7 +88,7 @@ export const exportAttendanceToWord = async (
   );
 
   // Data Rows
-  const today = new Date().toISOString().split('T')[0];
+  const today = samaraISO();
 
   students.forEach((student, index) => {
     let cumulativeAbsences = 0;
@@ -102,8 +103,9 @@ export const exportAttendanceToWord = async (
         if (record.date >= block.start && record.date <= block.end) {
           const isExcused = (record.excusedStudentIds || []).includes(student.id);
           const isAbsent = !isExcused && record.absentStudentIds.includes(student.id);
-          if (isExcused) blockExcused += 2;
-          else if (isAbsent) blockAbsences += 2;
+          const lessonHours = (record as any).hours ?? 2;
+          if (isExcused) blockExcused += lessonHours;
+          else if (isAbsent) blockAbsences += lessonHours;
         }
       });
       

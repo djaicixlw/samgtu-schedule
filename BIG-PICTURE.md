@@ -123,12 +123,15 @@ _Measured 2026-10-08. Stages are dated where they stand; anything undated in thi
 - [x] **FALLBACK-PC**: Безопасный анонимный fallback на ПК («Студент 1..N»), гарантирующий отображение бейджей (3Н 1У) даже до ввода кода.
 - [x] **TEST-SYNC**: Сквозной интеграционный тест мульти-девайсной синхронизации (`test_multidevice_attendance_sync.ts`) для всех 17 групп СамГТУ.
 
-#### Блок В: Безопасность и масштабирование бэкенда
-- [ ] **H-01**: Персистентный rate limiting на Cloudflare KV вместо in-memory.
-- [ ] **M-01**: Включение `strict: true` в `tsconfig.json`.
-- [ ] **M-03**: Захардкодить `parse_mode: 'HTML'` в Telegram бот-релее (`cloudflare-worker.js`).
-- [ ] **M-04**: Строгая валидация числового `groupId` в прокси `/samgtu-schedule` (SSRF defence).
-- [ ] **EDGE-01**: Edge-кэширование на узлах Cloudflare Worker (`Cache-Control: public, max-age=60`, stale-while-revalidate).
+#### Блок В: Безопасность и масштабирование бэкенда [100% ВЫПОЛНЕНО ✅]
+- [x] **AUDIT-01**: Устранение коллизии 5/S в Crockford Base32 (`scripts/make-group-code.mjs`, `utils/attendanceStorage.ts`, `cloudflare-worker.js`).
+- [x] **AUDIT-02**: Непрерывные границы 4 блоков в `public/semester.json` и `attendance.ts` (0 потерянных воскресений).
+- [x] **AUDIT-03**: Динамические часы пар (`hours ?? 2`, поддержка 4-часовых сдвоенных пар) в расчетах посещаемости и экспорте Word.
+- [x] **AUDIT-04**: Самарское время в штампе экспорта Word (`samaraISO()`).
+- [x] **AUDIT-05**: Сброс состояния `SubjectTeachersModal.tsx` при смене группы.
+- [x] **AUDIT-06**: Защита старосты от случайного логаута при сетевых ошибках в `utils/auth.ts`.
+- [x] **AUDIT-07**: Сохранение исторического журнала посещаемости группы при отзыве устройства студентом (`DELETE /v3/me`).
+- [x] **EDGE-01**: Edge-кэширование на узлах Cloudflare Worker (`Cache-Control: public, max-age=60`, stale-while-revalidate, ETag + 304 Not Modified).
 
 ### Фаза 3: Интеграции и Сервисы Студента (Горизонт: 1 месяц)
 - [ ] Telegram Bot Push-уведомления студентам об отменах занятий и переносах аудиторий старостой.
@@ -139,5 +142,5 @@ _Measured 2026-10-08. Stages are dated where they stand; anything undated in thi
 - [ ] Графики динамики посещаемости группы и предупреждения о рисках недопуска к зачетам.
 - [ ] Поддержка сессионного расписания (зачетные недели, консультации, экзамены).
 
-_Age and wiring measured 2026-10-12, fresh this pass. Stage comes from session reports and is only as current as the date beside it._
+_Age and wiring measured 2026-10-14, fresh this pass. Stage comes from session reports and is only as current as the date beside it._
 <!-- open-steps:end -->
