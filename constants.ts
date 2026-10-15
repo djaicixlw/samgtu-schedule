@@ -288,7 +288,8 @@ export const SCHEDULE_REGISTRY: Registry<WeekData> = {
       {
         dayName: 'Вторник',
         lessons: [
-          { id: '310-w4-tu-1', timeStart: '09:45', timeEnd: '11:20', subject: "Практико-ориентированный проект", type: 'Практические занятия', location: "Корпус № 1, 4", teacher: "Колибасов Владимир Александрович" }
+          { id: '310-w4-tu-1', timeStart: '09:45', timeEnd: '11:20', subject: "Практико-ориентированный проект", type: 'Практические занятия', location: "Корпус № 1, 4", teacher: "Колибасов Владимир Александрович" },
+          { id: '310-w4-tu-2', timeStart: '11:50', timeEnd: '13:25', subject: "Актуальные вопросы профессиональной деятельности и построение карьеры", type: 'Лекции', location: "Корпус № 1, 426", teacher: "" }
         ]
       },
       {
