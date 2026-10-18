@@ -37,11 +37,9 @@ android/app/google-services.json
 /screenshots/*.png
 
 # Environment variables and secrets
-.env
-.env.*
-!.env.example
+# Environment variables and secrets
+.env*
 *.env
-.env.local
 .dev.vars
 .wrangler/
 .scan-forbidden.local
@@ -58,6 +56,13 @@ samgtu_schedule/
 kv-group-codes.json
 .review-out/
 qa_screenshots/
+
+# Internal documentation and audits
+ARCHITECT-HANDOVER.md
+AUDIT_BRIEF_AND_QUESTIONS_FOR_GEMINI.md
+BIG-PICTURE.md
+ARCHITECTURE.md
+docs/
 
 # Резервные копии KV (scripts/kv-backup.mjs)
 backups/
