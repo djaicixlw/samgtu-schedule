@@ -1,4 +1,4 @@
-name = "unischedule-worker"
+name = "floral-union-26d1"
 main = "cloudflare-worker.js"
 compatibility_date = "2024-09-23"
 

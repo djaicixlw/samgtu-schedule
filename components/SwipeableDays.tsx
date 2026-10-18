@@ -11,6 +11,7 @@ interface SwipeableDaysProps {
   days: DaySchedule[];
   weekNumber?: number;
   userRole?: string;
+  initialDayName?: string;
   onUpdateLesson?: (lessonId: string, updated: Partial<Lesson>, applyScope?: TeacherAssignmentScope, lessonDayName?: string) => void;
   onResetLesson?: (lessonId: string) => void;
 }
@@ -19,26 +20,27 @@ const SwipeableDays: React.FC<SwipeableDaysProps> = ({
   days,
   weekNumber = 1,
   userRole,
+  initialDayName,
   onUpdateLesson,
   onResetLesson,
 }) => {
   const liveNow = useNow(60000);
   const samaraToday = useMemo(() => getSamaraDate(liveNow), [liveNow]);
   const currentSemesterWeek = useMemo(() => getSemesterWeek(samaraToday), [samaraToday]);
-  const todayDayName = useMemo(() => getDayName(samaraToday), [samaraToday]);
+  const todayDayName = useMemo(() => initialDayName || getDayName(samaraToday), [initialDayName, samaraToday]);
 
-  // Determine initial day: if viewing current semester week, select today's day; otherwise first day with lessons!
+  // Determine initial day: always activate today's day of the week by default
   const initialIndex = useMemo(() => {
-    if (weekNumber === currentSemesterWeek && days.length > 0) {
-      const idx = days.findIndex(d => d.dayName === todayDayName);
-      if (idx >= 0) return idx;
-    }
     if (days.length > 0) {
+      const targetDay = initialDayName || todayDayName;
+      const idx = days.findIndex(d => d.dayName === targetDay);
+      if (idx >= 0) return idx;
+
       const firstWithLessons = days.findIndex(d => d.lessons.length > 0);
       if (firstWithLessons >= 0) return firstWithLessons;
     }
     return 0;
-  }, [weekNumber, currentSemesterWeek, todayDayName, days]);
+  }, [days, initialDayName, todayDayName]);
 
   const [activeDayIndex, setActiveDayIndex] = useState<number>(initialIndex);
   const [slideDirection, setSlideDirection] = useState<'left' | 'right' | null>(null);
@@ -113,10 +115,13 @@ const SwipeableDays: React.FC<SwipeableDaysProps> = ({
         }
       }
 
-      if (weekNumber === currentSemesterWeek && days.length > 0) {
-        const idx = days.findIndex(d => d.dayName === todayDayName);
-        setActiveDayIndex(idx >= 0 ? idx : 0);
-      } else {
+      const targetDay = preferredDayName || initialDayName || todayDayName;
+      if (days.length > 0) {
+        const idx = days.findIndex(d => d.dayName === targetDay);
+        if (idx >= 0) {
+          setActiveDayIndex(idx);
+          return;
+        }
         const firstWithLessons = days.findIndex(d => d.lessons.length > 0);
         setActiveDayIndex(firstWithLessons >= 0 ? firstWithLessons : 0);
       }
@@ -127,7 +132,7 @@ const SwipeableDays: React.FC<SwipeableDaysProps> = ({
         return Math.min(prev, days.length - 1);
       });
     }
-  }, [weekNumber, days, currentSemesterWeek, todayDayName]);
+  }, [weekNumber, days, currentSemesterWeek, todayDayName, initialDayName]);
 
   // Scroll active day chip horizontally WITHOUT jerking the main page!
   useEffect(() => {

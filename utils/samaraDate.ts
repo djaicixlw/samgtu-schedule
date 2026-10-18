@@ -298,3 +298,34 @@ export function getDayISODate(dayName: string, weekNumber: number, referenceDate
   const day = String(d.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
+
+/**
+ * Converts a "HH:MM" string into minutes from midnight (0..1439).
+ * Returns -1 for invalid or missing input.
+ */
+export function parseTimeToMinutes(timeStr?: string): number {
+  if (!timeStr || typeof timeStr !== 'string' || !timeStr.includes(':')) return -1;
+  const [h, m] = timeStr.trim().split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return -1;
+  return h * 60 + m;
+}
+
+/**
+ * Returns current hours and minutes [H, M] in Europe/Samara timezone.
+ */
+export function getSamaraTimeHM(d: Date = new Date()): [number, number] {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Samara',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+    const parts = formatter.format(d).split(':');
+    return [parseInt(parts[0], 10), parseInt(parts[1], 10)];
+  } catch {
+    const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+    const samara = new Date(utc + (4 * 3600000));
+    return [samara.getHours(), samara.getMinutes()];
+  }
+}

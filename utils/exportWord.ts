@@ -3,6 +3,7 @@ import { AttendanceRecord, BLOCKS } from '../attendance';
 import { Student, GroupConfig, Faculty } from '../types';
 import { WORKER_BASE } from './cloudSync';
 import { samaraISO } from './samaraDate';
+import { isPhysicalEducationLessonId } from './scheduleLoader';
 
 export interface ExportWordResult {
   success: boolean;
@@ -100,6 +101,7 @@ export const exportAttendanceToWord = async (
       
       records.forEach(record => {
         if (record.isCancelled) return;
+        if (isPhysicalEducationLessonId(record.lessonId, groupConfig.id)) return;
         if (record.date >= block.start && record.date <= block.end) {
           const isExcused = (record.excusedStudentIds || []).includes(student.id);
           const isAbsent = !isExcused && record.absentStudentIds.includes(student.id);

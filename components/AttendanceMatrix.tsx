@@ -15,7 +15,7 @@ import {
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { Lesson, Student, WeekData } from '../types';
 import { getLocalStudents, syncAttendanceRecordsToV3 } from '../utils/attendanceStorage';
-import { loadGroupSchedule } from '../utils/scheduleLoader';
+import { loadGroupSchedule, isPhysicalEducationLesson, isPhysicalEducationLessonId } from '../utils/scheduleLoader';
 
 export interface AttendanceMatrixProps {
   currentGroupId: string;
@@ -152,7 +152,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
           if (l.id) {
             map.set(l.id, l);
           }
-          if (l.subject && l.subject.trim()) {
+          if (l.subject && l.subject.trim() && !isPhysicalEducationLesson(l)) {
             subjects.add(l.subject.trim());
           }
         }
@@ -165,12 +165,18 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
     };
   }, [scheduleData, currentGroupId]);
 
+  const activeStudents = useMemo(() => {
+    return students
+      .filter(s => !s.isArchived)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [students]);
+
   // Filter students by search query
   const filteredStudents = useMemo(() => {
-    if (!searchQuery.trim()) return students;
+    if (!searchQuery.trim()) return activeStudents;
     const query = searchQuery.trim().toLowerCase();
-    return students.filter(s => s.name.toLowerCase().includes(query));
-  }, [students, searchQuery]);
+    return activeStudents.filter(s => s.name.toLowerCase().includes(query));
+  }, [activeStudents, searchQuery]);
 
   // Handle cell click in week grid to cycle status: Present -> Absent -> Excused -> Present
   const handleCellToggle = (studentId: number, dayISO: string, lesson: Lesson) => {
@@ -203,14 +209,14 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
       statusLabel = 'Присутствует';
     }
 
-    markAttendance(dayISO, lesson.id, nextAbsent, nextExcused, false);
+    markAttendance(dayISO, lesson.id, nextAbsent, nextExcused, false, lesson.hours || record.hours || 2);
     syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
     toast.success(`${studentName}: ${statusLabel}`, { duration: 1500 });
   };
 
   // Pre-calculate cumulative hours for each student across blocks and subjects
   const studentCumulativeStats = useMemo(() => {
-    return students.map(student => {
+    return activeStudents.map(student => {
       // 4 blocks: [Block1, Block2, Block3, Block4]
       const blockAbs = [0, 0, 0, 0];
       const blockExc = [0, 0, 0, 0];
@@ -218,24 +224,27 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
 
       records.forEach(rec => {
         if (rec.isCancelled) return;
+        const lesson = lessonMap.get(rec.lessonId);
+        if (lesson && isPhysicalEducationLesson(lesson)) return;
+        if (!lesson && isPhysicalEducationLessonId(rec.lessonId, currentGroupId)) return;
 
         const isExcused = (rec.excusedStudentIds || []).includes(student.id);
         const isAbsent = !isExcused && rec.absentStudentIds.includes(student.id);
         if (!isAbsent && !isExcused) return;
 
-        const lesson = lessonMap.get(rec.lessonId);
         const subjName = lesson?.subject?.trim() || 'Другое';
+        const hours = lesson?.hours || rec.hours || 2;
 
         // Track per-subject hours
         if (!subjectHours[subjName]) {
           subjectHours[subjName] = { abs: 0, exc: 0, total: 0 };
         }
         if (isExcused) {
-          subjectHours[subjName].exc += 2;
-          subjectHours[subjName].total += 2;
+          subjectHours[subjName].exc += hours;
+          subjectHours[subjName].total += hours;
         } else {
-          subjectHours[subjName].abs += 2;
-          subjectHours[subjName].total += 2;
+          subjectHours[subjName].abs += hours;
+          subjectHours[subjName].total += hours;
         }
 
         // Apply subject filter if active
@@ -247,9 +256,9 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
         BLOCKS.forEach((b, idx) => {
           if (rec.date >= b.start && rec.date <= b.end) {
             if (isExcused) {
-              blockExc[idx] += 2;
+              blockExc[idx] += hours;
             } else {
-              blockAbs[idx] += 2;
+              blockAbs[idx] += hours;
             }
           }
         });
@@ -287,7 +296,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
         subjectHours
       };
     });
-  }, [students, records, lessonMap, selectedSubject]);
+  }, [activeStudents, records, lessonMap, selectedSubject]);
 
   // Filtered stats for active search query
   const filteredCumulativeStats = useMemo(() => {
@@ -335,7 +344,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
           const daySchedule = activeSchedule[selectedWeek]?.find(d => d.dayName === dayName);
 
           PAIRS.forEach(pairNum => {
-            const lesson = daySchedule?.lessons.find(l => getLessonSlotNumber(l) === pairNum);
+            const lesson = daySchedule?.lessons.find(l => getLessonSlotNumber(l) === pairNum && !isPhysicalEducationLesson(l));
             if (!lesson) return;
             const rec = getAttendance(dayISO, lesson.id);
             if (rec.isCancelled) return;
@@ -553,7 +562,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
                       const daySchedule = activeWeekSchedule.find(d => d.dayName === dayName);
 
                       return PAIRS.map(pairNum => {
-                        const lesson = daySchedule?.lessons.find(l => getLessonSlotNumber(l) === pairNum);
+                        const lesson = daySchedule?.lessons.find(l => getLessonSlotNumber(l) === pairNum && !isPhysicalEducationLesson(l));
                         const hasLesson = Boolean(lesson);
 
                         return (
@@ -606,7 +615,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
                             const daySchedule = activeWeekSchedule.find(d => d.dayName === dayName);
 
                             return PAIRS.map(pairNum => {
-                              const lesson = daySchedule?.lessons.find(l => getLessonSlotNumber(l) === pairNum);
+                              const lesson = daySchedule?.lessons.find(l => getLessonSlotNumber(l) === pairNum && !isPhysicalEducationLesson(l));
 
                               if (!lesson) {
                                 return (
@@ -790,7 +799,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
                 Студентов в группе
               </span>
               <span className="text-lg font-bold text-slate-900 dark:text-white mt-0.5 block">
-                {students.length}
+                {activeStudents.length}
               </span>
             </div>
 

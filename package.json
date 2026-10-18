@@ -10,6 +10,7 @@
     "lint": "tsc --noEmit",
     "check:dist": "node scripts/check-dist.mjs",
     "test": "tsx tests/run_all.ts",
+    "test:e2e": "tsx scripts/e2e_full_verification.ts",
     "report:import": "tsx scripts/import_bugreport.ts"
   },
   "dependencies": {
@@ -25,6 +26,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "playwright": "^1.64.1",
     "tailwindcss": "^4.2.2",
     "tsx": "^4.23.15",
     "typescript": "~5.8.2",

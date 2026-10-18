@@ -28,7 +28,9 @@ import {
   getLocalStudentLink,
   clearLocalStudentLink,
   setAttendanceApiBase,
-  getTelegramInitData
+  getTelegramInitData,
+  encryptRosterE2EE,
+  syncRosterToCloud
 } from '../utils/attendanceStorage';
 import { Student } from '../types';
 
@@ -462,6 +464,33 @@ try {
   check('getLocalStudentLink reads manually set link', getLocalStudentLink()?.gid === 'g1');
   clearLocalStudentLink();
   check('clearLocalStudentLink clears localStorage', getLocalStudentLink() === null);
+
+  // 7.13 E2EE Roster Encryption and Dummy Safeguard Tests
+  console.log('\n--- 7.13 E2EE Roster Encryption & Dummy Overwrite Safeguards ---');
+  const dummyRoster = [
+    { id: 1, name: 'Студент 1' },
+    { id: 2, name: 'Студент 2' }
+  ];
+  const syncDummyBlocked = await syncRosterToCloud('test-api-group', dummyRoster, 'TEST-CODE');
+  check('syncRosterToCloud blocks dummy roster from cloud overwrite', syncDummyBlocked === false);
+
+  const syncEmptyBlocked = await syncRosterToCloud('test-api-group', [], 'TEST-CODE');
+  check('syncRosterToCloud blocks empty roster from cloud overwrite', syncEmptyBlocked === false);
+
+  // Test crypto generator missing check
+  const origGetRandomValues = crypto.getRandomValues;
+  try {
+    (crypto as any).getRandomValues = undefined;
+    let thrownError: any = null;
+    try {
+      await encryptRosterE2EE([{ id: 1, name: 'Иванов И.И.' }], 'TEST-CODE');
+    } catch (e: any) {
+      thrownError = e;
+    }
+    check('encryptRosterE2EE throws when secure RNG is unavailable', thrownError?.message === 'Web Crypto API with secure RNG is required');
+  } finally {
+    (crypto as any).getRandomValues = origGetRandomValues;
+  }
 
 } finally {
   globalThis.fetch = originalFetch;

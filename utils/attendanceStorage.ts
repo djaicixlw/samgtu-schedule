@@ -136,7 +136,8 @@ export function getLocalStudents(groupId: string): Student[] {
             .map(s => ({
               id: s.id,
               name: String(s.name || '').trim(),
-              ...(s.slot ? { slot: String(s.slot).trim().toUpperCase() } : {})
+              ...(s.slot ? { slot: String(s.slot).trim().toUpperCase() } : {}),
+              ...(typeof s.isArchived === 'boolean' ? { isArchived: s.isArchived } : {})
             }));
 
           // Self-healing: if real named students exist along with phantom "Студент N"
@@ -352,6 +353,9 @@ export function importRosterBackup(
       if (item.slot && typeof item.slot === 'string' && item.slot.trim()) {
         stu.slot = item.slot.trim().toUpperCase();
       }
+      if (typeof item.isArchived === 'boolean') {
+        stu.isArchived = item.isArchived;
+      }
       sanitizedStudents.push(stu);
     }
 
@@ -428,7 +432,7 @@ export async function registerSlotsWithServer(
     const base = getAttendanceApiBase();
     const res = await fetch(`${base}/v3/slots`, {
       method: 'POST',
-      headers: getAuthHeaders(),
+      headers: getAuthHeaders(groupId),
       body: JSON.stringify({ gid: groupId, slots })
     });
     const json = await res.json().catch(() => ({}));
@@ -453,7 +457,7 @@ export async function publishInvitesWithServer(
     const base = getAttendanceApiBase();
     const res = await fetch(`${base}/v3/invites`, {
       method: 'POST',
-      headers: getAuthHeaders(),
+      headers: getAuthHeaders(groupId),
       body: JSON.stringify({ gid: groupId, items })
     });
     const json = await res.json().catch(() => ({}));
@@ -479,7 +483,7 @@ export async function fetchMonthAttendanceV3(
     const params = new URLSearchParams({ gid: groupId, month });
     const res = await fetch(`${base}/v3/att?${params.toString()}`, {
       method: 'GET',
-      headers: getAuthHeaders()
+      headers: getAuthHeaders(groupId)
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -506,7 +510,7 @@ export async function saveMonthAttendanceV3(
     const base = getAttendanceApiBase();
     const res = await fetch(`${base}/v3/att`, {
       method: 'PUT',
-      headers: getAuthHeaders(),
+      headers: getAuthHeaders(groupId),
       body: JSON.stringify({
         gid: groupId,
         month,
@@ -930,13 +934,11 @@ export async function encryptRosterE2EE(
   const c = typeof crypto !== 'undefined' ? crypto : (globalThis as any).crypto;
   const salt = new Uint8Array(16);
   const iv = new Uint8Array(12);
-  if (c && c.getRandomValues) {
-    c.getRandomValues(salt);
-    c.getRandomValues(iv);
-  } else {
-    for (let i = 0; i < 16; i++) salt[i] = Math.floor(Math.random() * 256);
-    for (let i = 0; i < 12; i++) iv[i] = Math.floor(Math.random() * 256);
+  if (!c || typeof c.getRandomValues !== 'function' || !c.subtle) {
+    throw new Error('Web Crypto API with secure RNG is required');
   }
+  c.getRandomValues(salt);
+  c.getRandomValues(iv);
 
   const key = await deriveRosterCryptoKey(accessCode, salt);
   const enc = new TextEncoder();
@@ -1049,6 +1051,10 @@ export async function syncRosterToCloud(
 ): Promise<boolean> {
   try {
     const canonicalGid = normalizeGroupId(groupId);
+    if (!students || students.length === 0 || students.every(s => typeof s.name === 'string' && /^Студент\s+\d+$/i.test(s.name.trim()))) {
+      console.warn(`[syncRosterToCloud] Aborted sync for ${canonicalGid}: roster is empty or contains only dummy students`);
+      return false;
+    }
     const code = accessCode || (typeof localStorage !== 'undefined' ? localStorage.getItem(`group_code_${canonicalGid}`) || localStorage.getItem('access_code') : '') || '';
     if (!code) return false;
     const slotted = ensureGroupSlots(canonicalGid, students);
@@ -1165,23 +1171,18 @@ export async function pullAttendanceRecordsFromV3(
         }
       } else {
         // ONLY if local roster is completely empty (e.g. cold start on new device without roster)
+        // Keep mapping strictly in-memory so attendance matrix renders, but NEVER save dummy students to localStorage!
         serverSlots.sort().forEach(slot => {
           const cleanSlot = slot.trim().toUpperCase();
           if (!slotToStudentId.has(cleanSlot)) {
-            const nextId = students.length > 0 ? Math.max(...students.map(s => s.id)) + 1 : 1;
-            const fallbackStu: Student = {
-              id: nextId,
-              name: `Студент ${nextId}`,
-              slot: cleanSlot
-            };
-            students.push(fallbackStu);
+            const nextId = slotToStudentId.size + 1;
             slotToStudentId.set(cleanSlot, nextId);
-            rosterModified = true;
           }
         });
       }
 
-      if (rosterModified) {
+      const hasRealStudents = students.length > 0 && !students.every(s => typeof s.name === 'string' && /^Студент\s+\d+$/i.test(s.name.trim()));
+      if (rosterModified && hasRealStudents) {
         saveLocalStudents(gid, students);
       }
 

@@ -2,8 +2,9 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Student } from '../types';
 import { STUDENTS_REGISTRY } from '../attendance';
 import { AVAILABLE_GROUPS } from '../constants';
-import { UserPlus, Trash2, Edit2, Check, X, Users, AlertCircle, Download, Upload, Key, Copy, Loader2, FileText, Clipboard } from 'lucide-react';
+import { UserPlus, Trash2, Edit2, Check, X, Users, AlertCircle, Download, Upload, Key, Copy, Loader2, FileText, Clipboard, Send, Bot, RotateCcw, Archive, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
+import { uploadAttachmentFile } from '../utils/upload';
 import {
   getLocalStudents,
   saveLocalStudents,
@@ -57,6 +58,20 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
   const [newStudentName, setNewStudentName] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState('');
+  const [isSendingToBot, setIsSendingToBot] = useState(false);
+  const [isArchiveExpanded, setIsArchiveExpanded] = useState(false);
+
+  const activeStudents = useMemo(() => {
+    return students
+      .filter(s => !s.isArchived)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [students]);
+
+  const archivedStudents = useMemo(() => {
+    return students
+      .filter(s => !!s.isArchived)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [students]);
 
   const canEdit = userRole === 'admin' || userRole === 'starosta';
 
@@ -110,6 +125,54 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
       if (fileInputRef.current) fileInputRef.current.value = '';
     };
     reader.readAsText(file);
+  };
+
+  const handleSendToBot = async () => {
+    if (!currentGroupId) return;
+    if (activeStudents.length === 0) {
+      toast.error('Список студентов пуст');
+      return;
+    }
+
+    setIsSendingToBot(true);
+    try {
+      const groupName = groupConfig?.name || currentGroupId;
+      const lines = [
+        `📋 Список группы ${groupName}`,
+        `Всего активных студентов: ${activeStudents.length}`,
+        `Дата выгрузки: ${new Date().toLocaleDateString('ru-RU')}`,
+        '',
+        ...activeStudents.map((s, idx) => `${idx + 1}. ${s.name}`)
+      ];
+
+      if (archivedStudents.length > 0) {
+        lines.push('');
+        lines.push(`Выбывшие студенты (${archivedStudents.length}):`);
+        archivedStudents.forEach((s, idx) => {
+          lines.push(`${idx + 1}. ${s.name}`);
+        });
+      }
+
+      const content = lines.join('\n');
+      const filename = `spisok_gruppy_${currentGroupId}.txt`;
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const file = typeof File !== 'undefined'
+        ? new File([blob], filename, { type: 'text/plain;charset=utf-8' })
+        : Object.assign(blob, { name: filename, lastModified: Date.now() }) as any;
+
+      await uploadAttachmentFile(file, `📋 Список группы ${groupName} (${activeStudents.length} студентов)`);
+      toast.success('Список группы отправлен в чат с ботом');
+    } catch (err: any) {
+      console.warn('Failed to upload roster to bot:', err);
+      const msg = err?.message || String(err);
+      if (msg.includes('chat not found') || msg.includes('401')) {
+        toast.error('Откройте приложение внутри Telegram через бота, чтобы получать файлы в чат');
+      } else {
+        toast.error(`Не удалось отправить список в бота: ${msg}`);
+      }
+    } finally {
+      setIsSendingToBot(false);
+    }
   };
 
   const handleCopyBackupList = async () => {
@@ -189,14 +252,14 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
 
   const handleOpenInvites = async () => {
     if (!currentGroupId) return;
-    if (students.length === 0) {
+    if (activeStudents.length === 0) {
       toast.error('Список студентов пуст');
       return;
     }
     setIsInviteModalOpen(true);
     setIsLoadingInvites(true);
     try {
-      const generated = await createGroupInvites(currentGroupId, students);
+      const generated = await createGroupInvites(currentGroupId, activeStudents);
       setInvites(generated);
       const refreshed = getLocalStudents(currentGroupId);
       if (refreshed.length > 0) setStudents(refreshed);
@@ -222,7 +285,7 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
   const handleCopyAllCodes = () => {
     if (invites.length === 0) return;
     const lines = invites.map((inv, idx) => {
-      const stu = students.find(s => s.id === inv.studentId);
+      const stu = activeStudents.find(s => s.id === inv.studentId);
       return `${idx + 1}. ${stu?.name || `Студент #${inv.studentId}`} — ${inv.code}`;
     });
     navigator.clipboard.writeText(`Коды приглашений (${groupConfig?.name || currentGroupId}):\n` + lines.join('\n'))
@@ -261,10 +324,16 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
   };
 
   const handleDeleteStudent = (id: number, name: string) => {
-    if (!window.confirm(`Удалить студента "${name}" из списка?`)) return;
-    const updated = students.filter(s => s.id !== id);
+    if (!window.confirm(`Перевести студента "${name}" в архив выбывших?\n\nСтудент перестанет отображаться в текущих занятиях и матрице, но его история посещений сохранится.`)) return;
+    const updated = students.map(s => s.id === id ? { ...s, isArchived: true } : s);
     saveStudentsToStorage(updated);
-    toast.info(`Студент ${name} удален`);
+    toast.info(`Студент ${name} переведен в архив выбывших`);
+  };
+
+  const handleRestoreStudent = (id: number, name: string) => {
+    const updated = students.map(s => s.id === id ? { ...s, isArchived: false } : s);
+    saveStudentsToStorage(updated);
+    toast.success(`Студент ${name} восстановлен в активный список`);
   };
 
   const handleStartEdit = (student: Student) => {
@@ -291,7 +360,7 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
           <div>
             <h2 className="text-xl font-bold text-slate-900 dark:text-white">Состав группы</h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Группа: <span className="font-semibold text-indigo-600 dark:text-indigo-400">{groupConfig?.name || currentGroupId}</span> • Студентов: {students.length}
+              Группа: <span className="font-semibold text-indigo-600 dark:text-indigo-400">{groupConfig?.name || currentGroupId}</span> • Студентов: {activeStudents.length}{archivedStudents.length > 0 ? ` (в архиве: ${archivedStudents.length})` : ''}
             </p>
           </div>
         </div>
@@ -309,17 +378,13 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
         <div className="bg-white dark:bg-slate-900 p-5 rounded-3xl shadow-xs border border-slate-200/90 dark:border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">Резервная копия и инвайты</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Локальное сохранение списка и раздача кодов студентам</p>
           </div>
           <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
             <button onClick={handleDownloadBackup} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Сохранить файл со списком группы">
               <Download className="w-3.5 h-3.5" /><span>Сохранить файл</span>
             </button>
-            <button onClick={handleCopyBackupList} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Скопировать список в буфер обмена">
-              <Copy className="w-3.5 h-3.5" /><span>Скопировать список</span>
-            </button>
-            <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Восстановить список из сохраненного файла">
-              <Upload className="w-3.5 h-3.5" /><span>Восстановить список из файла</span>
+            <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Восстановить список из файла">
+              <Upload className="w-3.5 h-3.5" /><span>Восстановить из файла</span>
             </button>
             <input
               type="file"
@@ -327,6 +392,18 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
               onChange={handleRestoreBackup}
               className="hidden"
             />
+            <button
+              onClick={handleSendToBot}
+              disabled={isSendingToBot}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer disabled:opacity-50"
+              title="Отправить список в бота"
+            >
+              {isSendingToBot ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" /> : <Send className="w-3.5 h-3.5" />}
+              <span>{isSendingToBot ? 'Отправка...' : 'Отправить в бота'}</span>
+            </button>
+            <button onClick={handleCopyBackupList} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Скопировать список в буфер обмена">
+              <Copy className="w-3.5 h-3.5" /><span>Скопировать список</span>
+            </button>
             <button onClick={handleOpenTextImportModal} className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer" title="Вставить список из буфера обмена">
               <FileText className="w-3.5 h-3.5" /><span>Вставить список</span>
             </button>
@@ -360,10 +437,10 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
         </div>
       )}
 
-      {/* Students List */}
+      {/* Active Students List */}
       <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xs border border-slate-200/90 dark:border-slate-800 overflow-hidden">
         <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
-          {students.map((student, index) => (
+          {activeStudents.map((student, index) => (
             <div
               key={student.id}
               className="flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
@@ -400,14 +477,14 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
                     <>
                       <button
                         onClick={() => handleSaveEdit(student.id)}
-                        className="p-2 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg transition-colors"
+                        className="p-2 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg transition-colors cursor-pointer"
                         title="Сохранить"
                       >
                         <Check className="w-4 h-4" />
                       </button>
                       <button
                         onClick={() => setEditingId(null)}
-                        className="p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                        className="p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
                         title="Отмена"
                       >
                         <X className="w-4 h-4" />
@@ -417,15 +494,15 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
                     <>
                       <button
                         onClick={() => handleStartEdit(student)}
-                        className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                        className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors cursor-pointer"
                         title="Редактировать"
                       >
                         <Edit2 className="w-4 h-4" />
                       </button>
                       <button
                         onClick={() => handleDeleteStudent(student.id, student.name)}
-                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                        title="Удалить"
+                        className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors cursor-pointer"
+                        title="Перевести в архив выбывших"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -436,12 +513,86 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
             </div>
           ))}
 
-          {students.length === 0 && (
+          {activeStudents.length === 0 && (
             <div className="p-8 text-center text-slate-400 text-sm">
               Список студентов пуст. Добавьте первого студента выше.
             </div>
           )}
         </div>
+      </div>
+
+      {/* Collapsible Archived Students Section (Requirement №12) */}
+      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xs border border-slate-200/90 dark:border-slate-800 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setIsArchiveExpanded(prev => !prev)}
+          className="w-full flex items-center justify-between p-5 hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors text-left cursor-pointer"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-500 dark:text-slate-400 shrink-0">
+              <Archive className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                Выбывшие студенты ({archivedStudents.length})
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Архив выбывших студентов. История посещаемости за прошлые месяцы сохранена.
+              </p>
+            </div>
+          </div>
+          <ChevronDown className={`w-5 h-5 text-slate-400 transition-transform duration-200 ${isArchiveExpanded ? 'rotate-180' : ''}`} />
+        </button>
+
+        {isArchiveExpanded && (
+          <div className="border-t border-slate-200/80 dark:border-slate-800 divide-y divide-slate-200/80 dark:divide-slate-800">
+            {archivedStudents.length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-400">
+                Архив выбывших студентов пуст. При нажатии на иконку удаления студент перемещается сюда.
+              </div>
+            ) : (
+              archivedStudents.map((student, idx) => (
+                <div
+                  key={student.id}
+                  className="flex items-center justify-between p-4 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors"
+                >
+                  <div className="flex items-center gap-3 min-w-0 pr-2">
+                    <span className="w-7 h-7 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 text-xs font-bold flex items-center justify-center shrink-0">
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-slate-600 dark:text-slate-400 line-through truncate">
+                          {student.name}
+                        </span>
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border border-amber-200/50 dark:border-amber-800/50 shrink-0">
+                          в архиве
+                        </span>
+                      </div>
+                      {student.slot && (
+                        <span className="font-mono text-[10px] text-slate-400">
+                          слот: {student.slot}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {canEdit && (
+                    <button
+                      type="button"
+                      onClick={() => handleRestoreStudent(student.id, student.name)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 transition-colors shrink-0 cursor-pointer"
+                      title="Восстановить в активный список"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Восстановить</span>
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </div>
 
       {/* Student Invites Modal */}

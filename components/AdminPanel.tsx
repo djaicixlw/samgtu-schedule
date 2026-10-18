@@ -1,13 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { UserRole } from '../types';
-import { ShieldCheck, Key, CheckCircle2, RefreshCw, Wrench, ChevronDown, Download } from 'lucide-react';
+import { ShieldCheck, Key, CheckCircle2, RefreshCw, Wrench, ChevronDown, Download, Users, Bell } from 'lucide-react';
 import { toast } from 'sonner';
-import { claimStaffRole } from '../utils/attendanceStorage';
+import { claimStaffRole, getLocalStudents } from '../utils/attendanceStorage';
 import { SAMGTU_GROUP_MAP } from '../utils/samgtuGroupMap';
 import { fetchOfficialSamgtuSchedule, syncOfficialGroupSchedule, getLocalBackup } from '../utils/cloudSync';
 import { registerScheduleAliases, markScheduleLoaded, readCachedSchedule } from '../utils/scheduleLoader';
 import { convertOfficialSamgtuToWeekData } from '../utils/samgtuParser';
-import { SCHEDULE_REGISTRY } from '../constants';
+import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { logger } from '../utils/logger';
 
 interface AdminPanelProps {
@@ -32,6 +32,24 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
   const [isSimulatingMaintenance, setIsSimulatingMaintenance] = useState(() => {
     return localStorage.getItem('simulate_maintenance') === 'true';
   });
+
+  const groupStats = useMemo(() => {
+    return AVAILABLE_GROUPS.map(grp => {
+      const students = getLocalStudents(grp.id);
+      const activeStudents = students.filter(s => !s.isArchived);
+      const hasCustomOverrides = Boolean(localStorage.getItem(`schedule_overrides_${grp.id}`));
+      const isReadyForPush = activeStudents.length > 0;
+      return {
+        id: grp.id,
+        name: grp.name,
+        course: grp.course,
+        facultyId: grp.facultyId,
+        studentCount: activeStudents.length,
+        hasCustomOverrides,
+        isReadyForPush,
+      };
+    });
+  }, []);
 
   const handleToggleMaintenance = () => {
     const nextVal = !isSimulatingMaintenance;
@@ -411,6 +429,58 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
                 )}
               </div>
             )}
+
+            {/* Stage 5: Telegram Slots & Active Groups Breakdown */}
+            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/60 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Bell className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                    Статус групп и готовность к рассылкам (Этап 5)
+                  </span>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
+                  {groupStats.filter(g => g.isReadyForPush).length} из {groupStats.length} готовы
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Рассылки утренних дайджестов (07:30) и напоминаний за 24 ч будут активированы только для групп со сформированным списком студентов.
+              </p>
+
+              <div className="divide-y divide-slate-200/70 dark:divide-slate-700/60 max-h-60 overflow-y-auto rounded-xl border border-slate-200/60 dark:border-slate-700/50 bg-white dark:bg-slate-900/60">
+                {groupStats.map(grp => (
+                  <div key={grp.id} className="p-2.5 flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 flex items-center justify-center font-bold text-indigo-600 dark:text-indigo-400 text-[11px]">
+                        {grp.course}
+                      </div>
+                      <div>
+                        <div className="font-bold text-slate-900 dark:text-white leading-tight">
+                          {grp.name}
+                        </div>
+                        <div className="text-[10px] text-slate-400 flex items-center gap-1.5 mt-0.5">
+                          <Users className="w-3 h-3" />
+                          <span>Студентов: {grp.studentCount}</span>
+                          {grp.hasCustomOverrides && <span className="text-amber-500 font-semibold">• Свои правки</span>}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      {grp.isReadyForPush ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+                          <CheckCircle2 className="w-3 h-3" /> Готова к пушам
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                          Ожидает старосту
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
 
             {/* Maintenance Mode Controls */}
             <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/60 space-y-3">

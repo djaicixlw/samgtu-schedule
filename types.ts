@@ -30,6 +30,7 @@ export interface Student {
   id: number;
   name: string;
   slot?: string;
+  isArchived?: boolean;
 }
 
 export type Registry<T> = Record<string, T>;
@@ -55,6 +56,7 @@ export interface Lesson {
   isCancelled?: boolean;
   isHidden?: boolean;
   order?: number;
+  hours?: number;
   attachments?: HomeworkAttachment[];
 }
 
@@ -111,4 +113,10 @@ export interface UsefulItem {
   createdAt: string;
   updatedAt?: string;
   createdBy?: string;
+  isPending?: boolean;
+  submittedBy?: {
+    id?: number;
+    username?: string;
+    name?: string;
+  };
 }

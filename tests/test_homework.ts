@@ -88,3 +88,40 @@ if (daysDiff === 7) {
 } else {
   console.log("  >>> BUG: Homework created between 00:00 and 04:00 gets incorrect days difference! <<<");
 }
+
+// 4.4 Archive older than 30 days test
+console.log("\n--- 4.4 Archive (>30 days overdue) Logic ---");
+import { isHomeworkArchived } from '../components/HomeworkTracker';
+const todayForArchive = "2026-10-18";
+// 40 days overdue -> archived
+if (isHomeworkArchived("2026-09-08", todayForArchive) === true) {
+  console.log("  ✓ [PASS] 40 days overdue task correctly archived (>30 days)");
+} else {
+  throw new Error("40 days overdue must be archived");
+}
+// 31 days overdue -> archived
+if (isHomeworkArchived("2026-09-17", todayForArchive) === true) {
+  console.log("  ✓ [PASS] 31 days overdue task correctly archived (>30 days)");
+} else {
+  throw new Error("31 days overdue must be archived");
+}
+// 29 days overdue -> not archived
+if (isHomeworkArchived("2026-09-19", todayForArchive) === false) {
+  console.log("  ✓ [PASS] 29 days overdue task remains in active list (<=30 days)");
+} else {
+  throw new Error("29 days overdue must not be archived");
+}
+// today -> not archived
+if (isHomeworkArchived("2026-10-18", todayForArchive) === false) {
+  console.log("  ✓ [PASS] Today deadline task remains active");
+} else {
+  throw new Error("today must not be archived");
+}
+// future -> not archived
+if (isHomeworkArchived("2026-10-25", todayForArchive) === false) {
+  console.log("  ✓ [PASS] Future deadline task remains active");
+} else {
+  throw new Error("future must not be archived");
+}
+console.log("  [PASS] isHomeworkArchived accurately separates tasks older than 30 days!\n");
+

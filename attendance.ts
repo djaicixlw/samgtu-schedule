@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Student, Registry } from './types';
-import { syncAttendanceRecordsToV3, pullAttendanceRecordsFromV3 } from './utils/attendanceStorage';
+import { syncAttendanceRecordsToV3, pullAttendanceRecordsFromV3, getSavedStaffToken } from './utils/attendanceStorage';
 import { getSamaraISODate } from './utils/samaraDate';
 import { SEED_ATTENDANCE } from './defaultData';
+import { isPhysicalEducationLesson, isPhysicalEducationLessonId } from './utils/scheduleLoader';
+
+export { isPhysicalEducationLesson, isPhysicalEducationLessonId };
 
 const createAnonymousStudents = (count: number): Student[] =>
   Array.from({ length: count }, (_, i) => ({ id: i + 1, name: `Студент ${i + 1}` }));
@@ -209,6 +212,13 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
       const local = getLocalRecords();
       setRecords(local);
       recordsRef.current = local;
+
+      // Staff auth check: do not query staff-only /v3/att for anonymous students
+      const hasStaffAuth = isAuthenticated || Boolean(getSavedStaffToken(currentGroupId));
+      if (!hasStaffAuth) {
+        return;
+      }
+
       try {
         // 1. PULL latest attendance from Cloudflare Worker API v3
         const remote = await pullAttendanceRecordsFromV3(currentGroupId);
@@ -309,7 +319,7 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
         absentStudentIds: update.absentStudentIds,
         excusedStudentIds: update.excusedStudentIds || [],
         isCancelled: update.isCancelled ?? false,
-        hours: update.hours ?? (existing?.hours ?? 2),
+        hours: update.hours || existing?.hours || 2,
         updatedAt: new Date().toISOString(),
         updatedBy: 'starosta_pin'
       };
@@ -350,7 +360,7 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
     absentStudentIds: number[], 
     excusedStudentIds: number[] = [], 
     isCancelled: boolean = false,
-    hours: number = 2
+    hours?: number
   ) => {
     await markBatchAttendance([{
       date,
@@ -358,7 +368,7 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
       absentStudentIds,
       excusedStudentIds,
       isCancelled,
-      hours
+      hours: hours || 2
     }]);
 
     toast.success(isCancelled ? 'Пара отмечена как отмененная' : 'Посещаемость сохранена');
@@ -416,7 +426,11 @@ export const getSamaraFutureISODate = (daysToAdd: number = 7): string => {
  * If a student is in both absent and excused arrays, counts strictly once as excused.
  * Supports configurable lesson hours (default 2h, or 4h for double lessons).
  */
-export function calculateStudentAbsenceHours(records: AttendanceRecord[], studentId: number) {
+export function calculateStudentAbsenceHours(
+  records: AttendanceRecord[], 
+  studentId: number,
+  lessonOrResolver?: any
+) {
   let totalAbs = 0;
   let totalExc = 0;
   const absencesByBlock = BLOCKS.map(() => 0);
@@ -424,9 +438,11 @@ export function calculateStudentAbsenceHours(records: AttendanceRecord[], studen
 
   records.forEach(record => {
     if (record.isCancelled) return;
+    if (isPhysicalEducationLessonId(record.lessonId, record.groupId)) return;
     const isExcused = (record.excusedStudentIds || []).includes(studentId);
     const isAbsent = !isExcused && record.absentStudentIds.includes(studentId);
-    const lessonHours = (record as any).hours ?? 2;
+    const lesson = (record as any).lesson || (typeof lessonOrResolver === 'function' ? lessonOrResolver(record.lessonId) : lessonOrResolver?.[record.lessonId]);
+    const lessonHours = lesson?.hours || record.hours || 2;
 
     if (isExcused) {
       totalExc += lessonHours;

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   BookOpen, Plus, Calendar, Clock, Paperclip, Link as LinkIcon, 
-  Trash2, Edit3, X, Check, Download, AlertCircle, FileText, ExternalLink, Filter, Bookmark 
+  Trash2, Edit3, X, Check, Download, AlertCircle, FileText, ExternalLink, Filter, Bookmark,
+  Archive, ChevronDown
 } from 'lucide-react';
 import UsefulTracker from './UsefulTracker';
 import { HomeworkItem, HomeworkAttachment } from '../types';
@@ -11,6 +12,18 @@ import { toast } from 'sonner';
 import { fetchGroupCloudData, pushGroupCloudData, WORKER_BASE } from '../utils/cloudSync';
 import { openAttachmentSafe } from '../utils/upload';
 import { SEED_HOMEWORK } from '../defaultData';
+
+export const isHomeworkArchived = (dueDate: string, today: string): boolean => {
+  if (!dueDate) return false;
+  try {
+    const dueTime = new Date(dueDate).getTime();
+    const todayTime = new Date(today).getTime();
+    const diffDays = (todayTime - dueTime) / (1000 * 3600 * 24);
+    return diffDays > 30;
+  } catch {
+    return false;
+  }
+};
 
 interface HomeworkTrackerProps {
   currentGroupId: string;
@@ -68,6 +81,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
   // Filter state
   const [filterMode, setFilterMode] = useState<'all' | 'upcoming' | 'past'>('upcoming');
   const [subjectFilter, setSubjectFilter] = useState<string>('all');
+  const [isArchiveOpen, setIsArchiveOpen] = useState(false);
 
   // Reset subject filter when switching group so subjects from previous group don't filter out everything
   useEffect(() => {
@@ -407,20 +421,34 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
     setPreviewAttachment(att);
   };
 
-  // Filter items
+  // Separate active items from archived items (>30 days past due date)
   const todayISO = getSamaraISODate();
-  const filteredItems = useMemo(() => {
-    return items.filter(item => {
+
+  const { activeItems, archivedItems } = useMemo(() => {
+    const active: HomeworkItem[] = [];
+    const archived: HomeworkItem[] = [];
+    items.forEach(item => {
       // Group isolation: only show items belonging to currentGroupId
       if (item.groupId && item.groupId !== currentGroupId) {
-        return false;
+        return;
       }
 
       // Subject filter
       if (subjectFilter !== 'all' && item.subject !== subjectFilter) {
-        return false;
+        return;
       }
 
+      if (isHomeworkArchived(item.dueDate, todayISO)) {
+        archived.push(item);
+      } else {
+        active.push(item);
+      }
+    });
+    return { activeItems: active, archivedItems: archived };
+  }, [items, currentGroupId, subjectFilter, todayISO]);
+
+  const filteredItems = useMemo(() => {
+    return activeItems.filter(item => {
       // Date status filter
       if (filterMode === 'upcoming') {
         return item.dueDate >= todayISO;
@@ -430,7 +458,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       }
       return true;
     });
-  }, [items, filterMode, subjectFilter, todayISO, currentGroupId]);
+  }, [activeItems, filterMode, todayISO]);
 
   const getDueBadge = (dueDate: string) => {
     if (dueDate < todayISO) {
@@ -510,7 +538,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
           </div>
           <div className="flex flex-wrap items-center gap-2 mt-1">
             <p className="text-xs text-slate-400">
-              Задания и файлы для группы <span className="font-semibold text-slate-700 dark:text-slate-300">{groupName}</span>
+              Группа <span className="font-semibold text-slate-700 dark:text-slate-300">{groupName}</span>
             </p>
           </div>
         </div>
@@ -518,7 +546,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
         {canEdit && (
           <button
             onClick={openAddModal}
-            className="flex items-center justify-center gap-1.5 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md shadow-indigo-200 dark:shadow-none transition-all shrink-0"
+            className="flex items-center justify-center gap-1.5 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md shadow-indigo-200 dark:shadow-none transition-all shrink-0 cursor-pointer"
           >
             <Plus className="w-4 h-4" /> Добавить задание
           </button>
@@ -531,33 +559,33 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
         <div className="flex bg-slate-100 dark:bg-slate-800/80 p-1 rounded-2xl">
           <button
             onClick={() => setFilterMode('upcoming')}
-            className={`flex-1 py-1.5 px-3 text-xs font-bold rounded-xl transition-all ${
+            className={`flex-1 py-1.5 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
               filterMode === 'upcoming'
                 ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
                 : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
-            Актуальные ({items.filter(i => i.dueDate >= todayISO).length})
+            Актуальные ({activeItems.filter(i => i.dueDate >= todayISO).length})
           </button>
           <button
             onClick={() => setFilterMode('all')}
-            className={`flex-1 py-1.5 px-3 text-xs font-bold rounded-xl transition-all ${
+            className={`flex-1 py-1.5 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
               filterMode === 'all'
                 ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
                 : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
-            Все ({items.length})
+            Все ({activeItems.length})
           </button>
           <button
             onClick={() => setFilterMode('past')}
-            className={`flex-1 py-1.5 px-3 text-xs font-bold rounded-xl transition-all ${
+            className={`flex-1 py-1.5 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
               filterMode === 'past'
                 ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
                 : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
-            Прошедшие ({items.filter(i => i.dueDate < todayISO).length})
+            Прошедшие ({activeItems.filter(i => i.dueDate < todayISO).length})
           </button>
         </div>
 
@@ -567,7 +595,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
           <select
             value={subjectFilter}
             onChange={(e) => setSubjectFilter(e.target.value)}
-            className="w-full sm:w-auto px-3 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-700 dark:text-slate-200 focus:outline-none"
+            className="w-full sm:w-auto px-3 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
           >
             <option value="all">Все предметы</option>
             {availableSubjects.map(sub => (
@@ -585,9 +613,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
             {filterMode === 'upcoming' ? 'Все задания сданы! Нет горящих дедлайнов' : 'Заданий не найдено'}
           </h3>
           <p className="text-xs text-slate-400">
-            {canEdit 
-              ? 'Нажмите «Добавить задание», чтобы опубликовать новое ДЗ для одногруппников.'
-              : 'Староста пока не добавил новых домашних заданий в этот раздел.'}
+            {canEdit ? 'Добавьте первое задание.' : 'Заданий пока нет.'}
           </p>
         </div>
       ) : (
@@ -681,6 +707,84 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
         </div>
       )}
 
+      {/* Archive Section: Assignments older than 30 days */}
+      {archivedItems.length > 0 && (
+        <div className="mt-6 border-t border-slate-200/80 dark:border-slate-800 pt-4">
+          <button
+            type="button"
+            onClick={() => setIsArchiveOpen(prev => !prev)}
+            className="w-full flex items-center justify-between p-3.5 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/60 dark:hover:bg-slate-800 rounded-2xl border border-slate-200/70 dark:border-slate-700/60 transition-colors text-left cursor-pointer"
+          >
+            <div className="flex items-center gap-2">
+              <Archive className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                Архив заданий (прошлый месяц)
+              </span>
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                {archivedItems.length}
+              </span>
+            </div>
+            <ChevronDown
+              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
+                isArchiveOpen ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+
+          {isArchiveOpen && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 animate-in fade-in duration-200">
+              {archivedItems.map(item => (
+                <div
+                  key={item.id}
+                  className="bg-white dark:bg-slate-900 rounded-2xl p-3.5 border border-slate-200/80 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-2.5 opacity-85 hover:opacity-100 transition-opacity"
+                >
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 truncate max-w-[70%]">
+                        {item.subject}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                        Архив
+                      </span>
+                    </div>
+                    <h4 className="font-semibold text-xs text-slate-800 dark:text-slate-200 leading-snug line-clamp-2">
+                      {item.title}
+                    </h4>
+                    <div className="flex items-center gap-3 text-[10px] text-slate-400">
+                      <span>Срок: {item.dueDate ? item.dueDate.split('-').reverse().join('.') : '—'}</span>
+                      {item.attachments && item.attachments.length > 0 && (
+                        <span className="flex items-center gap-1 text-indigo-500 dark:text-indigo-400">
+                          <Paperclip className="w-2.5 h-2.5" /> {item.attachments.length}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {canEdit && (
+                    <div className="flex justify-end items-center gap-2 pt-1 border-t border-slate-100 dark:border-slate-800/60">
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(item)}
+                        className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
+                      >
+                        Изменить
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteHomework(item.id)}
+                        className="text-[11px] font-semibold text-red-500 hover:text-red-700 dark:hover:text-red-400 cursor-pointer"
+                      >
+                        Удалить
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Add / Edit Homework Modal (Mobile Bottom Sheet Pattern) */}
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -723,7 +827,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
                 ) : (
                   <input
                     type="text"
-                    placeholder="Введите название предмета (напр. Высшая математика)"
+                    placeholder="Название предмета"
                     value={formSubject}
                     onChange={(e) => setFormSubject(e.target.value)}
                     className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none text-slate-900 dark:text-white"
@@ -734,11 +838,11 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
 
               <div>
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                  Тема задания / Краткий заголовок
+                  Тема задания
                 </label>
                 <input
                   type="text"
-                  placeholder="напр. Лабораторная работа №1 (Расчет сосудов)"
+                  placeholder="Тема или номер задания"
                   value={formTitle}
                   onChange={(e) => setFormTitle(e.target.value)}
                   className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none text-slate-900 dark:text-white"
@@ -748,11 +852,11 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
 
               <div>
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                  Подробное описание задания
+                  Описание
                 </label>
                 <textarea
                   rows={3}
-                  placeholder="Опишите, что нужно сделать, какие номера решить, требования к оформлению..."
+                  placeholder="Описание или требования..."
                   value={formDescription}
                   onChange={(e) => setFormDescription(e.target.value)}
                   className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none text-slate-900 dark:text-white resize-none"
@@ -790,7 +894,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
               {/* Attachments list in form */}
               <div className="space-y-2 pt-2 border-t border-slate-200/80 dark:border-slate-800">
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
-                  Прикрепления (файлы и ссылки)
+                  Файлы и ссылки
                 </label>
 
                 {formAttachments.length > 0 && (
@@ -821,7 +925,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
                 <div className="flex gap-2">
                   <label className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer transition-colors min-h-[44px]">
                     <Paperclip className="w-4 h-4 text-indigo-500" />
-                    <span>{isUploading ? 'Загрузка...' : 'Прикрепить файл (PDF, docx, фото)'}</span>
+                    <span>{isUploading ? 'Загрузка...' : 'Прикрепить файл'}</span>
                     <input
                       type="file"
                       className="hidden"
@@ -835,7 +939,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
                 <div className="flex flex-col sm:flex-row gap-1.5 pt-1">
                   <input
                     type="text"
-                    placeholder="Название (напр. Яндекс.Диск)"
+                    placeholder="Название ссылки"
                     value={linkNameInput}
                     onChange={(e) => setLinkNameInput(e.target.value)}
                     className="sm:w-1/3 px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none text-slate-900 dark:text-white"
@@ -843,7 +947,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
                   <div className="flex flex-1 gap-1">
                     <input
                       type="text"
-                      placeholder="Ссылка (URL) на материалы..."
+                      placeholder="https://..."
                       value={linkInput}
                       onChange={(e) => setLinkInput(e.target.value)}
                       className="flex-1 px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none text-slate-900 dark:text-white"

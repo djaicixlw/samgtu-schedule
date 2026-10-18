@@ -3,11 +3,13 @@ import { Lesson } from '../types';
 import { MapPin, User, Users, Info, Edit3, ExternalLink, Link2, Paperclip } from 'lucide-react';
 import EditLessonModal, { TeacherAssignmentScope } from './EditLessonModal';
 import { openAttachmentSafe } from '../utils/upload';
+import { isPhysicalEducationLesson } from '../utils/scheduleLoader';
 
 interface ClassCardProps {
   lesson: Lesson;
   dayName?: string;
   userRole?: string;
+  isCurrent?: boolean;
   onUpdateLesson?: (lessonId: string, updated: Partial<Lesson>, applyScope?: TeacherAssignmentScope, lessonDayName?: string) => void;
   onResetLesson?: (lessonId: string) => void;
 }
@@ -16,11 +18,17 @@ const ClassCard: React.FC<ClassCardProps> = ({
   lesson, 
   dayName,
   userRole = 'student',
+  isCurrent = false,
   onUpdateLesson,
   onResetLesson,
 }) => {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const canEdit = userRole.toLowerCase() === 'admin' || userRole.toLowerCase() === 'starosta';
+
+  // Physical Education (физ-ра) is hidden everywhere per specification
+  if (isPhysicalEducationLesson(lesson)) {
+    return null;
+  }
 
   // Determine badge color based on lesson type
   const getTypeColor = (type: string) => {
@@ -42,20 +50,37 @@ const ClassCard: React.FC<ClassCardProps> = ({
       <div className={`w-full rounded-2xl p-4 transition-all duration-200 h-full flex flex-col justify-between ${
         isCancelled
           ? 'bg-slate-100/70 dark:bg-slate-900/40 border border-red-200 dark:border-red-900/30 opacity-75 shadow-xs'
-          : 'bg-white dark:bg-slate-900 border border-slate-300/80 dark:border-slate-800/90 shadow-[0_1px_3px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.03)] hover:shadow-md hover:border-slate-400/80 dark:hover:border-slate-700'
+          : isCurrent
+            ? 'bg-white dark:bg-slate-900 border-2 border-indigo-500 ring-2 ring-indigo-500/20 shadow-md'
+            : 'bg-white dark:bg-slate-900 border border-slate-300/80 dark:border-slate-800/90 shadow-[0_1px_3px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.03)] hover:shadow-md hover:border-slate-400/80 dark:hover:border-slate-700'
       }`}>
         <div>
           <div className="flex justify-between items-start mb-2.5">
             <div className="flex flex-col">
-              <span className={`text-base font-bold leading-tight ${isCancelled ? 'text-slate-400 line-through' : 'text-slate-900 dark:text-white'}`}>
-                {lesson.timeStart}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className={`text-base font-bold leading-tight ${isCancelled ? 'text-slate-400 line-through' : 'text-slate-900 dark:text-white'}`}>
+                  {lesson.timeStart}
+                </span>
+                {lesson.hours === 4 && (
+                  <span 
+                    className="px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/60 shrink-0"
+                    title="Сдвоенная пара (4 часа)"
+                  >
+                    4 ч
+                  </span>
+                )}
+              </div>
               <span className="text-[11px] text-slate-600 dark:text-slate-400 font-semibold">
                 - {lesson.timeEnd}
               </span>
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
+              {isCurrent && !isCancelled && (
+                <span className="px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wide bg-indigo-600 text-white shadow-xs animate-pulse">
+                  Сейчас
+                </span>
+              )}
               {isCancelled && (
                 <span className="px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wide bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800">
                   Отменена

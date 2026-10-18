@@ -8,7 +8,7 @@ interface ConsentModalProps {
 }
 
 export const CONSENT_TEXT_V1 =
-  'Я даю согласие оператору сервиса SamGTU Schedule (связь — через форму «Связаться» в приложении) на обработку: необратимого кода моего Telegram-аккаунта, присвоенного старостой номера в журнале группы и отметок моей посещаемости — чтобы показывать мне мои пропуски. Моя фамилия и имя на сервер сервиса не передаются, они у старосты. Срок: до конца семестра или до отзыва. Отозвать согласие и удалить данные можно в любой момент кнопкой «Удалить мои данные» в профиле, удаление выполняется сразу. Данные обрабатываются с использованием облачного сервиса Cloudflare, серверы которого могут находиться в разных странах. Мне исполнилось 18 лет либо у меня есть согласие законного представителя.';
+  'Сервис позволяет удобно просматривать свои пропуски занятий. Ваша фамилия и имя хранятся только на устройстве старосты и не передаются на сервер. Сервер использует только обезличенный номер в журнале и отметки посещаемости. Отозвать согласие и удалить данные можно в любой момент кнопкой «Удалить мои данные» в профиле.';
 
 const ConsentModal: React.FC<ConsentModalProps> = ({ isOpen, onClose, onConsent }) => {
   const [agreed, setAgreed] = useState(false);
@@ -31,10 +31,10 @@ const ConsentModal: React.FC<ConsentModalProps> = ({ isOpen, onClose, onConsent 
             </div>
             <div>
               <h3 className="font-bold text-base text-slate-900 dark:text-white leading-tight">
-                Согласие на обработку данных
+                Просмотр пропусков
               </h3>
               <p className="text-xs text-slate-400">
-                Учет посещаемости • Личные данные защищены
+                Личные данные защищены
               </p>
             </div>
           </div>
@@ -52,7 +52,7 @@ const ConsentModal: React.FC<ConsentModalProps> = ({ isOpen, onClose, onConsent 
           <div className="bg-indigo-50/60 dark:bg-indigo-950/30 p-3.5 rounded-2xl border border-indigo-100 dark:border-indigo-900/50 flex items-start gap-2.5">
             <span className="text-base select-none shrink-0">🔒</span>
             <p className="text-xs text-indigo-900 dark:text-indigo-200 font-medium leading-relaxed">
-              Ваши имя и фамилия <strong className="font-bold">не передаются на сервер</strong>. Сервер хранит только обезличенный номер в журнале (слот) и отметки пар.
+              Ваши имя и фамилия <strong className="font-bold">не передаются на сервер</strong>. Сервер хранит только номер в журнале и отметки занятий.
             </p>
           </div>
 
@@ -74,7 +74,7 @@ const ConsentModal: React.FC<ConsentModalProps> = ({ isOpen, onClose, onConsent 
               {agreed && <Check className="w-3.5 h-3.5 text-white absolute pointer-events-none stroke-[3]" />}
             </div>
             <span className="text-xs font-semibold text-slate-900 dark:text-slate-100 leading-tight pt-0.5">
-              Согласен с условиями обработки данных
+              Понятно, согласен с условиями
             </span>
           </label>
         </div>

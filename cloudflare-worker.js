@@ -100,6 +100,7 @@ export function sanitizeScheduleOverride(ov) {
   if (ov.teacher !== undefined) res.teacher = String(ov.teacher).slice(0, 150);
   if (ov.isCancelled !== undefined) res.isCancelled = Boolean(ov.isCancelled);
   if (ov.isHidden !== undefined) res.isHidden = Boolean(ov.isHidden);
+  if (ov.hours !== undefined) res.hours = Number(ov.hours);
   if (ov.note !== undefined) res.note = String(ov.note).slice(0, 500);
   if (Array.isArray(ov.attachments)) {
     res.attachments = ov.attachments.slice(0, 10).map(att => {
@@ -311,7 +312,9 @@ export const ALLOWED_ORIGINS = [
   'https://djaicixlw.github.io',
   'https://aleblll.github.io',
   'http://localhost:5173',
-  'http://localhost:4173'
+  'http://localhost:4173',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:4173'
 ];
 
 export function getCorsHeaders(request, env, pathname = '') {
@@ -808,20 +811,44 @@ export default {
           const rawCode = code.trim().toUpperCase();
           const cleanCode = normalizeAccessCode(code);
           const strippedCode = cleanCode.replace(/-/g, '');
-          const candidatesSet = new Set([
-            cleanCode,
-            strippedCode,
-            rawCode,
-            rawCode.replace(/[^0-9A-Z]/g, '')
-          ]);
-          if (rawCode.replace(/[^0-9A-Z]/g, '').length === 16) {
-            const rawStripped = rawCode.replace(/[^0-9A-Z]/g, '');
-            candidatesSet.add(`${rawStripped.slice(0, 4)}-${rawStripped.slice(4, 8)}-${rawStripped.slice(8, 12)}-${rawStripped.slice(12, 16)}`);
+
+          // Crockford Base32 visual confusion tolerance (5 <-> S, 0 <-> O, 1 <-> I)
+          const baseVariants = new Set([rawCode, cleanCode, strippedCode]);
+          if (rawCode.includes('5')) baseVariants.add(rawCode.replace(/5/g, 'S'));
+          if (rawCode.includes('S')) baseVariants.add(rawCode.replace(/S/g, '5'));
+          if (rawCode.includes('0')) baseVariants.add(rawCode.replace(/0/g, 'O'));
+          if (rawCode.includes('O')) baseVariants.add(rawCode.replace(/O/g, '0'));
+          if (rawCode.includes('1')) baseVariants.add(rawCode.replace(/1/g, 'I'));
+          if (rawCode.includes('I')) baseVariants.add(rawCode.replace(/I/g, '1'));
+
+          baseVariants.add(
+            rawCode
+              .replace(/5/g, 'S')
+              .replace(/O/g, '0')
+              .replace(/I/g, '1')
+          );
+          baseVariants.add(
+            rawCode
+              .replace(/S/g, '5')
+              .replace(/0/g, 'O')
+              .replace(/I/g, '1')
+          );
+
+          const candidatesSet = new Set();
+          for (const variant of baseVariants) {
+            candidatesSet.add(variant);
+            const strippedVar = variant.replace(/[^0-9A-Z]/g, '');
+            candidatesSet.add(strippedVar);
+            if (strippedVar.length === 16) {
+              const formattedVar = `${strippedVar.slice(0, 4)}-${strippedVar.slice(4, 8)}-${strippedVar.slice(8, 12)}-${strippedVar.slice(12, 16)}`;
+              candidatesSet.add(formattedVar);
+            }
           }
           const candidates = Array.from(candidatesSet);
 
           const isGroupClaim = Boolean(gid && typeof gid === 'string' && gid.trim() && gid.toLowerCase() !== 'admin');
-          const rlKey = isGroupClaim ? `rl:claim:${gid.trim().toLowerCase()}` : `rl:claim:admin:${userBlindId}`;
+          const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
+          const rlKey = isGroupClaim ? `rl:claim:${gid.trim().toLowerCase()}:${clientIp}` : `rl:claim:admin:${userBlindId}`;
 
           const attemptsRaw = await env.APP_DATA.get(rlKey);
           const attempts = attemptsRaw ? parseInt(attemptsRaw, 10) : 0;
@@ -1517,6 +1544,29 @@ export default {
                   await env.APP_DATA.put("s:" + userData.gid, JSON.stringify(slotsData), { expirationTtl: 17280000 });
                 }
               } catch {}
+            }
+
+            const targetMonths = new Set();
+            if (url.searchParams.get("month")) {
+              targetMonths.add(url.searchParams.get("month"));
+            }
+            const now = new Date(Date.now() + 4 * 60 * 60 * 1000);
+            const y = now.getUTCFullYear();
+            for (let m = 1; m <= 12; m++) {
+              targetMonths.add(`${y}-${String(m).padStart(2, '0')}`);
+              targetMonths.add(`${y - 1}-${String(m).padStart(2, '0')}`);
+            }
+            for (const m of targetMonths) {
+              const attRaw = await env.APP_DATA.get(`a:${userData.gid}:${m}`);
+              if (attRaw) {
+                try {
+                  const attData = JSON.parse(attRaw);
+                  if (attData.slots && attData.slots[userData.slot]) {
+                    delete attData.slots[userData.slot];
+                    await env.APP_DATA.put(`a:${userData.gid}:${m}`, JSON.stringify(attData));
+                  }
+                } catch {}
+              }
             }
           }
 

@@ -58,6 +58,15 @@ export function sanitizeUsefulItem(raw: any, defaultGroupId: string): UsefulItem
     }));
   }
 
+  let submittedBy: { id?: number; username?: string; name?: string } | undefined = undefined;
+  if (raw.submittedBy && typeof raw.submittedBy === 'object') {
+    submittedBy = {
+      id: typeof raw.submittedBy.id === 'number' ? raw.submittedBy.id : undefined,
+      username: typeof raw.submittedBy.username === 'string' ? String(raw.submittedBy.username).slice(0, 100) : undefined,
+      name: typeof raw.submittedBy.name === 'string' ? String(raw.submittedBy.name).slice(0, 100) : undefined
+    };
+  }
+
   return {
     id,
     groupId,
@@ -70,8 +79,60 @@ export function sanitizeUsefulItem(raw: any, defaultGroupId: string): UsefulItem
     attachments,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : undefined,
-    createdBy: typeof raw.createdBy === 'string' ? raw.createdBy : undefined
+    createdBy: typeof raw.createdBy === 'string' ? raw.createdBy : undefined,
+    isPending: raw.isPending ? true : undefined,
+    submittedBy
   };
+}
+
+export function checkUsefulSpamLimit(): { allowed: boolean; remaining: number } {
+  try {
+    const raw = localStorage.getItem('submitted_useful_count');
+    if (!raw) return { allowed: true, remaining: 3 };
+    const now = Date.now();
+    const oneHour = 60 * 60 * 1000;
+
+    if (!isNaN(Number(raw)) && !raw.startsWith('[')) {
+      const count = Number(raw);
+      if (count >= 3) return { allowed: false, remaining: 0 };
+      return { allowed: true, remaining: 3 - count };
+    }
+
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const valid = parsed.filter((t: any) => typeof t === 'number' && (now - t) < oneHour);
+      if (valid.length >= 3) return { allowed: false, remaining: 0 };
+      return { allowed: true, remaining: 3 - valid.length };
+    }
+    return { allowed: true, remaining: 3 };
+  } catch {
+    return { allowed: true, remaining: 3 };
+  }
+}
+
+export function recordUsefulSubmission(): void {
+  try {
+    const raw = localStorage.getItem('submitted_useful_count');
+    const now = Date.now();
+    const oneHour = 60 * 60 * 1000;
+    let timestamps: number[] = [];
+
+    if (raw) {
+      try {
+        if (!isNaN(Number(raw)) && !raw.startsWith('[')) {
+          const count = Number(raw);
+          for (let i = 0; i < count; i++) timestamps.push(now - 1000);
+        } else {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            timestamps = parsed.filter((t: any) => typeof t === 'number' && (now - t) < oneHour);
+          }
+        }
+      } catch {}
+    }
+    timestamps.push(now);
+    localStorage.setItem('submitted_useful_count', JSON.stringify(timestamps));
+  } catch {}
 }
 
 export function getLocalUsefulItems(groupId: string): UsefulItem[] {

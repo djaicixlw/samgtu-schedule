@@ -41,7 +41,7 @@ export const StarostaOnboardingModal: React.FC<StarostaOnboardingModalProps> = (
             Вы вошли как староста группы {groupName}!
           </h3>
           <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed pt-1">
-            Давайте добавим список одногруппников, чтобы отмечать посещаемость на занятиях и формировать ведомости.
+            Введите код доступа группы, чтобы отмечать посещаемость и редактировать расписание.
           </p>
         </div>
 

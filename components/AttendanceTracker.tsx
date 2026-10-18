@@ -6,6 +6,7 @@ import { Lesson, Student, GroupConfig } from '../types';
 import { toast } from 'sonner';
 import { getLocalStudents, syncAttendanceRecordsToV3 } from '../utils/attendanceStorage';
 import { AttendanceMatrix } from './AttendanceMatrix';
+import { isPhysicalEducationLesson, isPhysicalEducationLessonId } from '../utils/scheduleLoader';
 
 interface AttendanceTrackerProps {
   isAuthenticated: boolean;
@@ -70,7 +71,13 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     setStudents(loadInitialStudents(currentGroupId));
   }, [currentGroupId, refreshTrigger]);
 
-  const isRosterEmpty = students.length === 0 || students.every(s => /^Студент\s+\d+$/i.test(s.name.trim()));
+  const activeStudents = useMemo(() => {
+    return students
+      .filter(s => !s.isArchived)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [students]);
+
+  const isRosterEmpty = activeStudents.length === 0 || activeStudents.every(s => /^Студент\s+\d+$/i.test(s.name.trim()));
 
   // Initial and reactive background sync with V3 Blind Server for starosta/admin
   useEffect(() => {
@@ -121,7 +128,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
         ...override,
         isHidden: !!override.isHidden
       };
-    }).filter(l => !l.isHidden);
+    }).filter(l => !l.isHidden && !isPhysicalEducationLesson(l));
 
     // Include dynamically added custom lessons for this day/week
     const customLessons: Lesson[] = Object.entries(scheduleOverrides)
@@ -129,7 +136,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
         const ov = rawOv as Partial<Lesson> & { dayName?: string };
         const isCustom = id.includes('_extra_') || id.includes('_custom_');
         const matchesDay = ov.dayName === dayName || id.startsWith(`${dayName.toLowerCase()}_w${week}_`);
-        return isCustom && matchesDay && !ov.isHidden;
+        return isCustom && matchesDay && !ov.isHidden && !isPhysicalEducationLesson(ov);
       })
       .map(([id, rawOv]) => {
         const ov = rawOv as Partial<Lesson> & { dayName?: string };
@@ -172,7 +179,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       newExcusedIds.push(studentId);
     }
 
-    markAttendance(selectedDate, selectedLesson.id, newAbsentIds, newExcusedIds, record.isCancelled);
+    markAttendance(selectedDate, selectedLesson.id, newAbsentIds, newExcusedIds, record.isCancelled, selectedLesson.hours || record.hours || 2);
     syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
   };
 
@@ -189,6 +196,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       absentStudentIds: number[];
       excusedStudentIds?: number[];
       isCancelled?: boolean;
+      hours?: number;
     }> = [];
 
     lessons.forEach(lesson => {
@@ -210,7 +218,8 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
         lessonId: lesson.id,
         absentStudentIds: newAbsentIds,
         excusedStudentIds: newExcusedIds,
-        isCancelled: record.isCancelled
+        isCancelled: record.isCancelled,
+        hours: lesson.hours || record.hours || 2
       });
     });
 
@@ -255,7 +264,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       
       toast.info('Формирование официального Word отчета...');
       const { exportAttendanceToWord } = await import('../utils/exportWord');
-      const result = await exportAttendanceToWord(records, students, groupConfig, faculty);
+      const result = await exportAttendanceToWord(records, activeStudents, groupConfig, faculty);
       if (result?.sentToTelegramChat) {
         toast.success('Ведомость Word отправлена вам в диалог с ботом и сохраняется на устройство!');
       } else if (result?.downloadUrl) {
@@ -286,7 +295,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   };
 
   const handleCopyTextSummary = async () => {
-    if (students.length === 0) {
+    if (activeStudents.length === 0) {
       toast.error('Список студентов пуст');
       return;
     }
@@ -319,7 +328,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
 
   // Pre-calculate statistics for the summary table
   const reportData = React.useMemo(() => {
-    return students.map(student => {
+    return activeStudents.map(student => {
       const absences = [0, 0, 0, 0];
       const excused = [0, 0, 0, 0];
       let totalAllTimeAbs = 0;
@@ -327,18 +336,20 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       
       records.forEach(record => {
         if (record.isCancelled) return;
+        if (isPhysicalEducationLessonId(record.lessonId, currentGroupId)) return;
 
         const isExcused = (record.excusedStudentIds || []).includes(student.id);
         const isAbsent = !isExcused && record.absentStudentIds.includes(student.id);
+        const lessonHours = (record as any).hours || 2;
 
-        if (isExcused) totalAllTimeExc += 2;
-        else if (isAbsent) totalAllTimeAbs += 2;
+        if (isExcused) totalAllTimeExc += lessonHours;
+        else if (isAbsent) totalAllTimeAbs += lessonHours;
 
         if (isAbsent || isExcused) {
           BLOCKS.forEach((block, index) => {
             if (record.date >= block.start && record.date <= block.end) {
-              if (isExcused) excused[index] += 2;
-              else if (isAbsent) absences[index] += 2;
+              if (isExcused) excused[index] += lessonHours;
+              else if (isAbsent) absences[index] += lessonHours;
             }
           });
         }
@@ -346,7 +357,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       
       return { ...student, absences, excused, totalAllTimeAbs, totalAllTimeExc };
     });
-  }, [records, activeTab, currentGroupId, students]);
+  }, [records, activeTab, currentGroupId, activeStudents]);
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-16">
@@ -543,7 +554,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
                     )}
 
                     <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
-                      {students.map((student, idx) => {
+                      {activeStudents.map((student, idx) => {
                         const record = getAttendance(selectedDate, selectedLesson.id);
                         const isExcused = (record.excusedStudentIds || []).includes(student.id);
                         const isAbsent = !isExcused && record.absentStudentIds.includes(student.id);

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   Pin, Search, Plus, Trash2, Edit3, X, Check,
   ExternalLink, FileText, Paperclip, Bookmark,
-  BookOpen, Filter, Download, ArrowUpRight
+  BookOpen, Filter, Download, ArrowUpRight, Send
 } from 'lucide-react';
 import { UsefulItem, UsefulLink, HomeworkAttachment } from '../types';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, getGroupTag } from '../constants';
@@ -14,7 +14,9 @@ import {
   saveLocalUsefulItems,
   recordDeletedUsefulItem,
   fetchGroupUsefulData,
-  pushGroupUsefulData
+  pushGroupUsefulData,
+  checkUsefulSpamLimit,
+  recordUsefulSubmission
 } from '../utils/usefulStorage';
 
 export interface UsefulTrackerProps {
@@ -23,8 +25,8 @@ export interface UsefulTrackerProps {
   refreshTrigger?: number;
 }
 
-const PRESET_TAG_CHIPS = ['#все', '#закрепленные', '#лабы', '#сессия', '#контакты'];
-const PRESET_FORM_TAGS = ['лабы', 'сессия', 'контакты', 'материалы', 'важное', 'ссылки'];
+const PRESET_TAG_CHIPS = ['#все', '#закрепленные', '#лабы', '#сессия', '#курсач', '#контакты'];
+const PRESET_FORM_TAGS = ['лабы', 'сессия', 'курсач', 'контакты'];
 
 export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   currentGroupId,
@@ -310,7 +312,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     setFormAttachments(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Save / Update Note
+  // Save / Update Note (or student submission)
   const handleSaveNote = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -322,8 +324,27 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       return;
     }
 
+    const isStudentSuggest = !canEdit;
+
+    // Spam limit: max 3 suggestions per hour for students
+    if (isStudentSuggest) {
+      const { allowed } = checkUsefulSpamLimit();
+      if (!allowed) {
+        toast.error('Лимит: не более 3 предложений в час. Пожалуйста, подождите.');
+        return;
+      }
+    }
+
     const id = editingItem ? editingItem.id : `useful_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const nowIso = new Date().toISOString();
+
+    const tg = typeof window !== 'undefined' ? (window as any).Telegram?.WebApp : null;
+    const tgUser = tg?.initDataUnsafe?.user;
+    const submittedBy = isStudentSuggest && tgUser ? {
+      id: typeof tgUser.id === 'number' ? tgUser.id : undefined,
+      username: tgUser.username ? String(tgUser.username) : undefined,
+      name: [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ') || undefined
+    } : (editingItem ? editingItem.submittedBy : undefined);
 
     const noteToSave: UsefulItem = {
       id,
@@ -332,11 +353,13 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       text: textTrimmed,
       subject: formSubject.trim() ? formSubject.trim() : undefined,
       tags: formTags,
-      isPinned: formIsPinned,
+      isPinned: canEdit ? formIsPinned : false,
       links: formLinks,
       attachments: formAttachments,
       createdAt: editingItem ? editingItem.createdAt : nowIso,
-      updatedAt: editingItem ? nowIso : undefined
+      updatedAt: editingItem ? nowIso : undefined,
+      isPending: isStudentSuggest ? true : (editingItem ? editingItem.isPending : undefined),
+      submittedBy
     };
 
     let updatedList: UsefulItem[];
@@ -357,13 +380,46 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     setItems(sorted);
     saveLocalUsefulItems(currentGroupId, sorted);
     setIsModalOpen(false);
-    toast.success(editingItem ? 'Заметка обновлена' : 'Заметка сохранена');
+
+    if (isStudentSuggest) {
+      recordUsefulSubmission();
+      toast.success('Материал предложен! Староста проверит и опубликует его.');
+    } else {
+      toast.success(editingItem ? 'Заметка обновлена' : 'Заметка сохранена');
+    }
 
     pushGroupUsefulData(currentGroupId, sorted).then(ok => {
       if (!ok) {
         console.warn('Failed to push useful items to cloud');
       }
     });
+  };
+
+  // Moderation: Approve pending student suggestion
+  const handleApprovePending = async (id: string) => {
+    if (!canEdit) return;
+    const updated = items.map(it => {
+      if (it.id === id) {
+        const { isPending, ...rest } = it;
+        return { ...rest, isPending: false, updatedAt: new Date().toISOString() };
+      }
+      return it;
+    });
+    setItems(updated);
+    saveLocalUsefulItems(currentGroupId, updated);
+    toast.success('Материал одобрен и опубликован для группы!');
+    pushGroupUsefulData(currentGroupId, updated);
+  };
+
+  // Moderation: Reject pending student suggestion
+  const handleRejectPending = async (id: string) => {
+    if (!canEdit) return;
+    recordDeletedUsefulItem(currentGroupId, id);
+    const updated = items.filter(it => it.id !== id);
+    setItems(updated);
+    saveLocalUsefulItems(currentGroupId, updated);
+    toast.info('Предложение отклонено');
+    pushGroupUsefulData(currentGroupId, updated);
   };
 
   // Delete note
@@ -422,9 +478,23 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     }
   };
 
+  const tgUser = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp?.initDataUnsafe?.user) || null;
+  const currentUserId = tgUser?.id;
+
+  const pendingItems = useMemo(() => items.filter(it => it.isPending), [items]);
+
   // Filtered and sorted items
   const filteredItems = useMemo(() => {
     return items.filter(item => {
+      // Pending moderation filtering:
+      // Starosta sees pending items in the dedicated moderation block, so hide from public feed.
+      // Students only see their own pending proposal with a status badge; other students' pending notes are hidden.
+      if (item.isPending) {
+        if (canEdit) return false;
+        const isOwn = Boolean(currentUserId && item.submittedBy?.id === currentUserId);
+        if (!isOwn) return false;
+      }
+
       // 1. Tag filter
       if (activeTagFilter === '#закрепленные') {
         if (!item.isPinned) return false;
@@ -457,7 +527,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
 
       return true;
     });
-  }, [items, activeTagFilter, subjectFilter, searchQuery]);
+  }, [items, activeTagFilter, subjectFilter, searchQuery, canEdit, currentUserId]);
 
   return (
     <div className="space-y-4 w-full max-w-full text-left">
@@ -466,19 +536,26 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
         <div>
           <div className="flex items-center gap-2">
             <Bookmark className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-            <h2 className="text-base font-bold text-slate-900 dark:text-white">Полезные материалы и контакты</h2>
+            <h2 className="text-base font-bold text-slate-900 dark:text-white">Полезное</h2>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Методички, ссылки и заметки группы <span className="font-semibold text-slate-700 dark:text-slate-300">{groupName}</span>
+            Материалы группы <span className="font-semibold text-slate-700 dark:text-slate-300">{groupName}</span>
           </p>
         </div>
 
-        {canEdit && (
+        {canEdit ? (
           <button
             onClick={openAddModal}
             className="flex items-center justify-center gap-1.5 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md shadow-indigo-200 dark:shadow-none transition-all shrink-0 cursor-pointer"
           >
             <Plus className="w-4 h-4" /> Добавить заметку
+          </button>
+        ) : (
+          <button
+            onClick={openAddModal}
+            className="flex items-center justify-center gap-1.5 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md shadow-indigo-200 dark:shadow-none transition-all shrink-0 cursor-pointer"
+          >
+            <Send className="w-4 h-4" /> Предложить материал / ссылку
           </button>
         )}
       </div>
@@ -541,6 +618,103 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
         </div>
       </div>
 
+      {/* Moderation Section for Starosta & Admin */}
+      {canEdit && pendingItems.length > 0 && (
+        <div className="bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-800/60 rounded-3xl p-4 sm:p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse" />
+              <h3 className="text-xs sm:text-sm font-bold text-amber-950 dark:text-amber-200">
+                Предложенные материалы ({pendingItems.length})
+              </h3>
+            </div>
+            <span className="text-[11px] text-amber-700/80 dark:text-amber-400 font-medium">
+              Ожидают проверки
+            </span>
+          </div>
+
+          <div className="space-y-2.5">
+            {pendingItems.map(item => (
+              <div
+                key={item.id}
+                className="bg-white dark:bg-slate-900 rounded-2xl p-3.5 border border-amber-200/80 dark:border-slate-800 shadow-xs space-y-2 text-left"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="space-y-0.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {item.subject && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300">
+                          {item.subject}
+                        </span>
+                      )}
+                      <span className="text-xs font-bold text-slate-900 dark:text-white">
+                        {item.title}
+                      </span>
+                    </div>
+                  </div>
+                  {item.submittedBy && (
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 shrink-0">
+                      от {item.submittedBy.username ? `@${item.submittedBy.username}` : (item.submittedBy.name || `ID: ${item.submittedBy.id}`)}
+                    </span>
+                  )}
+                </div>
+
+                {item.text && (
+                  <p className="text-xs text-slate-600 dark:text-slate-300 whitespace-pre-wrap leading-relaxed line-clamp-3">
+                    {item.text}
+                  </p>
+                )}
+
+                {/* Links & Attachments preview */}
+                {((item.links && item.links.length > 0) || (item.attachments && item.attachments.length > 0)) && (
+                  <div className="flex flex-wrap gap-1.5 pt-1 text-[11px]">
+                    {(item.links || []).map((l, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => handleOpenLink(l.url)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span className="truncate max-w-[150px]">{l.title || l.url}</span>
+                      </button>
+                    ))}
+                    {(item.attachments || []).map((att, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => handleOpenAttachment(att)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer"
+                      >
+                        <Paperclip className="w-3 h-3 text-indigo-500" />
+                        <span className="truncate max-w-[150px]">{att.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => handleRejectPending(item.id)}
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-xl transition-colors cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" /> Отклонить
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApprovePending(item.id)}
+                    className="flex items-center gap-1 px-3.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-colors shadow-xs cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" /> Одобрить
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Note Feed */}
       {filteredItems.length === 0 ? (
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-8 text-center space-y-3">
@@ -549,11 +723,11 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
           </div>
           <div className="space-y-1">
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-              {items.length === 0 ? 'Заметок пока нет' : 'Ничего не найдено'}
+              {items.length === 0 ? 'Материалов пока нет' : 'Ничего не найдено'}
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
               {items.length === 0
-                ? 'Здесь староста может сохранять полезные методички, ссылки на диски, контакты преподавателей и материалы к сессии'
+                ? 'Полезные ссылки, файлы и материалы группы'
                 : 'Попробуйте изменить поисковый запрос или сбросить фильтры'}
             </p>
           </div>
@@ -568,14 +742,22 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
             >
               Сбросить фильтры
             </button>
-          ) : canEdit ? (
+          ) : (
             <button
               onClick={openAddModal}
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs transition-all cursor-pointer"
             >
-              <Plus className="w-4 h-4" /> Добавить первую заметку
+              {canEdit ? (
+                <>
+                  <Plus className="w-4 h-4" /> Добавить заметку
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4" /> Предложить материал
+                </>
+              )}
             </button>
-          ) : null}
+          )}
         </div>
       ) : (
         <div className="space-y-3">
@@ -594,6 +776,11 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                   {item.isPinned && (
                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300/80 dark:border-amber-800/80">
                       <Pin className="w-3 h-3 fill-current" /> Закреплено
+                    </span>
+                  )}
+                  {item.isPending && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300/80 dark:border-amber-800/80">
+                      На проверке старостой
                     </span>
                   )}
                   {item.subject && (
@@ -712,7 +899,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
             {/* Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                {editingItem ? 'Редактирование заметки' : 'Новая заметка'}
+                {editingItem ? 'Редактирование заметки' : canEdit ? 'Новая заметка' : 'Предложить материал / ссылку'}
               </h3>
               <button
                 onClick={() => setIsModalOpen(false)}
@@ -738,7 +925,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                   maxLength={100}
                   value={formTitle}
                   onChange={e => setFormTitle(e.target.value)}
-                  placeholder="Например: Методичка по физике или Чат группы"
+                  placeholder="Заголовок"
                   className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                 />
               </div>
@@ -757,7 +944,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                   maxLength={2000}
                   value={formText}
                   onChange={e => setFormText(e.target.value)}
-                  placeholder="Пояснения, требования к сдаче лаб, расписание консультаций..."
+                  placeholder="Текст заметки или пояснения..."
                   className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 resize-none leading-relaxed"
                 />
               </div>
@@ -765,7 +952,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
               {/* Subject Selection */}
               <div>
                 <label htmlFor="useful-subject" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Привязка к предмету (необязательно)
+                  Предмет
                 </label>
                 <select
                   id="useful-subject"
@@ -773,7 +960,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                   onChange={e => setFormSubject(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30 cursor-pointer"
                 >
-                  <option value="">Без привязки к предмету</option>
+                  <option value="">Без предмета</option>
                   {availableSubjects.map(s => (
                     <option key={s} value={s}>{s}</option>
                   ))}
@@ -817,7 +1004,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                         handleAddCustomTag();
                       }
                     }}
-                    placeholder="Свой тег..."
+                    placeholder="Свой тег"
                     className="flex-1 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                   />
                   <button
@@ -862,7 +1049,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                       type="text"
                       value={linkTitleInput}
                       onChange={e => setLinkTitleInput(e.target.value)}
-                      placeholder="Название (напр. Яндекс.Диск)"
+                      placeholder="Название ссылки"
                       className="sm:w-1/3 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                     />
                     <div className="flex-1 flex gap-2">
@@ -910,7 +1097,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
               {/* Attachments */}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  Вложения (файлы / фото до 20 МБ, максимум 10)
+                  Вложения (до 10 файлов)
                 </label>
                 <div className="flex items-center gap-2">
                   <label className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
@@ -955,19 +1142,21 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                 )}
               </div>
 
-              {/* Pin Checkbox */}
-              <div className="flex items-center gap-2 pt-1">
-                <input
-                  id="useful-pinned"
-                  type="checkbox"
-                  checked={formIsPinned}
-                  onChange={e => setFormIsPinned(e.target.checked)}
-                  className="w-4 h-4 rounded-md text-indigo-600 focus:ring-indigo-500/30 border-slate-300 dark:border-slate-700 dark:bg-slate-800 cursor-pointer"
-                />
-                <label htmlFor="useful-pinned" className="text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer select-none">
-                  Закрепить наверху списка
-                </label>
-              </div>
+              {/* Pin Checkbox (Starosta / Admin only) */}
+              {canEdit && (
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    id="useful-pinned"
+                    type="checkbox"
+                    checked={formIsPinned}
+                    onChange={e => setFormIsPinned(e.target.checked)}
+                    className="w-4 h-4 rounded-md text-indigo-600 focus:ring-indigo-500/30 border-slate-300 dark:border-slate-700 dark:bg-slate-800 cursor-pointer"
+                  />
+                  <label htmlFor="useful-pinned" className="text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer select-none">
+                    Закрепить вверху
+                  </label>
+                </div>
+              )}
 
               {/* Modal Actions */}
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
@@ -983,7 +1172,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                   disabled={isUploading}
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
                 >
-                  {editingItem ? 'Сохранить изменения' : 'Создать заметку'}
+                  {editingItem ? 'Сохранить изменения' : canEdit ? 'Создать заметку' : 'Отправить на проверку'}
                 </button>
               </div>
             </form>

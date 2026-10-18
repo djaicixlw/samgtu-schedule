@@ -358,7 +358,17 @@ async function runMultiDeviceSyncTests() {
   const anonPulled = await pullAttendanceRecordsFromV3(GROUP_ID);
   assert(anonPulled.length === 3, 'PC with empty roster still recovers all 3 attendance records via slot fallback');
   const fallbackStudents = getLocalStudents(GROUP_ID);
-  assert(fallbackStudents.length >= 4, 'PC generated fallback anonymous students (Студент 1..N) to prevent empty grid');
+  assert(fallbackStudents.length === 0, 'PC with empty roster must NOT save dummy students to localStorage (P0-1 protection)');
+
+  // Verify P0-1 protection: syncRosterToCloud MUST refuse to overwrite cloud roster if students are dummy/empty
+  const syncDummyResult = await syncRosterToCloud(GROUP_ID, [
+    { id: 1, name: 'Студент 1', slot: 'S1' },
+    { id: 2, name: 'Студент 2', slot: 'S2' }
+  ], GROUP_CODE);
+  assert(syncDummyResult === false, 'syncRosterToCloud rejects dummy roster (P0-1 protection)');
+
+  const syncEmptyResult = await syncRosterToCloud(GROUP_ID, [], GROUP_CODE);
+  assert(syncEmptyResult === false, 'syncRosterToCloud rejects empty roster (P0-1 protection)');
 
   console.log('\n=================================================');
   console.log('  ALL MULTI-DEVICE ATTENDANCE SYNC TESTS PASSED! ');

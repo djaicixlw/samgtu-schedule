@@ -4,6 +4,7 @@
  */
 
 import { WORKER_BASE } from './cloudSync';
+import { samaraISO } from './samaraDate';
 
 export interface CrashReportPayload {
   message: string;
@@ -24,11 +25,13 @@ export const LOCAL_DEDUP_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
  */
 export const getSamaraTimestamp = (date: Date = new Date()): string => {
   try {
-    const samaraMs = date.getTime() + (date.getTimezoneOffset() * 60000) + (4 * 3600000);
-    const d = new Date(samaraMs);
+    if (isNaN(date.getTime())) return date.toISOString();
+    const dateStr = samaraISO(date);
+    if (!dateStr) return date.toISOString();
     const pad = (n: number) => String(n).padStart(2, '0');
     const padMs = (n: number) => String(n).padStart(3, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${padMs(d.getMilliseconds())}+04:00`;
+    const hours = (date.getUTCHours() + 4) % 24;
+    return `${dateStr}T${pad(hours)}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${padMs(date.getUTCMilliseconds())}+04:00`;
   } catch {
     return date.toISOString();
   }

@@ -25,6 +25,7 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
   const [teacher, setTeacher] = useState(lesson.teacher || '');
   const [location, setLocation] = useState(lesson.location || '');
   const [note, setNote] = useState(lesson.note || '');
+  const [hours, setHours] = useState<number>(lesson.hours === 4 ? 4 : 2);
   const [isCancelled, setIsCancelled] = useState<boolean>(!!lesson.isCancelled);
   const [isHidden, setIsHidden] = useState<boolean>(!!lesson.isHidden);
   const [applyScope, setApplyScope] = useState<TeacherAssignmentScope>('type');
@@ -100,6 +101,7 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
       note,
       isCancelled,
       isHidden,
+      hours,
       attachments,
     }, applyScope);
     onClose();
@@ -220,6 +222,37 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
               onChange={(e) => setNote(e.target.value)}
               className="w-full px-3.5 py-2.5 text-base sm:text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none text-slate-900 dark:text-white"
             />
+          </div>
+
+          {/* Lesson Duration Switcher (№3: 2 часа / 4 часа сдвоенная) */}
+          <div>
+            <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1.5">
+              Длительность пары
+            </label>
+            <div className="grid grid-cols-2 gap-2 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl border border-slate-200/80 dark:border-slate-700/60">
+              <button
+                type="button"
+                onClick={() => setHours(2)}
+                className={`py-2 px-3 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  hours === 2
+                    ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-white shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                2 часа
+              </button>
+              <button
+                type="button"
+                onClick={() => setHours(4)}
+                className={`py-2 px-3 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  hours === 4
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                4 часа (сдвоенная)
+              </button>
+            </div>
           </div>
 
           {/* Attachments / Files / Links Section */}

@@ -570,3 +570,64 @@ export async function reloadGroupSchedule(
   }
   return result;
 }
+
+/**
+ * Checks if a lesson is Physical Education ("Элективные курсы по физической культуре и спорту",
+ * "Физическая культура и спорт", "Физкультура" etc.).
+ *
+ * Rules:
+ *  - Matches PE variations including "элективные курсы по физ..." and "физическая культура"
+ *  - STRICTLY PRESERVES Physics ("Физика", "Физическая химия", "Физика горных пород")
+ *  - STRICTLY PRESERVES VUC / Military training ("Основы военной подготовки", "ВУЦ")
+ */
+export function isPhysicalEducationLesson(lesson?: { subject?: string } | null): boolean {
+  if (!lesson || !lesson.subject) return false;
+  const s = lesson.subject.trim().toLowerCase();
+
+  // Match physical education / sports combinations
+  if (s.includes('физическ') && (s.includes('культур') || s.includes('спорт'))) {
+    return true;
+  }
+  if (s.includes('физкультур')) {
+    return true;
+  }
+  if (s.startsWith('элективные курсы по физ') || s.includes('элективная физическая культура')) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Checks whether a given lessonId corresponds to a Physical Education lesson
+ * in the active group or global SCHEDULE_REGISTRY.
+ */
+export function isPhysicalEducationLessonId(lessonId?: string | null, groupId?: string): boolean {
+  if (!lessonId) return false;
+
+  // 1. Check in target group schedule if known
+  if (groupId && SCHEDULE_REGISTRY[groupId]) {
+    const groupSched = SCHEDULE_REGISTRY[groupId];
+    for (let w = 1; w <= 4; w++) {
+      const days = groupSched[w] || [];
+      for (const d of days) {
+        const l = d.lessons?.find(item => item.id === lessonId);
+        if (l) return isPhysicalEducationLesson(l);
+      }
+    }
+  }
+
+  // 2. Fallback: search across all loaded schedules in SCHEDULE_REGISTRY
+  for (const groupSched of Object.values(SCHEDULE_REGISTRY)) {
+    if (!groupSched) continue;
+    for (let w = 1; w <= 4; w++) {
+      const days = groupSched[w] || [];
+      for (const d of days) {
+        const l = d.lessons?.find(item => item.id === lessonId);
+        if (l) return isPhysicalEducationLesson(l);
+      }
+    }
+  }
+
+  return false;
+}

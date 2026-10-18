@@ -56,9 +56,10 @@ async function callWorker(
   path: string,
   method: string,
   initData: string | null,
-  body?: any
+  body?: any,
+  extraHeaders?: Record<string, string>
 ) {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...(extraHeaders || {}) };
   if (initData !== null) {
     headers['X-Telegram-Init-Data'] = initData;
   }
@@ -177,8 +178,21 @@ const claimThrottled = await callWorker('/v3/staff/claim', 'POST', elderInitData
 });
 assert(claimThrottled.status === 429, '5 failed claim attempts trigger 429 Too Many Requests');
 
+// IP isolation test: attacker IP is throttled, but another client IP is NOT blocked (Anti-DoS)
+const attackerIp = '203.0.113.195';
+const victimIp = '198.51.100.42';
+for (let i = 0; i < 5; i++) {
+  await callWorker('/v3/staff/claim', 'POST', strangerInitData, { gid: testGid, code: 'ATTACKER-CODE' }, { 'cf-connecting-ip': attackerIp });
+}
+const attackerBlocked = await callWorker('/v3/staff/claim', 'POST', strangerInitData, { gid: testGid, code: 'ATTACKER-CODE' }, { 'cf-connecting-ip': attackerIp });
+assert(attackerBlocked.status === 429, 'Attacker IP is throttled after 5 attempts');
+const victimNotBlocked = await callWorker('/v3/staff/claim', 'POST', elderInitData, { gid: testGid, code: 'WRONG-CODE' }, { 'cf-connecting-ip': victimIp });
+assert(victimNotBlocked.status === 401, 'Distinct client IP is NOT blocked by attacker brute force (Anti-DoS confirmed)');
+
 // Reset rate limit key to test successful claim
-await mockAppData.delete(`rl:claim:${testGid}`);
+await mockAppData.delete(`rl:claim:${testGid}:unknown`);
+await mockAppData.delete(`rl:claim:${testGid}:${victimIp}`);
+await mockAppData.delete(`rl:claim:${testGid}:${attackerIp}`);
 
 // 4.4 Successful claim
 const claimSuccess = await callWorker('/v3/staff/claim', 'POST', elderInitData, {
@@ -192,7 +206,7 @@ assert(claimBody.ok === true, 'Claim response has ok: true');
 // Check KV: elder's blindId added to staff
 const groupAfterClaim = JSON.parse((await mockAppData.get(`g:${testGid}`))!);
 assert(Array.isArray(groupAfterClaim.staff) && groupAfterClaim.staff.includes(elderBlindId), 'Elder userBlindId is recorded in g:{gid}.staff');
-assert(!kvStore.has(`rl:claim:${testGid}`), 'Successful claim clears rate-limiting key');
+assert(!kvStore.has(`rl:claim:${testGid}:unknown`), 'Successful claim clears rate-limiting key');
 
 // 4.5 Admin claim with Crockford Base32 typo tolerance (5 <-> S)
 console.log('\n--- 4.5 Admin Claim with Crockford Base32 Typo Tolerance ---');

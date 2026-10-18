@@ -2,7 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, Suspense, useRef 
 import { ThemePref, getThemePref, setThemePref, syncTelegramTheme } from './utils/theme';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES, createEmptyWeek } from './constants';
 import { getSemesterWeek, getWeekDateRange, getDayISODate, useAttendance, getSamaraISODate } from './attendance';
-import { getSamaraDate, getSemesterConfig } from './utils/samaraDate';
+import { getSamaraDate, getSemesterConfig, getDayName, samaraISO } from './utils/samaraDate';
 import { useNow } from './utils/useNow';
 import SwipeableDays from './components/SwipeableDays';
 import BottomNav from './components/BottomNav';
@@ -16,12 +16,12 @@ import { logger } from './utils/logger';
 import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuParser';
 import { normalizeGroupId } from './utils/groupAliases';
 import ScheduleState from './components/ScheduleState';
-import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason } from './utils/scheduleLoader';
+import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason, isPhysicalEducationLesson } from './utils/scheduleLoader';
 import { getLocalStudentLink, claimStaffRole, getLocalStudents, restoreRosterFromCloud } from './utils/attendanceStorage';
 import {
   LogIn, LogOut, Calendar, BookOpen, Bug, ClipboardCheck, Sun, Moon,
   GraduationCap, Users, RefreshCw, Shield, User as UserIcon, Key, UserCheck, ChevronDown,
-  Search, Plus, X, Terminal, RotateCcw, Database
+  Search, Plus, X, Terminal, RotateCcw, Database, Bell, BellOff
 } from 'lucide-react';
 
 // Code-split heavy tabs and modals with auto-retry on new deployments
@@ -99,6 +99,52 @@ const App: React.FC = () => {
   });
 
   const darkMode = pref === 'auto' ? tgScheme === 'dark' : pref === 'dark';
+
+  // Network online status dot indicator (№26)
+  const [isOnline, setIsOnline] = useState<boolean>(() => {
+    return typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean'
+      ? navigator.onLine
+      : true;
+  });
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Silent mode / notifications toggle (№24)
+  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('notifications_enabled');
+      return stored !== null ? stored === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const handleToggleNotifications = () => {
+    setNotificationsEnabled(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('notifications_enabled', String(next));
+      } catch {}
+      if (next) {
+        toast.success('Уведомления включены');
+      } else {
+        toast.info('Режим тишины включен');
+      }
+      return next;
+    });
+  };
+
   const [activeTab, setActiveTab] = useState<'schedule' | 'homework' | 'attendance' | 'group' | 'admin' | 'profile'>('schedule');
   const [user, setUser] = useState<UserProfile | null>(null);
   
@@ -589,6 +635,9 @@ const App: React.FC = () => {
   const samaraNow = useMemo(() => getSamaraDate(liveNow), [liveNow]);
   const currentWeek = useMemo(() => getSemesterWeek(samaraNow, currentGroupId), [samaraNow, currentGroupId]);
   const [selectedWeek, setSelectedWeek] = useState<number>(currentWeek);
+
+  // Activate today's day of week by default based on Samara time
+  const todayDayName = useMemo(() => getDayName(samaraISO()), []);
 
   // Global Subject Teachers mapping (e.g. subject -> teacher)
   const [subjectTeachers, setSubjectTeachers] = useState<Record<string, string>>(() => {
@@ -1277,9 +1326,9 @@ const App: React.FC = () => {
           } as Lesson;
         });
 
-      const allLessons = [...standardLessons, ...customLessons].sort((a, b) => 
-        (a.timeStart || '').localeCompare(b.timeStart || '')
-      );
+      const allLessons = [...standardLessons, ...customLessons]
+        .filter(l => !isPhysicalEducationLesson(l))
+        .sort((a, b) => (a.timeStart || '').localeCompare(b.timeStart || ''));
 
       return {
         ...day,
@@ -1457,6 +1506,20 @@ const App: React.FC = () => {
               </button>
 
               <button
+                onClick={handleToggleNotifications}
+                data-testid="notifications-bell-btn"
+                className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title={notificationsEnabled ? 'Уведомления включены' : 'Режим тишины включен'}
+                aria-label={notificationsEnabled ? 'Уведомления включены' : 'Режим тишины включен'}
+              >
+                {notificationsEnabled ? (
+                  <Bell className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                ) : (
+                  <BellOff className="w-4 h-4 text-slate-400 dark:text-slate-500" />
+                )}
+              </button>
+
+              <button
                 onClick={() => {
                   const nextPref: ThemePref = darkMode ? 'light' : 'dark';
                   setPref(nextPref);
@@ -1488,6 +1551,15 @@ const App: React.FC = () => {
                   <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">({currentGroupConfig.course} курс)</span>
                   <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                 </button>
+
+                {/* Network Status Dot Indicator (№26) */}
+                <span 
+                  className={`inline-block w-2 h-2 rounded-full shrink-0 transition-colors cursor-help ${
+                    isOnline ? 'bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.5)]' : 'bg-rose-500 shadow-[0_0_4px_rgba(244,63,94,0.5)]'
+                  }`}
+                  title={isOnline ? 'В сети' : 'Офлайн (сохраненная копия)'}
+                  aria-label={isOnline ? 'В сети' : 'Офлайн (сохраненная копия)'}
+                />
               </div>
               
               <div className="flex items-center gap-2">
@@ -1568,6 +1640,7 @@ const App: React.FC = () => {
                 days={currentSchedule} 
                 weekNumber={selectedWeek}
                 userRole={effectiveRole}
+                initialDayName={todayDayName}
                 onUpdateLesson={handleUpdateLesson}
                 onResetLesson={handleResetLesson}
               />
@@ -1609,7 +1682,7 @@ const App: React.FC = () => {
                     Доступ только для старосты
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                    Отмечать посещаемость и формировать ведомости может только староста группы. Чтобы получить доступ, введите код доступа в разделе «Профиль».
+                    Отмечать посещаемость и редактировать расписание может только староста группы. Чтобы получить доступ, введите код доступа в разделе «Профиль».
                   </p>
                   <button
                     onClick={() => setActiveTab('profile')}
@@ -1722,28 +1795,30 @@ const App: React.FC = () => {
               </button>
             </div>
 
-            {/* Schedule Cache Clearance Card */}
-            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
-                  <Database className="w-4 h-4 text-amber-500" />
-                  <span>Кэш расписания</span>
+            {/* Schedule Cache Clearance Card (Visible only for Starosta & Admin) */}
+            {(effectiveRole === 'admin' || effectiveRole === 'starosta') && (
+              <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
+                    <Database className="w-4 h-4 text-amber-500" />
+                    <span>Кэш расписания</span>
+                  </div>
+                  <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 rounded-md border border-amber-200/60 dark:border-amber-900/40">
+                    Офлайн-хранилище
+                  </span>
                 </div>
-                <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 rounded-md border border-amber-200/60 dark:border-amber-900/40">
-                  Офлайн-хранилище
-                </span>
+                <p className="text-[11px] text-slate-400">
+                  Очищает сохраненные копии расписания групп и запрашивает свежие данные из сети. Ваши личные заметки, пароли и посещаемость не будут затронуты.
+                </p>
+                <button
+                  onClick={handleClearScheduleCache}
+                  className="w-full py-2.5 px-4 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold text-xs rounded-xl transition-all shadow-sm min-h-[44px] flex items-center justify-center gap-2"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-amber-500" />
+                  Очистить кэш расписания и обновить
+                </button>
               </div>
-              <p className="text-[11px] text-slate-400">
-                Очищает сохраненные копии расписания групп и запрашивает свежие данные из сети. Ваши личные заметки, пароли и посещаемость не будут затронуты.
-              </p>
-              <button
-                onClick={handleClearScheduleCache}
-                className="w-full py-2.5 px-4 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold text-xs rounded-xl transition-all shadow-sm min-h-[44px] flex items-center justify-center gap-2"
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-amber-500" />
-                Очистить кэш расписания и обновить
-              </button>
-            </div>
+            )}
 
             {/* Bug Report & Support Card */}
             <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
@@ -1849,7 +1924,7 @@ const App: React.FC = () => {
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Введите 16-значный код доступа для подтверждения прав старосты или администратора.
+                  Введите код доступа группы, чтобы отмечать посещаемость и редактировать расписание.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input

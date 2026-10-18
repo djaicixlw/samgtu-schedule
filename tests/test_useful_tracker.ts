@@ -5,7 +5,9 @@ import {
   sanitizeUsefulItem,
   getLocalUsefulItems,
   saveLocalUsefulItems,
-  recordDeletedUsefulItem
+  recordDeletedUsefulItem,
+  checkUsefulSpamLimit,
+  recordUsefulSubmission
 } from '../utils/usefulStorage';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -133,9 +135,31 @@ assert(hwTrackerContent.includes('UsefulTracker'), 'HomeworkTracker imports Usef
 assert(hwTrackerContent.includes('Полезное'), 'HomeworkTracker contains «Полезное» tab');
 assert(hwTrackerContent.includes('Задания'), 'HomeworkTracker contains «Задания» tab');
 assert(hwTrackerContent.includes('<UsefulTracker'), 'HomeworkTracker renders UsefulTracker');
+assert(hwTrackerContent.includes('isHomeworkArchived'), 'HomeworkTracker contains isHomeworkArchived helper');
+assert(hwTrackerContent.includes('Архив заданий (прошлый месяц)'), 'HomeworkTracker contains collapsible archive section');
+assert(hwTrackerContent.includes('archivedItems'), 'HomeworkTracker separates archivedItems (>30 days overdue)');
 
-// 5. Anti-Bureaucratic & Anti-AI-Tell Tone Check
-console.log('\n--- 5. Anti-Bureaucratic & Clean Tone Check ---');
+// 5. Clean Tags & Student Proposals with Moderation
+console.log('\n--- 5. Clean Tags & Student Proposals with Moderation ---');
+assert(!usefulTrackerContent.includes('#литература'), 'Obsolete tag #литература removed');
+assert(!usefulTrackerContent.includes('#преподы'), 'Obsolete tag #преподы removed');
+assert(usefulTrackerContent.includes('#курсач'), 'Active tag #курсач present in useful tags');
+assert(usefulTrackerContent.includes('Предложить материал'), 'Students can propose materials via «Предложить материал / ссылку»');
+assert(usefulTrackerContent.includes('Предложенные материалы'), 'Starosta / admin can see «Предложенные материалы» moderation block');
+assert(usefulTrackerContent.includes('handleApprovePending'), 'UsefulTracker supports approving pending items');
+assert(usefulTrackerContent.includes('handleRejectPending'), 'UsefulTracker supports rejecting pending items');
+
+// Test spam limit (max 3 submissions per hour)
+localStorage.removeItem('submitted_useful_count');
+assert(checkUsefulSpamLimit().allowed === true, 'Spam limit allows submission when count is 0');
+recordUsefulSubmission();
+recordUsefulSubmission();
+assert(checkUsefulSpamLimit().allowed === true, 'Spam limit allows submission when count is 2');
+recordUsefulSubmission();
+assert(checkUsefulSpamLimit().allowed === false, 'Spam limit blocks submission when count reaches 3 per hour');
+
+// 6. Anti-Bureaucratic & Anti-AI-Tell Tone Check
+console.log('\n--- 6. Anti-Bureaucratic & Clean Tone Check ---');
 assert(!usefulTrackerContent.includes('152-ФЗ'), 'No 152-ФЗ in UsefulTracker');
 assert(!usefulTrackerContent.includes('персональных данных'), 'No bureaucratic GDPR/PD jargon in UsefulTracker');
 
