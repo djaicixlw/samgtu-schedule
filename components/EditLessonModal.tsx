@@ -99,7 +99,11 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
     const toastId = toast.loading(`Загрузка «${file.name}»...`);
 
     try {
-      const caption = `📎 Материалы к паре: ${subject} (${lesson.timeStart})`;
+      const cleanGroup = lesson.groups ? lesson.groups.replace(/2-ИНГТ-24ИНГТ-/g, '').trim() : '';
+      const groupTag = cleanGroup ? cleanGroup.replace(/[^a-zA-Z0-9а-яА-ЯёЁ]/g, '') : '';
+      const groupPrefix = cleanGroup ? `[${cleanGroup}] ` : '';
+      const datePart = targetDate ? ` • ${targetDate}` : '';
+      const caption = `${groupPrefix}📎 Материалы: ${subject} (${lesson.timeStart}${datePart})${groupTag ? ` #${groupTag}` : ''} #Материалы`;
       const uploaded = await uploadAttachmentFile(file, caption);
       setAttachments(prev => [...prev, uploaded]);
       toast.success(`Файл «${file.name}» прикреплен`, { id: toastId });

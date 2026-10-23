@@ -2356,7 +2356,7 @@ export default {
           });
         }
 
-        let targetChat = (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID)) || CHANNEL_ID;
+        let targetChat = (env && (env.TELEGRAM_CHANNEL_ID || env.CHANNEL_ID)) || (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID)) || CHANNEL_ID;
         if (!targetChat && verifiedUserId) {
           targetChat = verifiedUserId;
         }
