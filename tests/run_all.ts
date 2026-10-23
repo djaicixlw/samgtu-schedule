@@ -70,6 +70,7 @@ await import('./test_stage3_group_roster_archive');
 await import('./test_stage1_ui_and_double_hours');
 await import('./test_absences_notes_paste_dnd');
 await import('./test_p0_regressions');
+await import('./test_real_user_emulation');
 if (failureCount > 0 || (process.exitCode ?? 0) !== 0) {
   console.log(`\n=== TEST RUN FAILED: ${failureCount} failure marker(s) ===`);
   process.exit(1);
