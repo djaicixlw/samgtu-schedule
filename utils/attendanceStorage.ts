@@ -13,6 +13,10 @@ const getDefaultWorkerBase = (): string => {
   if (typeof process !== 'undefined' && process.env?.VITE_WORKER_URL) {
     return process.env.VITE_WORKER_URL;
   }
+  // Node (tests, scripts) must never silently talk to the production worker.
+  if (typeof process !== 'undefined' && (process as any).versions?.node) {
+    return 'http://worker.invalid';
+  }
   return DEFAULT_PROD_WORKER_URL;
 };
 
@@ -140,19 +144,9 @@ export function getLocalStudents(groupId: string): Student[] {
               ...(typeof s.isArchived === 'boolean' ? { isArchived: s.isArchived } : {})
             }));
 
-          // Self-healing: if real named students exist along with phantom "Студент N"
-          // created by earlier slot desync bugs, transfer any slots and purge phantoms!
           const isAnon = (name: string) => /^Студент\s+\d+$/i.test(name.trim());
           const realStudents = all.filter(s => !isAnon(s.name));
-          const phantomStudents = all.filter(s => isAnon(s.name));
-
-          if (realStudents.length > 0 && phantomStudents.length > 0) {
-            // Transfer slots from phantoms to real students who lack slots
-            phantomStudents.forEach((phantom, idx) => {
-              if (phantom.slot && realStudents[idx] && !realStudents[idx].slot) {
-                realStudents[idx].slot = phantom.slot;
-              }
-            });
+          if (realStudents.length > 0 && realStudents.length < all.length) {
             try {
               localStorage.setItem(`students_${groupId}`, JSON.stringify(realStudents));
             } catch {}
@@ -307,12 +301,27 @@ export function importRosterBackup(
       }
 
       if (parsedStudents.length > 0) {
-        // Sort alphabetically by Russian locale (Q9: strictly alphabetical roster)
-        parsedStudents.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
-        parsedStudents.forEach((s, idx) => { s.id = idx + 1; });
-        const rosterWithSlots = ensureGroupSlots(groupId, parsedStudents);
+        const norm = (n: string) => n.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+        const existing = getLocalStudents(groupId);
+        const byName = new Map<string, Student>();
+        existing.forEach(s => { if (!byName.has(norm(s.name))) byName.set(norm(s.name), s); });
+        let nextId = existing.reduce((m, s) => Math.max(m, s.id), 0) + 1;
+        const used = new Set<number>();
+        const next: Student[] = [];
+        for (const ps of parsedStudents) {
+          const hit = byName.get(norm(ps.name));
+          if (hit && !used.has(hit.id)) {
+            used.add(hit.id);
+            next.push({ ...hit, name: ps.name, isArchived: false });
+          } else if (!hit) {
+            next.push({ id: nextId++, name: ps.name });
+          }
+        }
+        existing.forEach(s => { if (!used.has(s.id)) next.push({ ...s, isArchived: true }); });
+        next.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+        const rosterWithSlots = ensureGroupSlots(groupId, next);
         saveLocalStudents(groupId, rosterWithSlots);
-        return { ok: true, count: rosterWithSlots.length };
+        return { ok: true, count: rosterWithSlots.filter(s => !s.isArchived).length };
       }
 
       return { ok: false, error: `Неверный формат данных: ${e?.message || 'некорректный синтаксис'}` };
@@ -415,7 +424,6 @@ export function getAuthHeaders(groupId?: string): Record<string, string> {
   const token = getSavedStaffToken(groupId);
   if (token) {
     headers['X-Staff-Token'] = token;
-    headers['Authorization'] = `Bearer ${token}`;
   }
   return headers;
 }
@@ -504,7 +512,8 @@ export async function saveMonthAttendanceV3(
   month: string,
   baseVer: number,
   patch: any,
-  cancel: any
+  cancel: any,
+  hours?: any
 ): Promise<{ ok: boolean, ver?: number, conflict?: boolean, error?: string, status?: number }> {
   try {
     const base = getAttendanceApiBase();
@@ -516,7 +525,8 @@ export async function saveMonthAttendanceV3(
         month,
         baseVer,
         patch,
-        cancel
+        cancel,
+        hours
       })
     });
     const json = await res.json().catch(() => ({}));
@@ -759,6 +769,87 @@ export async function claimStaffRole(
  * Synchronize local attendance records with Cloudflare Worker API v3 (Blind Server).
  * Maps local students to anonymous slots and pushes monthly slices via PUT /v3/att.
  */
+// ---------------------------------------------------------------------------
+// Cell-level three-way sync for attendance.
+//
+// BASE   = what this device last synchronised (stored in localStorage),
+// OURS   = what the local records say now,
+// THEIRS = whatever the server holds (never read for diffing).
+//
+// Only cells where OURS differs from BASE are sent, as per-cell operations. A cell that is
+// absent locally but also absent from BASE is "unknown", not "deleted", so marks set on
+// another device are never erased by a stale device (the old behaviour pushed the whole month
+// and turned "no mark here" into "delete the mark").
+// ---------------------------------------------------------------------------
+
+const attendanceBaseKey = (gid: string) => `attendance_base_${gid}`;
+
+function readAttendanceBase(gid: string): Record<string, string> {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(attendanceBaseKey(gid));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      }
+    }
+  } catch {}
+  return {};
+}
+
+function writeAttendanceBase(gid: string, cells: Record<string, string>): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(attendanceBaseKey(gid), JSON.stringify(cells));
+    }
+  } catch {}
+}
+
+/** Flattens local records into cell keys: `${month}|${slot}|${lessonKey}` -> 'u' | 'e', `c|${month}|${lessonKey}` -> 'c'. */
+function buildAttendanceCells(
+  records: AttendanceRecord[],
+  students: Student[]
+): Map<string, string | undefined> {
+  const slotByStudentId = new Map<number, string>();
+  students.forEach(s => { if (s.slot) slotByStudentId.set(s.id, s.slot); });
+  const cells = new Map<string, string | undefined>();
+  for (const rec of records) {
+    if (!rec || !rec.date) continue;
+    const month = rec.date.slice(0, 7);
+    const pairMatch = (rec.lessonId || '').match(/(\d+)$/);
+    const pairNum = pairMatch ? pairMatch[1] : '1';
+    const lessonKey = `${rec.date.slice(5)}.${pairNum}`;
+    cells.set(`c|${month}|${lessonKey}`, rec.isCancelled ? 'c' : undefined);
+    // Only non-default lesson length is stored (2 academic hours is the default).
+    cells.set(`h|${month}|${lessonKey}`, rec.hours && rec.hours !== 2 ? String(rec.hours) : undefined);
+    const absentIds = new Set(rec.absentStudentIds || []);
+    const excusedIds = new Set(rec.excusedStudentIds || []);
+    for (const [studentId, slot] of slotByStudentId.entries()) {
+      const mark = absentIds.has(studentId) ? 'u' : excusedIds.has(studentId) ? 'e' : undefined;
+      cells.set(`${month}|${slot}|${lessonKey}`, mark);
+    }
+  }
+  return cells;
+}
+
+/**
+ * Declares the local records to be in sync with the server (call after a pull that was merged
+ * without pending local changes). Replaces BASE with the cells of the given records.
+ */
+export function rebaseAttendanceBase(groupId: string, records: AttendanceRecord[]): void {
+  const gid = groupId.trim().toLowerCase();
+  const students = getLocalStudents(gid);
+  const base: Record<string, string> = {};
+  for (const [key, value] of buildAttendanceCells(records || [], students).entries()) {
+    if (value) base[key] = value;
+  }
+  writeAttendanceBase(gid, base);
+}
+
+/**
+ * Synchronize local attendance records with Cloudflare Worker API v3 (Blind Server).
+ * Sends only the cells that changed on this device since the last successful sync.
+ */
 export async function syncAttendanceRecordsToV3(
   groupId: string,
   records?: AttendanceRecord[]
@@ -771,41 +862,73 @@ export async function syncAttendanceRecordsToV3(
     }
 
     students = ensureGroupSlots(gid, students);
+    const store = typeof localStorage !== 'undefined' ? localStorage : null;
 
-    // Auto-sync encrypted E2EE roster backup to cloud so slots match across all devices
-    syncRosterToCloud(gid, students).catch(() => {});
-
-    // Register slots with server if needed
+    // Roster backup and slot registration only when they actually changed (each is a KV write).
+    const rosterSig = JSON.stringify(students.map(s => [s.id, s.name, s.slot || '', s.isArchived ? 1 : 0]));
+    if (!store || store.getItem(`roster_sig_${gid}`) !== rosterSig) {
+      syncRosterToCloud(gid, students)
+        .then(ok => { if (ok && store) { try { store.setItem(`roster_sig_${gid}`, rosterSig); } catch {} } })
+        .catch(() => {});
+    }
     const slots = students.map(s => s.slot).filter(Boolean) as string[];
-    if (slots.length > 0) {
-      await registerSlotsWithServer(gid, slots).catch(() => {});
+    const slotsSig = slots.slice().sort().join(',');
+    if (slots.length > 0 && (!store || store.getItem(`slots_sig_${gid}`) !== slotsSig)) {
+      const reg = await registerSlotsWithServer(gid, slots).catch(() => ({ ok: false }));
+      if (reg && reg.ok && store) { try { store.setItem(`slots_sig_${gid}`, slotsSig); } catch {} }
     }
 
     let recs = records;
     if (!recs) {
       try {
-        const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(`attendance_${gid}`) : null;
+        const saved = store ? store.getItem(`attendance_${gid}`) : null;
         if (saved) recs = JSON.parse(saved);
       } catch {}
     }
     if (!recs || recs.length === 0) return { ok: true };
 
-    // Group records by month (YYYY-MM)
-    const byMonth = new Map<string, AttendanceRecord[]>();
-    for (const r of recs) {
-      if (!r || !r.date) continue;
-      const m = r.date.slice(0, 7); // "YYYY-MM"
-      const list = byMonth.get(m) || [];
-      list.push(r);
-      byMonth.set(m, list);
+    const base = readAttendanceBase(gid);
+    const ours = buildAttendanceCells(recs, students);
+
+    type MonthDelta = {
+      patch: Record<string, Record<string, 'e' | 'u' | null>>;
+      cancel: Record<string, true | null>;
+      hours: Record<string, number | null>;
+      updates: Array<[string, string | undefined]>;
+    };
+    const deltas = new Map<string, MonthDelta>();
+    const deltaFor = (month: string): MonthDelta => {
+      let d = deltas.get(month);
+      if (!d) { d = { patch: {}, cancel: {}, hours: {}, updates: [] }; deltas.set(month, d); }
+      return d;
+    };
+
+    for (const [key, value] of ours.entries()) {
+      if (value === base[key]) continue; // unchanged on this device: never touch what we did not change
+      if (key.startsWith('c|')) {
+        const [, month, lessonKey] = key.split('|');
+        const d = deltaFor(month);
+        d.cancel[lessonKey] = value ? true : null;
+        d.updates.push([key, value]);
+      } else if (key.startsWith('h|')) {
+        const [, month, lessonKey] = key.split('|');
+        const d = deltaFor(month);
+        d.hours[lessonKey] = value ? Number(value) : null;
+        d.updates.push([key, value]);
+      } else {
+        const [month, slot, lessonKey] = key.split('|');
+        const d = deltaFor(month);
+        (d.patch[slot] = d.patch[slot] || {})[lessonKey] = (value as 'e' | 'u' | undefined) ?? null;
+        d.updates.push([key, value]);
+      }
     }
 
-    const slotMap = new Map<number, string>();
-    students.forEach(s => {
-      if (s.slot) slotMap.set(s.id, s.slot);
-    });
+    if (deltas.size === 0) return { ok: true };
 
-    for (const [month, monthRecs] of byMonth.entries()) {
+    const newBase: Record<string, string> = { ...base };
+    let failure: { error: string; status?: number } | null = null;
+
+    for (const [month, delta] of deltas.entries()) {
       let attempts = 0;
       let success = false;
       let lastError = '';
@@ -814,69 +937,44 @@ export async function syncAttendanceRecordsToV3(
         attempts++;
         const fetchRes = await fetchMonthAttendanceV3(gid, month);
         if (!fetchRes.ok && fetchRes.status === 401) {
-          return { ok: false, error: fetchRes.error, status: 401 };
+          failure = { error: fetchRes.error || 'Unauthorized', status: 401 };
+          break;
         }
-
         const baseVer = (fetchRes.ok && fetchRes.data?.ver) ? fetchRes.data.ver : 0;
-        const currentSlots = (fetchRes.ok && fetchRes.data?.slots) ? fetchRes.data.slots : {};
-        const currentCancelled: string[] = (fetchRes.ok && Array.isArray(fetchRes.data?.cancelled)) ? fetchRes.data.cancelled : [];
-
-        const patch: Record<string, Record<string, 'e' | 'u' | null>> = {};
-        const cancelSet = new Set<string>(currentCancelled);
-
-        // Initialize patch objects for known slots
-        slots.forEach(slot => {
-          patch[slot] = {};
-        });
-
-        for (const rec of monthRecs) {
-          const pairMatch = (rec.lessonId || '').match(/(\d+)$/);
-          const pairNum = pairMatch ? pairMatch[1] : '1';
-          const mmdd = rec.date.slice(5);
-          const lessonKey = `${mmdd}.${pairNum}`;
-
-          if (rec.isCancelled) {
-            cancelSet.add(lessonKey);
-          } else {
-            cancelSet.delete(lessonKey);
-          }
-
-          const absentIds = new Set(rec.absentStudentIds || []);
-          const excusedIds = new Set(rec.excusedStudentIds || []);
-
-          for (const [studentId, slot] of slotMap.entries()) {
-            if (absentIds.has(studentId)) {
-              patch[slot][lessonKey] = 'u'; // 'u' = unexcused / неуважительная (Н)
-            } else if (excusedIds.has(studentId)) {
-              patch[slot][lessonKey] = 'e'; // 'e' = excused / уважительная (УП)
-            } else {
-              if (currentSlots[slot] && currentSlots[slot][lessonKey]) {
-                patch[slot][lessonKey] = null;
-              }
-            }
-          }
-        }
-
-        const saveRes = await saveMonthAttendanceV3(gid, month, baseVer, patch, Array.from(cancelSet));
+        const hasCancel = Object.keys(delta.cancel).length > 0;
+        const hasHours = Object.keys(delta.hours).length > 0;
+        const saveRes = await saveMonthAttendanceV3(
+          gid, month, baseVer, delta.patch,
+          hasCancel ? delta.cancel : undefined,
+          hasHours ? delta.hours : undefined
+        );
         if (saveRes.ok) {
           success = true;
         } else if (saveRes.conflict) {
-          // Version changed in background, retry with fresh version
+          // Another session wrote first. Our payload is a set of per-cell operations that does not
+          // depend on the server state, so it is safe to retry it unchanged on top of the new version.
           continue;
         } else {
           if (saveRes.status === 401) {
-            return { ok: false, error: saveRes.error, status: 401 };
+            failure = { error: saveRes.error || 'Unauthorized', status: 401 };
           }
           lastError = saveRes.error || 'Save failed';
           break;
         }
       }
 
-      if (!success) {
-        return { ok: false, error: lastError || 'Version conflict retry failed' };
+      if (success) {
+        for (const [key, value] of delta.updates) {
+          if (value) newBase[key] = value; else delete newBase[key];
+        }
+      } else if (!failure) {
+        failure = { error: lastError || 'Version conflict retry failed' };
       }
+      if (failure && failure.status === 401) break;
     }
 
+    writeAttendanceBase(gid, newBase);
+    if (failure) return { ok: false, error: failure.error, status: failure.status };
     return { ok: true };
   } catch (err: any) {
     return { ok: false, error: err?.message || 'Sync failed' };
@@ -1155,13 +1253,17 @@ export async function pullAttendanceRecordsFromV3(
       const serverSlots = Object.keys(slots);
       if (serverSlots.length === 0 && cancelledSet.size === 0) continue;
 
-      // If students exist in the roster, bind unmapped server slots to students without slots
+      // Cold-start binding of server slots to a roster that has no slots at all (legacy / restored roster).
+      // Slots are anonymous, so this is a positional guess and is only safe when the whole roster is
+      // unslotted and the counts match exactly. With a partially slotted roster (a student was added or
+      // removed) an unmatched slot is an orphan of someone else and must never be bound to a new student.
       let rosterModified = false;
       if (students.length > 0) {
         const unslottedStudents = students.filter(s => !s.slot);
         const unassignedServerSlots = serverSlots.filter(s => !slotToStudentId.has(s.trim().toUpperCase()));
-        if (unslottedStudents.length > 0 && unassignedServerSlots.length > 0) {
-          const count = Math.min(unslottedStudents.length, unassignedServerSlots.length);
+        const rosterHasNoSlots = students.every(s => !s.slot);
+        if (rosterHasNoSlots && unslottedStudents.length > 0 && unslottedStudents.length === unassignedServerSlots.length) {
+          const count = unslottedStudents.length;
           for (let i = 0; i < count; i++) {
             const cleanSlot = unassignedServerSlots[i].trim().toUpperCase();
             unslottedStudents[i].slot = cleanSlot;
@@ -1255,6 +1357,7 @@ export async function pullAttendanceRecordsFromV3(
           absentStudentIds,
           excusedStudentIds,
           isCancelled,
+          ...(Number.isInteger(data.hours?.[lessonKey]) ? { hours: data.hours[lessonKey] } : {}),
           updatedAt: Number(data.updatedAt) || 0
         });
       }

@@ -57,7 +57,11 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     if (local.length > 0) {
       return getHealedStudents(groupId, local);
     }
-    return STUDENTS_REGISTRY[groupId] || [];
+    const fallback = STUDENTS_REGISTRY[groupId] || [];
+    if (fallback.length > 0 && fallback.every(s => /^Студент\s+\d+$/i.test(s.name.trim()))) {
+      return [];
+    }
+    return fallback;
   };
 
   const [students, setStudents] = useState<Student[]>(() => loadInitialStudents(currentGroupId));
@@ -180,7 +184,6 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
 
     markAttendance(selectedDate, selectedLesson.id, newAbsentIds, newExcusedIds, record.isCancelled, selectedLesson.hours || record.hours || 2);
-    syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
   };
 
   const handleSetFullDayStatus = (studentId: number, status: 'absent' | 'excused') => {
@@ -225,7 +228,6 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
 
     if (updates.length > 0) {
       markBatchAttendance(updates);
-      syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
       toast.success(`Статус "${status === 'absent' ? 'Н' : 'УП'}" установлен на все пары дня`);
     }
   };
@@ -245,7 +247,6 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
 
     markAttendance(selectedDate, lessonId, record.absentStudentIds, record.excusedStudentIds, willBeCancelled);
-    syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
     toast.success(willBeCancelled ? 'Пара отмечена как отменённая' : 'Пара восстановлена');
   };
 
@@ -304,16 +305,19 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     const groupName = groupConfig?.name || currentGroupId;
 
     const lines: string[] = [
-      `Сводка по пропускам — Группа ${groupName}`,
+      `Сводка пропусков — Группа ${groupName}`,
       `Дата: ${new Date().toLocaleDateString('ru-RU')}`,
+      `КУМУЛЯТИВНЫЙ УЧЕТ ЧАСОВ ПО БЛОКАМ (накопительный итог для деканата):`,
       ''
     ];
 
     reportData.forEach((row, idx) => {
-      const totalAbs = row.totalAllTimeAbs;
-      const totalExc = row.totalAllTimeExc;
-      const grandTotal = totalAbs + totalExc;
-      lines.push(`${idx + 1}. ${row.name}: Н: ${totalAbs} ч, УП: ${totalExc} ч, Всего: ${grandTotal} ч`);
+      const b1 = `${row.absences[0]}н / ${row.excused[0]}уп`;
+      const b2 = `${row.absences[1]}н / ${row.excused[1]}уп`;
+      const b3 = `${row.absences[2]}н / ${row.excused[2]}уп`;
+      const b4 = `${row.absences[3]}н / ${row.excused[3]}уп`;
+      const total = row.totalAllTimeAbs + row.totalAllTimeExc;
+      lines.push(`${idx + 1}. ${row.name}: Блок 1: ${b1} | Блок 2 (накоп.): ${b2} | Блок 3: ${b3} | Итого: ${total} ч`);
     });
 
     const summaryText = lines.join('\n');
@@ -326,11 +330,12 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
   };
 
-  // Pre-calculate statistics for the summary table
+  // Pre-calculate statistics for the summary table (Cumulative across blocks for dean's office)
   const reportData = React.useMemo(() => {
+    const today = getSamaraISODate();
     return activeStudents.map(student => {
-      const absences = [0, 0, 0, 0];
-      const excused = [0, 0, 0, 0];
+      const periodAbs = [0, 0, 0, 0];
+      const periodExc = [0, 0, 0, 0];
       let totalAllTimeAbs = 0;
       let totalAllTimeExc = 0;
       
@@ -348,10 +353,30 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
         if (isAbsent || isExcused) {
           BLOCKS.forEach((block, index) => {
             if (record.date >= block.start && record.date <= block.end) {
-              if (isExcused) excused[index] += lessonHours;
-              else if (isAbsent) absences[index] += lessonHours;
+              if (isExcused) periodExc[index] += lessonHours;
+              else if (isAbsent) periodAbs[index] += lessonHours;
             }
           });
+        }
+      });
+
+      // Cumulative calculations: B1, B1+B2, B1+B2+B3, B1+B2+B3+B4
+      const absences = [0, 0, 0, 0];
+      const excused = [0, 0, 0, 0];
+      let runningAbs = 0;
+      let runningExc = 0;
+
+      BLOCKS.forEach((block, index) => {
+        runningAbs += periodAbs[index];
+        runningExc += periodExc[index];
+
+        const hasStarted = today >= block.start || periodAbs[index] > 0 || periodExc[index] > 0;
+        if (hasStarted) {
+          absences[index] = runningAbs;
+          excused[index] = runningExc;
+        } else {
+          absences[index] = 0;
+          excused[index] = 0;
         }
       });
       
@@ -672,7 +697,12 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
                   <th className="p-3">#</th>
                   <th className="p-3">Студент</th>
                   {BLOCKS.map(b => (
-                    <th key={b.id} className="p-3">{b.name}</th>
+                    <th key={b.id} className="p-3">
+                      <div>{b.name}</div>
+                      <div className="text-[10px] lowercase font-normal text-indigo-500 dark:text-indigo-400">
+                        {b.id === 1 ? 'период Б1' : `накопит. Б1–Б${b.id}`}
+                      </div>
+                    </th>
                   ))}
                 </tr>
               </thead>

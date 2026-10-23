@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   BookOpen, Plus, Calendar, Clock, Paperclip, Link as LinkIcon, 
   Trash2, Edit3, X, Check, Download, AlertCircle, FileText, ExternalLink, Filter, Bookmark,
@@ -103,6 +103,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
   const [linkInput, setLinkInput] = useState('');
   const [linkNameInput, setLinkNameInput] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // 1. Universal Cloud Sync & Polling (Works across all classmates' phones without auth)
   useEffect(() => {
@@ -205,18 +206,15 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
 
   const TG_WORKER_URL = WORKER_BASE;
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    const file = files[0];
+  const uploadFile = async (file: File) => {
     if (file.size > 50 * 1024 * 1024) {
       toast.error('Файл слишком большой (>50 МБ). Прикрепите ссылку на Яндекс.Диск или Облако');
       return;
     }
 
     setIsUploading(true);
-    const toastId = toast.loading(`Загрузка «${file.name}» в хранилище Telegram...`);
+    const fileName = file.name || `screenshot_${Date.now()}.png`;
+    const toastId = toast.loading(`Загрузка «${fileName}» в хранилище Telegram...`);
 
     try {
       const groupConfig = AVAILABLE_GROUPS.find(g => g.id === currentGroupId);
@@ -224,8 +222,8 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       const groupTag = groupConfig?.name ? getGroupTag(groupConfig.name) : currentGroupId;
 
       const formData = new FormData();
-      formData.append('document', file, file.name);
-      formData.append('caption', `[${groupName}] 📚 ДЗ: ${file.name} #${groupTag}`);
+      formData.append('document', file, fileName);
+      formData.append('caption', `[${groupName}] 📚 ДЗ: ${fileName} #${groupTag}`);
 
       const tg = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp) || null;
       const initData = tg?.initData || '';
@@ -248,7 +246,6 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       }
 
       const doc = json.result.document || (json.result.photo ? json.result.photo[json.result.photo.length - 1] : null);
-      const messageId = json.result.message_id;
       const fileId = doc?.file_id;
 
       const streamUrl = json.direct_url || (json.sig && json.exp
@@ -261,7 +258,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       setFormAttachments(prev => [
         ...prev,
         {
-          name: file.name,
+          name: fileName,
           url: streamUrl,
           tgUrl: streamUrl,
           type: file.type.startsWith('image/') ? 'image' : 'file',
@@ -270,15 +267,41 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       ]);
 
       toast.dismiss(toastId);
-      toast.success(`Файл «${file.name}» сохранен в Telegram навсегда!`);
+      toast.success(`Файл «${fileName}» сохранен в Telegram навсегда!`);
     } catch (err: any) {
       console.error('Telegram upload error:', err);
       toast.dismiss(toastId);
       toast.error(`Не удалось сохранить в Telegram: ${err.message || 'Сбой сети'}`);
     } finally {
       setIsUploading(false);
-      e.target.value = '';
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          const file = items[i].getAsFile();
+          if (file) {
+            e.preventDefault();
+            uploadFile(file);
+            break;
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [isModalOpen, currentGroupId]);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    await uploadFile(files[0]);
   };
 
   const handleAddLink = () => {
@@ -928,6 +951,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
                     <span>{isUploading ? 'Загрузка...' : 'Прикрепить файл'}</span>
                     <input
                       type="file"
+                      ref={fileInputRef}
                       className="hidden"
                       onChange={handleFileUpload}
                       disabled={isUploading}

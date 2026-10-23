@@ -31,25 +31,6 @@
   </head>
   <body class="bg-[#eaeff5] dark:bg-slate-950 transition-colors duration-200">
     <div id="root"></div>
-    <script>
-      (function () {
-        if (document.querySelector('script[src*="index-"]')) return;
-        var isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-        if (!isLocal) {
-          var css = document.createElement('link');
-          css.rel = 'stylesheet';
-          css.crossOrigin = 'anonymous';
-          css.href = '/samgtu-schedule/assets/' + 'index-W1eCuaAm.css';
-          document.head.appendChild(css);
-
-          var js = document.createElement('script');
-          js.type = 'module';
-          js.crossOrigin = 'anonymous';
-          js.src = '/samgtu-schedule/assets/' + 'index-BMG4cvNE.js';
-          document.head.appendChild(js);
-        }
-      })();
-    </script>
     <script type="module" src="/index.tsx"></script>
   </body>
 </html>

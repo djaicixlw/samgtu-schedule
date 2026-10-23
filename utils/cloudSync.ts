@@ -96,7 +96,15 @@ export const sanitizeOverrides = (overrides: Record<string, Partial<Lesson>>): R
     if (patentPracticalIds.includes(id) && clean.teacher && clean.teacher.includes('Парфенов')) {
       clean.teacher = 'Колибасов Владимир Александрович';
     }
-    res[id] = clean;
+    // Clean up empty notes and note dates to prevent resurrection
+    if (clean.note !== undefined && clean.note.trim() === '') {
+      delete clean.note;
+      delete clean.noteDate;
+      delete clean.isNoteRecurring;
+    }
+    if (Object.keys(clean).length > 0) {
+      res[id] = clean;
+    }
   }
   return res;
 };
@@ -154,7 +162,7 @@ export const getLocalBackup = (groupId = 'ingt-310'): GroupCloudData => {
 };
 
 // Safe fetch with cache-busting and timeout
-const fetchJson = async (url: string, timeoutMs = 6000, signal?: AbortSignal) => {
+const fetchJson = async (url: string, timeoutMs = 6000, signal?: AbortSignal, forceFresh = true) => {
   if (signal?.aborted) return null;
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -168,14 +176,11 @@ const fetchJson = async (url: string, timeoutMs = 6000, signal?: AbortSignal) =>
       || (typeof globalThis !== 'undefined' && (globalThis as any).Telegram?.WebApp?.initData)
       || '';
 
-    const cacheBuster = url.includes('?') ? `&_t=${Date.now()}` : `?_t=${Date.now()}`;
-    const res = await fetch(url + cacheBuster, {
+    const res = await fetch(url, {
       signal: controller.signal,
-      cache: 'no-store',
+      cache: forceFresh ? 'no-cache' : 'default',
       headers: {
         'Accept': 'application/json',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
         ...(isAttendance ? { 'X-Telegram-Init-Data': initData } : {})
       }
     });
@@ -282,8 +287,8 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
     const gq = `groupId=${encodeURIComponent(groupId)}`;
     const endpoints = getEndpoints();
     const [schedRes, hwRes] = await Promise.allSettled([
-      fetchJson(`${endpoints.schedule}?${gq}`, 4000, signal),
-      fetchJson(`${endpoints.homework}?${gq}`, 4000, signal)
+      fetchJson(`${endpoints.schedule}?${gq}`, 4000, signal, force),
+      fetchJson(`${endpoints.homework}?${gq}`, 4000, signal, force)
     ]);
 
     if (signal?.aborted) return null;
@@ -435,6 +440,26 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
       ? sanitizeTeachers(partialUpdate.subjectTeachers, groupId)
       : sanitizeTeachers({ ...(lastFetchedDataMap[groupId]?.subjectTeachers || {}), ...(local.subjectTeachers || {}) }, groupId);
 
+    // Update in-memory cache synchronously so immediate read within 4000ms uses fresh data
+    if (lastFetchedDataMap[groupId]) {
+      if (partialUpdate.scheduleOverrides !== undefined) {
+        lastFetchedDataMap[groupId].scheduleOverrides = overrides;
+      }
+      if (partialUpdate.subjectTeachers !== undefined) {
+        lastFetchedDataMap[groupId].subjectTeachers = teachers;
+      }
+    } else {
+      lastFetchedDataMap[groupId] = {
+        homework: local.homework,
+        scheduleOverrides: overrides,
+        subjectTeachers: teachers,
+        attendance: local.attendance,
+        lastUpdated: Date.now(),
+        fromNetwork: true
+      };
+    }
+    lastFetchTimeMap[groupId] = Date.now();
+
     promises.push((async () => {
       const endpoints = getEndpoints();
       return await putJson(`${endpoints.schedule}?groupId=${encodeURIComponent(groupId)}`, {
@@ -489,9 +514,14 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
       })
     }));
 
+    const cleanItems = sanitizedHw.filter(it => !allDeleted.includes(it.id));
+    if (lastFetchedDataMap[groupId]) {
+      lastFetchedDataMap[groupId].homework = cleanItems;
+      lastFetchedDataMap[groupId].deletedIds = allDeleted;
+    }
+
     promises.push((async () => {
       const endpoints = getEndpoints();
-      const cleanItems = sanitizedHw.filter(it => !allDeleted.includes(it.id));
       return await putJson(`${endpoints.homework}?groupId=${encodeURIComponent(groupId)}`, {
         byGroup: {
           [groupId]: {

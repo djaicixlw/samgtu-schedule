@@ -14,7 +14,7 @@ import {
 } from '../attendance';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { Lesson, Student, WeekData } from '../types';
-import { getLocalStudents, syncAttendanceRecordsToV3 } from '../utils/attendanceStorage';
+import { getLocalStudents } from '../utils/attendanceStorage';
 import { loadGroupSchedule, isPhysicalEducationLesson, isPhysicalEducationLessonId } from '../utils/scheduleLoader';
 
 export interface AttendanceMatrixProps {
@@ -108,15 +108,21 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
   // Attendance hook
   const { records, markAttendance, getAttendance } = useAttendance(true, currentGroupId, refreshTrigger);
 
+  const getCleanStudents = (gid: string): Student[] => {
+    const local = getLocalStudents(gid);
+    if (local.length > 0) return local;
+    const fallback = STUDENTS_REGISTRY[gid] || [];
+    if (fallback.length > 0 && fallback.every(s => /^Студент\s+\d+$/i.test(s.name.trim()))) {
+      return [];
+    }
+    return fallback;
+  };
+
   // Load and refresh student roster
-  const [students, setStudents] = useState<Student[]>(() => {
-    const local = getLocalStudents(currentGroupId);
-    return local.length > 0 ? local : (STUDENTS_REGISTRY[currentGroupId] || []);
-  });
+  const [students, setStudents] = useState<Student[]>(() => getCleanStudents(currentGroupId));
 
   useEffect(() => {
-    const local = getLocalStudents(currentGroupId);
-    setStudents(local.length > 0 ? local : (STUDENTS_REGISTRY[currentGroupId] || []));
+    setStudents(getCleanStudents(currentGroupId));
   }, [currentGroupId, refreshTrigger]);
 
   // Load and cache schedule data for group
@@ -210,7 +216,6 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
     }
 
     markAttendance(dayISO, lesson.id, nextAbsent, nextExcused, false, lesson.hours || record.hours || 2);
-    syncAttendanceRecordsToV3(currentGroupId).catch(() => {});
     toast.success(`${studentName}: ${statusLabel}`, { duration: 1500 });
   };
 
@@ -348,10 +353,11 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
             if (!lesson) return;
             const rec = getAttendance(dayISO, lesson.id);
             if (rec.isCancelled) return;
+            const lessonHours = lesson.hours || rec?.hours || 2;
             if ((rec.excusedStudentIds || []).includes(student.id)) {
-              excusedHours += 2;
+              excusedHours += lessonHours;
             } else if (rec.absentStudentIds.includes(student.id)) {
-              absentHours += 2;
+              absentHours += lessonHours;
             }
           });
         });
@@ -849,7 +855,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
                       <th className="p-3 text-center min-w-[110px] border-r border-slate-200 dark:border-slate-700">
                         <div className="font-bold text-slate-900 dark:text-white">Блок 1</div>
                         <div className="text-[10px] text-slate-500 dark:text-slate-400 font-normal">
-                          31.08 – 20.09
+                          31.08 – 27.09
                         </div>
                       </th>
 

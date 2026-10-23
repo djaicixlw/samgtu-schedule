@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Pin, Search, Plus, Trash2, Edit3, X, Check,
   ExternalLink, FileText, Paperclip, Bookmark,
-  BookOpen, Filter, Download, ArrowUpRight, Send
+  BookOpen, Filter, Download, ArrowUpRight, Send, GripVertical
 } from 'lucide-react';
 import { UsefulItem, UsefulLink, HomeworkAttachment } from '../types';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, getGroupTag } from '../constants';
@@ -132,6 +132,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   const [linkTitleInput, setLinkTitleInput] = useState('');
   const [formAttachments, setFormAttachments] = useState<HomeworkAttachment[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const openAddModal = () => {
     setEditingItem(null);
@@ -231,12 +232,59 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     setFormLinks(prev => prev.filter((_, i) => i !== index));
   };
 
-  // File upload helper
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    const file = files[0];
+  // Drag-and-drop state for reordering notes (starosta / admin)
+  const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
+  const [dragOverItemId, setDragOverItemId] = useState<string | null>(null);
 
+  const handleDragStart = (e: React.DragEvent, id: string) => {
+    setDraggedItemId(id);
+    e.dataTransfer.effectAllowed = 'move';
+    try {
+      e.dataTransfer.setData('text/plain', id);
+    } catch {}
+  };
+
+  const handleDragOver = (e: React.DragEvent, id: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverItemId !== id) {
+      setDragOverItemId(id);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverItemId(null);
+  };
+
+  const handleDrop = async (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    setDragOverItemId(null);
+    const sourceId = draggedItemId || e.dataTransfer.getData('text/plain');
+    setDraggedItemId(null);
+
+    if (!sourceId || sourceId === targetId) return;
+
+    const sourceIndex = items.findIndex(it => it.id === sourceId);
+    const targetIndex = items.findIndex(it => it.id === targetId);
+    if (sourceIndex === -1 || targetIndex === -1) return;
+
+    const newItems = [...items];
+    const [moved] = newItems.splice(sourceIndex, 1);
+    newItems.splice(targetIndex, 0, moved);
+
+    // Reassign order
+    const orderedItems = newItems.map((item, index) => ({
+      ...item,
+      order: index
+    }));
+
+    setItems(orderedItems);
+    saveLocalUsefulItems(currentGroupId, orderedItems);
+    await pushGroupUsefulData(currentGroupId, orderedItems);
+  };
+
+  // File upload helper
+  const uploadFile = async (file: File) => {
     if (file.size > 20 * 1024 * 1024) {
       toast.error('Файл слишком большой (>20 МБ). Прикрепите ссылку на Яндекс.Диск или Облако');
       return;
@@ -248,12 +296,13 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     }
 
     setIsUploading(true);
-    const toastId = toast.loading(`Загрузка «${file.name}»...`);
+    const fileName = file.name || `useful_${Date.now()}.png`;
+    const toastId = toast.loading(`Загрузка «${fileName}»...`);
 
     try {
       const formData = new FormData();
-      formData.append('document', file, file.name);
-      formData.append('caption', `[${groupName}] 📌 Полезное: ${file.name} #${groupTag}`);
+      formData.append('document', file, fileName);
+      formData.append('caption', `[${groupName}] 📌 Полезное: ${fileName} #${groupTag}`);
 
       const tg = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp) || null;
       const initData = tg?.initData || '';
@@ -288,7 +337,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       setFormAttachments(prev => [
         ...prev,
         {
-          name: file.name,
+          name: fileName,
           url: streamUrl,
           tgUrl: streamUrl,
           type: file.type.startsWith('image/') ? 'image' : 'file',
@@ -297,15 +346,41 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       ]);
 
       toast.dismiss(toastId);
-      toast.success(`Файл «${file.name}» загружен`);
+      toast.success(`Файл «${fileName}» загружен`);
     } catch (err: any) {
       console.error('File upload error:', err);
       toast.dismiss(toastId);
       toast.error(`Не удалось загрузить файл: ${err.message || 'Сбой сети'}`);
     } finally {
       setIsUploading(false);
-      e.target.value = '';
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          const file = items[i].getAsFile();
+          if (file) {
+            e.preventDefault();
+            uploadFile(file);
+            break;
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [isModalOpen, currentGroupId, groupName, groupTag, formAttachments.length]);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    await uploadFile(files[0]);
   };
 
   const handleRemoveAttachment = (index: number) => {
@@ -764,15 +839,28 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
           {filteredItems.map(item => (
             <div
               key={item.id}
+              draggable={canEdit}
+              onDragStart={(e) => handleDragStart(e, item.id)}
+              onDragOver={(e) => handleDragOver(e, item.id)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, item.id)}
               className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 sm:p-5 shadow-xs transition-all ${
                 item.isPinned
                   ? 'border-amber-300 dark:border-amber-700/60 bg-amber-50/20 dark:bg-amber-950/10'
                   : 'border-slate-200/90 dark:border-slate-800'
-              }`}
+              } ${dragOverItemId === item.id ? 'ring-2 ring-indigo-500 scale-[1.01]' : ''}`}
             >
               {/* Card Header: Badges & Controls */}
               <div className="flex items-start justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-1.5">
+                  {canEdit && (
+                    <div 
+                      title="Перетащите для изменения порядка" 
+                      className="cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 dark:text-slate-600 dark:hover:text-slate-400 p-0.5 -ml-1 mr-0.5"
+                    >
+                      <GripVertical className="w-4 h-4" />
+                    </div>
+                  )}
                   {item.isPinned && (
                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300/80 dark:border-amber-800/80">
                       <Pin className="w-3 h-3 fill-current" /> Закреплено
@@ -1109,6 +1197,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                     <span>{isUploading ? 'Загрузка...' : 'Выбрать файл'}</span>
                     <input
                       type="file"
+                      ref={fileInputRef}
                       disabled={isUploading || formAttachments.length >= 10}
                       onChange={handleFileUpload}
                       className="hidden"

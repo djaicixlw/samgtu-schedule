@@ -2,6 +2,23 @@ import './setup_mock_auth';
 import { preloadAllSchedulesSync } from '../utils/scheduleNodeLoader';
 preloadAllSchedulesSync();
 
+// A failing assertion must fail the run: individual suites only print a marker (and some set
+// process.exitCode), so count markers here and exit non-zero at the end.
+let failureCount = 0;
+const FAIL_MARKER = /(❌|\[FAIL\]|✗ FAIL)/;
+const FAILED_COUNT = /FAILED:\s*(\d+)/;
+for (const level of ['log', 'warn', 'error'] as const) {
+  const original = console[level].bind(console);
+  console[level] = (...args: any[]) => {
+    try {
+      const line = args.map(a => (typeof a === 'string' ? a : String(a))).join(' ');
+      const counted = line.match(FAILED_COUNT);
+      if (FAIL_MARKER.test(line) || (counted && Number(counted[1]) > 0)) failureCount++;
+    } catch {}
+    original(...args);
+  };
+}
+
 console.log("Running all test suites sequentially...");
 await import('./test_ondemand_schedules');
 await import('./test_dates');
@@ -51,6 +68,12 @@ await runHomeworkLifecycleStressTest();
 await import('./test_stage2_schedule_filters');
 await import('./test_stage3_group_roster_archive');
 await import('./test_stage1_ui_and_double_hours');
+await import('./test_absences_notes_paste_dnd');
+await import('./test_p0_regressions');
+if (failureCount > 0 || (process.exitCode ?? 0) !== 0) {
+  console.log(`\n=== TEST RUN FAILED: ${failureCount} failure marker(s) ===`);
+  process.exit(1);
+}
 console.log("\n=================================================");
 console.log("       ALL TEST SUITES COMPLETED SUCCESSFULLY  ");
 console.log("=================================================");

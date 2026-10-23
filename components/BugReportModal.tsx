@@ -178,10 +178,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
     };
   }, [screenshotPreviews]);
 
-  if (!isOpen) return null;
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const rawFiles: File[] = e.target.files ? Array.from(e.target.files) : [];
+  const addScreenshotFiles = (rawFiles: File[]) => {
     if (rawFiles.length === 0) return;
 
     const availableSlots = 10 - screenshotFiles.length;
@@ -215,11 +212,86 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
     if (validFiles.length > 0) {
       setScreenshotFiles(prev => [...prev, ...validFiles]);
       setScreenshotPreviews(prev => [...prev, ...validPreviews]);
+      toast.success(`Прикреплен скриншот (${validFiles.length})`);
     }
 
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+  };
+
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const files = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
+    if (files.length > 0) {
+      addScreenshotFiles(files);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handlePaste = (e: ClipboardEvent) => {
+      const pastedFiles: File[] = [];
+
+      // 1. Files copied directly from file manager / clipboard
+      if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
+        for (let i = 0; i < e.clipboardData.files.length; i++) {
+          const file = e.clipboardData.files[i];
+          if (file.type.startsWith('image/')) {
+            const ext = file.type.split('/')[1] || 'png';
+            const fileName = file.name && file.name !== 'image.png' ? file.name : `screenshot_${Date.now()}_${i + 1}.${ext}`;
+            const namedFile = new File([file], fileName, { type: file.type || 'image/png' });
+            pastedFiles.push(namedFile);
+          }
+        }
+      }
+
+      // 2. Image blobs from screenshot tool (Win+Shift+S / PrintScreen)
+      if (pastedFiles.length === 0 && e.clipboardData?.items) {
+        const items = e.clipboardData.items;
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].type.startsWith('image/')) {
+            const file = items[i].getAsFile();
+            if (file) {
+              const ext = file.type.split('/')[1] || 'png';
+              const fileName = file.name && file.name !== 'image.png' ? file.name : `screenshot_${Date.now()}_${i + 1}.${ext}`;
+              const namedFile = new File([file], fileName, { type: file.type || 'image/png' });
+              pastedFiles.push(namedFile);
+            }
+          }
+        }
+      }
+
+      if (pastedFiles.length > 0) {
+        e.preventDefault();
+        addScreenshotFiles(pastedFiles);
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [isOpen, screenshotFiles.length]);
+
+  if (!isOpen) return null;
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawFiles: File[] = e.target.files ? Array.from(e.target.files) : [];
+    addScreenshotFiles(rawFiles);
   };
 
   const handleRemoveScreenshot = (index?: number) => {
@@ -651,14 +723,22 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
                       ))}
 
                       {screenshotPreviews.length < 10 && (
-                        <button
-                          type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="aspect-square border-2 border-dashed border-slate-200 dark:border-slate-700 hover:border-indigo-500 dark:hover:border-indigo-400 rounded-2xl flex flex-col items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors bg-slate-50/50 dark:bg-slate-800/30"
+                        <label
+                          onDragOver={handleDragOver}
+                          onDragLeave={handleDragLeave}
+                          onDrop={handleDrop}
+                          className="relative aspect-square border-2 border-dashed border-slate-200 dark:border-slate-700 hover:border-indigo-500 dark:hover:border-indigo-400 rounded-2xl flex flex-col items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors bg-slate-50/50 dark:bg-slate-800/30 cursor-pointer overflow-hidden"
                         >
-                          <Upload className="w-5 h-5 mb-1" />
-                          <span className="text-[10px] font-bold">+ Еще фото</span>
-                        </button>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            onChange={handleFileSelect}
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                          />
+                          <Upload className="w-5 h-5 mb-1 pointer-events-none" />
+                          <span className="text-[10px] font-bold pointer-events-none">+ Еще фото</span>
+                        </label>
                       )}
                     </div>
 
@@ -674,30 +754,35 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
                     </div>
                   </div>
                 ) : (
-                  <div
-                    onClick={() => fileInputRef.current?.click()}
-                    className="border-2 border-dashed border-slate-200 dark:border-slate-700 hover:border-indigo-500 dark:hover:border-indigo-400 rounded-2xl p-4 text-center cursor-pointer transition-colors bg-slate-50/50 dark:bg-slate-800/30 hover:bg-indigo-50/30 dark:hover:bg-indigo-950/20"
+                  <label
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    className={`relative block border-2 border-dashed rounded-2xl p-4 text-center cursor-pointer transition-colors overflow-hidden ${
+                      isDragging
+                        ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-950/40'
+                        : 'border-slate-200 dark:border-slate-700 hover:border-indigo-500 dark:hover:border-indigo-400 bg-slate-50/50 dark:bg-slate-800/30 hover:bg-indigo-50/30 dark:hover:bg-indigo-950/20'
+                    }`}
                   >
-                    <div className="w-9 h-9 mx-auto rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 mb-2">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleFileSelect}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    />
+                    <div className="w-9 h-9 mx-auto rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 mb-2 pointer-events-none">
                       <ImageIcon className="w-5 h-5" />
                     </div>
-                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 pointer-events-none">
                       Нажмите, чтобы прикрепить до 10 скриншотов
                     </p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">
+                    <p className="text-[10px] text-slate-400 mt-0.5 pointer-events-none">
                       PNG, JPG, WEBP (до 10 файлов, каждый до 10 МБ)
                     </p>
-                  </div>
+                  </label>
                 )}
-
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleFileSelect}
-                  className="hidden"
-                />
               </div>
 
               {/* Submit Buttons */}

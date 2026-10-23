@@ -52,8 +52,8 @@ for (const tc of datesToTest) {
 console.log("\n--- 3. Real HTML Snippet Parsing ---");
 const sampleHtml = `
 <div class="user-header">
-  <div class="user-name">Березин Алексей Александрович</div>
-  <div>Студент: 3-ИНГТ-24ИНГТ-110, № зачетной книжки: 24060179</div>
+  <div class="user-name">Иванов Иван Иванович</div>
+  <div>Студент: 3-ИНГТ-24ИНГТ-110, № зачетной книжки: 00000000</div>
 </div>
 
 <div class="schedule-card">
@@ -115,7 +115,7 @@ console.log(`Meta: Student=${parsed.meta.studentName}, Group=${parsed.meta.group
 console.log(`Raw lessons found: ${parsed.rawLessons.length}`);
 console.log(`Unique lessons across 4-week cycle: ${parsed.totalUniqueLessons} (Expected 6 after 2-week mirroring & deduplicating 29.09)`);
 
-if (parsed.meta.studentName === 'Березин Алексей Александрович' &&
+if (parsed.meta.studentName === 'Иванов Иван Иванович' &&
     parsed.meta.groupName === '3-ИНГТ-110' &&
     parsed.meta.normalizedGroupId === 'ingt-310' &&
     (parsed.totalUniqueLessons === 6 || parsed.totalUniqueLessons === 3)) {

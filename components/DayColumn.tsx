@@ -121,6 +121,7 @@ const DayColumn: React.FC<DayColumnProps> = ({
             <ClassCard 
               lesson={lesson} 
               dayName={daySchedule.dayName}
+              dayIso={dayIso}
               userRole={userRole}
               isCurrent={lesson.id === currentLesson?.id}
               onUpdateLesson={onUpdateLesson}
@@ -166,6 +167,7 @@ const DayColumn: React.FC<DayColumnProps> = ({
                     key={lesson.id}
                     lesson={lesson}
                     dayName={daySchedule.dayName}
+                    dayIso={dayIso}
                     userRole={userRole}
                     onUpdateLesson={onUpdateLesson}
                     onResetLesson={onResetLesson}
@@ -181,6 +183,7 @@ const DayColumn: React.FC<DayColumnProps> = ({
         <EditLessonModal
           lesson={newLessonTemplate}
           isOpen={isAddModalOpen}
+          targetDate={dayIso}
           onClose={() => setIsAddModalOpen(false)}
           onSave={(updated, scope) => {
             if (onUpdateLesson) {

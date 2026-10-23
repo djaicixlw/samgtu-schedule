@@ -53,6 +53,8 @@ export interface Lesson {
   groups?: string;
   subgroup?: number;
   note?: string;
+  noteDate?: string;
+  isNoteRecurring?: boolean;
   isCancelled?: boolean;
   isHidden?: boolean;
   order?: number;
@@ -108,6 +110,7 @@ export interface UsefulItem {
   subject?: string;       // привязка к предмету (опционально)
   tags?: string[];        // теги (#сессия, #лабы, #контакты)
   isPinned?: boolean;     // закрепление наверху
+  order?: number;         // пользовательский порядок перетаскивания (drag-and-drop)
   links?: UsefulLink[];   // до 10 ссылок (https)
   attachments?: HomeworkAttachment[]; // до 10 файлов/фото
   createdAt: string;

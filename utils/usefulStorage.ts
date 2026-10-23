@@ -75,6 +75,7 @@ export function sanitizeUsefulItem(raw: any, defaultGroupId: string): UsefulItem
     subject,
     tags,
     isPinned: Boolean(raw.isPinned),
+    order: typeof raw.order === 'number' ? raw.order : undefined,
     links,
     attachments,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
@@ -155,6 +156,11 @@ export function getLocalUsefulItems(groupId: string): UsefulItem[] {
         if (Boolean(a.isPinned) !== Boolean(b.isPinned)) {
           return a.isPinned ? -1 : 1;
         }
+        if (a.order !== undefined && b.order !== undefined) {
+          return a.order - b.order;
+        }
+        if (a.order !== undefined) return -1;
+        if (b.order !== undefined) return 1;
         return (b.createdAt || '').localeCompare(a.createdAt || '');
       });
   } catch (e) {
@@ -227,6 +233,11 @@ export async function fetchGroupUsefulData(
       if (Boolean(a.isPinned) !== Boolean(b.isPinned)) {
         return a.isPinned ? -1 : 1;
       }
+      if (a.order !== undefined && b.order !== undefined) {
+        return a.order - b.order;
+      }
+      if (a.order !== undefined) return -1;
+      if (b.order !== undefined) return 1;
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
 

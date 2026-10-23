@@ -1,0 +1,23 @@
+name: CI checks
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      # Type errors are real runtime errors here (an undeclared identifier throws at render time).
+      - run: npm run lint
+      # tests/run_all.ts exits non-zero when any suite prints a failure marker.
+      - run: npm test
+      - run: npm run build

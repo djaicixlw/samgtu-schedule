@@ -39,6 +39,10 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
     if (!groupId) return [];
     const local = getLocalStudents(groupId);
     const raw = local.length > 0 ? local : (STUDENTS_REGISTRY[groupId] || []);
+    const isAllDummy = raw.length > 0 && raw.every(s => /^Студент\s+\d+$/i.test(s.name.trim()));
+    if (isAllDummy && local.length === 0) {
+      return [];
+    }
     return ensureGroupSlots(groupId, raw);
   };
 

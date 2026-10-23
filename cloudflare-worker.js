@@ -42,19 +42,29 @@ export function sanitizeHomeworkItem(item, fallbackGroupId = '') {
   if (!item || typeof item !== 'object') return null;
   return {
     id: String(item.id || ''),
-    groupId: String(item.groupId || fallbackGroupId || ''),
+    groupId: String(item.groupId || fallbackGroupId || '').slice(0, 50),
     subject: String(item.subject || '').slice(0, 200),
-    title: String(item.title || '').slice(0, 300),
-    description: String(item.description || '').slice(0, 4000),
+    lessonId: item.lessonId ? String(item.lessonId).slice(0, 100) : undefined,
     assignedDate: String(item.assignedDate || '').slice(0, 30),
     dueDate: String(item.dueDate || '').slice(0, 30),
-    attachments: Array.isArray(item.attachments) ? item.attachments.slice(0, 10).map(att => ({
-      name: String(att.name || '').slice(0, 200),
-      type: String(att.type || 'file').slice(0, 30),
-      size: Number(att.size) || 0,
-      url: String(att.url || '').slice(0, 1000)
-    })) : [],
-    createdAt: String(item.createdAt || '').slice(0, 50)
+    title: String(item.title || '').slice(0, 300),
+    description: String(item.description || '').slice(0, 4000),
+    teacher: item.teacher ? String(item.teacher).slice(0, 150) : undefined,
+    attachments: Array.isArray(item.attachments) ? item.attachments.slice(0, 10).map(att => {
+      if (!att || typeof att !== 'object') return null;
+      return {
+        id: String(att.id || '').slice(0, 100),
+        name: String(att.name || '').slice(0, 200),
+        type: String(att.type || 'file').slice(0, 30),
+        size: typeof att.size === 'number' || typeof att.size === 'string' ? String(att.size).slice(0, 30) : 0,
+        url: String(att.url || '').slice(0, 1000),
+        tgUrl: att.tgUrl ? String(att.tgUrl).slice(0, 1000) : undefined,
+        fileId: att.fileId ? String(att.fileId).slice(0, 200) : undefined
+      };
+    }).filter(Boolean) : [],
+    createdAt: String(item.createdAt || '').slice(0, 50),
+    createdBy: item.createdBy ? String(item.createdBy).slice(0, 100) : undefined,
+    updatedAt: item.updatedAt ? (typeof item.updatedAt === 'number' ? item.updatedAt : String(item.updatedAt).slice(0, 50)) : undefined
   };
 }
 
@@ -101,7 +111,18 @@ export function sanitizeScheduleOverride(ov) {
   if (ov.isCancelled !== undefined) res.isCancelled = Boolean(ov.isCancelled);
   if (ov.isHidden !== undefined) res.isHidden = Boolean(ov.isHidden);
   if (ov.hours !== undefined) res.hours = Number(ov.hours);
-  if (ov.note !== undefined) res.note = String(ov.note).slice(0, 500);
+  if (ov.note !== undefined) {
+    const cleanNote = String(ov.note).trim().slice(0, 500);
+    if (cleanNote) {
+      res.note = cleanNote;
+      if (ov.noteDate !== undefined) res.noteDate = String(ov.noteDate).slice(0, 30);
+      if (ov.isNoteRecurring !== undefined) res.isNoteRecurring = Boolean(ov.isNoteRecurring);
+    }
+  }
+  if (ov.order !== undefined) res.order = Number(ov.order);
+  if (ov.timeStart !== undefined) res.timeStart = String(ov.timeStart).slice(0, 20);
+  if (ov.timeEnd !== undefined) res.timeEnd = String(ov.timeEnd).slice(0, 20);
+  if (ov.updatedAt !== undefined) res.updatedAt = typeof ov.updatedAt === 'number' ? ov.updatedAt : String(ov.updatedAt).slice(0, 50);
   if (Array.isArray(ov.attachments)) {
     res.attachments = ov.attachments.slice(0, 10).map(att => {
       if (!att || typeof att !== 'object') return null;
@@ -338,6 +359,7 @@ export function getCorsHeaders(request, env, pathname = '') {
   return {
     "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Max-Age": "86400",
     "Access-Control-Allow-Headers": "Content-Type, Accept, Cache-Control, Pragma, Authorization, X-App-Key, X-Telegram-Init-Data, X-Staff-Token",
     "Vary": "Origin",
   };
@@ -521,10 +543,10 @@ export function extractInitDataFromRequest(request) {
 
   const authHeader = request.headers.get("Authorization");
   if (authHeader) {
-    if (authHeader.startsWith("Bearer ")) {
-      return authHeader.slice(7).trim();
-    }
-    return authHeader.trim();
+    const candidate = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
+    // A staff token ("<b64>.<hex>") must never be mistaken for Telegram initData:
+    // only values that look like an initData query string are treated as such.
+    if (candidate.includes("hash=") && candidate.includes("auth_date=")) return candidate;
   }
   return null;
 }
@@ -700,6 +722,230 @@ export async function checkUserGroupAccess(appData, userBlindId, groupId) {
   return false;
 }
 
+const CLAIM_GROUP_ALIASES = {
+  // FAID (Факультет архитектуры и дизайна)
+  '3-фаид-110': 'faid-310',
+  '3-faid-110': 'faid-310',
+  '3 фаид 110': 'faid-310',
+  'фаид-110': 'faid-310',
+  'faid-110': 'faid-310',
+  '24фад-110': 'faid-310',
+  '24фаид-110': 'faid-310',
+  'фаид-310': 'faid-310',
+  '3-фаид-310': 'faid-310',
+
+  // INGT (Институт нефтегазовых технологий)
+  'ingt-1': 'ingt-301',
+  '3-ингт-101': 'ingt-301',
+  '3-ingt-101': 'ingt-301',
+  '3-ингт-110': 'ingt-310',
+  '3-ingt-110': 'ingt-310',
+  '3-ингт-111': 'ingt-311',
+  '3-ingt-111': 'ingt-311',
+  '3-ингт-113': 'ingt-313',
+  '3-ingt-113': 'ingt-313',
+  '2-ингт-109': 'ingt-209',
+  '2-ingt-109': 'ingt-209',
+  'ingt-109': 'ingt-209',
+
+  // IAIT (Институт автоматики и информационных технологий)
+  '3-иаит-108': 'iait-308',
+  '3-iait-108': 'iait-308',
+
+  // HTF (Химико-технологический факультет)
+  '2 хтф 115': 'htf-215',
+  '2-хтф-115': 'htf-215',
+  '2-htf-115': 'htf-215',
+  'хтф-115': 'htf-215',
+  'htf-115': 'htf-215'
+};
+
+/**
+ * POST /v3/staff/claim.
+ * Bounded cost: at most 3 PBKDF2 derivations per secret (group, admin) per request, no
+ * 5<->S style guessing variants. Rate limiting is keyed by IP (always) and by (group, IP)
+ * only for groups that really exist, so rotating fake group ids cannot mint fresh counters
+ * or create unbounded KV keys. The group code is checked first; the admin code is a fallback.
+ */
+async function handleStaffClaim(request, env, corsHeaders, userBlindId) {
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" }
+  });
+
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+
+  const { gid, code } = body || {};
+  if (!code || typeof code !== 'string' || code.length > 64) {
+    return json({ error: "Missing or invalid code" }, 400);
+  }
+
+  const rawCode = code.trim().toUpperCase();
+  const cleanCode = normalizeAccessCode(code);
+  // Bounded typo tolerance: whole-string 5<->S swaps only (2 extra candidates, not 2^k combinations).
+  const swapChars = (str, a, b) => str.split(a).join(b);
+  const candidates = Array.from(new Set([
+    cleanCode,
+    rawCode,
+    cleanCode.replace(/-/g, ''),
+    swapChars(cleanCode, '5', 'S'),
+    swapChars(cleanCode, 'S', '5')
+  ]));
+
+  const isGroupClaim = Boolean(gid && typeof gid === 'string' && gid.trim() && gid.trim().toLowerCase() !== 'admin');
+  const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
+  const rawGid = isGroupClaim ? gid.trim().toLowerCase().slice(0, 64) : '';
+  const targetGid = CLAIM_GROUP_ALIASES[rawGid] || rawGid;
+
+  const readAttempts = async (key) => {
+    const raw = await env.APP_DATA.get(key);
+    const n = raw ? parseInt(raw, 10) : 0;
+    return Number.isFinite(n) ? n : 0;
+  };
+  const bump = (key, n) => env.APP_DATA.put(key, String(n + 1), { expirationTtl: 900 });
+  const tooMany = () => json({ error: "Too many attempts. Please try again later." }, 429);
+
+  const ipKey = isGroupClaim ? `rl:claim:ip:${clientIp}` : `rl:claim:admin:${userBlindId || clientIp}`;
+  const ipLimit = isGroupClaim ? 30 : 5;
+  const ipAttempts = await readAttempts(ipKey);
+  if (ipAttempts >= ipLimit) return tooMany();
+
+  let groupData = null;
+  let groupKvKey = null;
+  let groupRlKey = null;
+  let groupAttempts = 0;
+  if (isGroupClaim) {
+    if (!targetGid) {
+      await bump(ipKey, ipAttempts);
+      return json({ error: "Invalid claim code or missing gid" }, 401);
+    }
+    groupKvKey = "g:" + targetGid;
+    let groupRaw = await env.APP_DATA.get(groupKvKey);
+    if (!groupRaw && targetGid !== rawGid) {
+      groupKvKey = "g:" + rawGid;
+      groupRaw = await env.APP_DATA.get(groupKvKey);
+    }
+    if (groupRaw) {
+      groupRlKey = `rl:claim:${targetGid}:${clientIp}`;
+      groupAttempts = await readAttempts(groupRlKey);
+      if (groupAttempts >= 5) return tooMany();
+      try { groupData = JSON.parse(groupRaw); } catch { return json({ error: "Corrupted group record" }, 500); }
+    }
+  }
+
+  const matches = async (secrets) => {
+    if (!secrets || !secrets.codeSalt || !secrets.codeHash) return false;
+    for (const cand of candidates) {
+      const calc = await pbkdf2(cand, secrets.codeSalt);
+      if (await safeEqual(calc, secrets.codeHash)) return true;
+    }
+    return false;
+  };
+  const fail = async (status, message) => {
+    await bump(ipKey, ipAttempts);
+    if (groupRlKey) await bump(groupRlKey, groupAttempts);
+    return json({ error: message }, status);
+  };
+
+  // 1. Group code
+  if (groupData && await matches(groupData)) {
+    if (!env.ID_PEPPER) return json({ error: "Server configuration error: ID_PEPPER missing" }, 500);
+    if (groupRlKey) await env.APP_DATA.delete(groupRlKey);
+    groupData.staff = Array.isArray(groupData.staff) ? groupData.staff : [];
+    if (userBlindId && !groupData.staff.includes(userBlindId)) {
+      groupData.staff.push(userBlindId);
+      await env.APP_DATA.put(groupKvKey, JSON.stringify(groupData));
+    }
+    const staffToken = await createStaffToken(env.ID_PEPPER, {
+      gid: targetGid,
+      role: "starosta",
+      exp: Date.now() + 30 * 86400000
+    });
+    return json({ ok: true, role: "starosta", gid: targetGid, token: staffToken });
+  }
+
+  // 2. Admin code (fallback)
+  let adminData = null;
+  const adminRaw = await env.APP_DATA.get("g:admin");
+  if (adminRaw) {
+    try { adminData = JSON.parse(adminRaw); } catch {}
+  } else if (env.ADMIN_CODE_HASH) {
+    adminData = { codeSalt: env.ADMIN_CODE_SALT || "", codeHash: env.ADMIN_CODE_HASH, staff: [] };
+  }
+  if (adminData && await matches(adminData)) {
+    if (!env.ID_PEPPER) return json({ error: "Server configuration error: ID_PEPPER missing" }, 500);
+    await env.APP_DATA.delete(ipKey);
+    adminData.staff = Array.isArray(adminData.staff) ? adminData.staff : [];
+    if (userBlindId && !adminData.staff.includes(userBlindId)) {
+      adminData.staff.push(userBlindId);
+      await env.APP_DATA.put("g:admin", JSON.stringify(adminData));
+    }
+    const staffToken = await createStaffToken(env.ID_PEPPER, {
+      gid: "admin",
+      role: "admin",
+      exp: Date.now() + 30 * 86400000
+    });
+    return json({ ok: true, role: "admin", token: staffToken });
+  }
+
+  // 3. Failure
+  if (!isGroupClaim) return fail(401, "Invalid claim code or missing gid");
+  if (!groupData) return fail(404, "Group not found");
+  if (!groupData.codeSalt || !groupData.codeHash) return fail(403, "Group code not configured");
+  return fail(401, "Invalid group code");
+}
+
+const ATT_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const ATT_GID_RE = /^[^\s:]{1,64}$/u;
+const ATT_SLOT_RE = /^[0-9A-Za-z_-]{1,32}$/;
+const ATT_LESSON_KEY_RE = /^[0-9A-Za-z._-]{1,24}$/;
+const ATT_MAX_SLOTS = 80;
+const ATT_MAX_MARKS_PER_SLOT = 400;
+const ATT_MAX_CANCELLED = 400;
+
+/** Returns an error message for invalid /v3/att parameters, or null when they are acceptable. */
+export function validateAttParams(gid, month) {
+  if (typeof gid !== 'string' || !ATT_GID_RE.test(gid)) return "Invalid gid";
+  if (typeof month !== 'string' || !ATT_MONTH_RE.test(month)) return "Invalid month (expected YYYY-MM)";
+  return null;
+}
+
+/** Returns an error message when a PUT /v3/att patch/cancel payload exceeds structural limits, or null. */
+export function validateAttPatch(patch, cancel, hours) {
+  if (patch !== undefined && patch !== null) {
+    if (typeof patch !== 'object' || Array.isArray(patch)) return "Invalid patch";
+    const slotIds = Object.keys(patch);
+    if (slotIds.length > ATT_MAX_SLOTS) return "Patch has too many slots";
+    for (const slotId of slotIds) {
+      if (!ATT_SLOT_RE.test(slotId)) return "Invalid slot id in patch";
+      const marks = patch[slotId];
+      if (marks === null || marks === undefined) continue;
+      if (typeof marks !== 'object' || Array.isArray(marks)) return "Invalid slot marks in patch";
+      const keys = Object.keys(marks);
+      if (keys.length > ATT_MAX_MARKS_PER_SLOT) return "Too many marks for one slot";
+      for (const k of keys) if (!ATT_LESSON_KEY_RE.test(k)) return "Invalid lesson key in patch";
+    }
+  }
+  if (cancel !== undefined && cancel !== null) {
+    const keys = Array.isArray(cancel) ? cancel : (typeof cancel === 'object' ? Object.keys(cancel) : null);
+    if (!keys) return "Invalid cancel";
+    if (keys.length > ATT_MAX_CANCELLED) return "Too many cancelled lessons";
+    for (const k of keys) if (typeof k !== 'string' && typeof k !== 'number') return "Invalid cancelled lesson key";
+    for (const k of keys) if (!ATT_LESSON_KEY_RE.test(String(k))) return "Invalid cancelled lesson key";
+  }
+  if (hours !== undefined && hours !== null) {
+    if (typeof hours !== 'object' || Array.isArray(hours)) return "Invalid hours";
+    const entries = Object.entries(hours);
+    if (entries.length > ATT_MAX_CANCELLED) return "Too many hours entries";
+    for (const [k, v] of entries) {
+      if (!ATT_LESSON_KEY_RE.test(k)) return "Invalid hours lesson key";
+      if (v !== null && !(Number.isInteger(v) && v >= 1 && v <= 12)) return "Invalid hours value (expected integer 1-12 or null)";
+    }
+  }
+  return null;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -761,12 +1007,14 @@ export default {
         if (initDataStr) {
           const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN);
           if (!verifyResult.ok) {
-            return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
-              status: 401,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-          if (verifyResult.user?.id) {
+            // A valid staff token is sufficient on its own (e.g. initData older than 24h in a long-lived WebView).
+            if (!tokenPayload) {
+              return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
+                status: 401,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+          } else if (verifyResult.user?.id) {
             userBlindId = await blindId(env, verifyResult.user.id);
           }
         }
@@ -790,242 +1038,7 @@ export default {
 
         // 1. POST /v3/staff/claim
         if (url.pathname === "/v3/staff/claim" && request.method === "POST") {
-          let body;
-          try {
-            body = await request.json();
-          } catch {
-            return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-              status: 400,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          const { gid, code } = body || {};
-          if (!code || typeof code !== 'string') {
-            return new Response(JSON.stringify({ error: "Missing or invalid code" }), {
-              status: 400,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          const rawCode = code.trim().toUpperCase();
-          const cleanCode = normalizeAccessCode(code);
-          const strippedCode = cleanCode.replace(/-/g, '');
-
-          // Crockford Base32 visual confusion tolerance (5 <-> S, 0 <-> O, 1 <-> I)
-          const baseVariants = new Set([rawCode, cleanCode, strippedCode]);
-          if (rawCode.includes('5')) baseVariants.add(rawCode.replace(/5/g, 'S'));
-          if (rawCode.includes('S')) baseVariants.add(rawCode.replace(/S/g, '5'));
-          if (rawCode.includes('0')) baseVariants.add(rawCode.replace(/0/g, 'O'));
-          if (rawCode.includes('O')) baseVariants.add(rawCode.replace(/O/g, '0'));
-          if (rawCode.includes('1')) baseVariants.add(rawCode.replace(/1/g, 'I'));
-          if (rawCode.includes('I')) baseVariants.add(rawCode.replace(/I/g, '1'));
-
-          baseVariants.add(
-            rawCode
-              .replace(/5/g, 'S')
-              .replace(/O/g, '0')
-              .replace(/I/g, '1')
-          );
-          baseVariants.add(
-            rawCode
-              .replace(/S/g, '5')
-              .replace(/0/g, 'O')
-              .replace(/I/g, '1')
-          );
-
-          const candidatesSet = new Set();
-          for (const variant of baseVariants) {
-            candidatesSet.add(variant);
-            const strippedVar = variant.replace(/[^0-9A-Z]/g, '');
-            candidatesSet.add(strippedVar);
-            if (strippedVar.length === 16) {
-              const formattedVar = `${strippedVar.slice(0, 4)}-${strippedVar.slice(4, 8)}-${strippedVar.slice(8, 12)}-${strippedVar.slice(12, 16)}`;
-              candidatesSet.add(formattedVar);
-            }
-          }
-          const candidates = Array.from(candidatesSet);
-
-          const isGroupClaim = Boolean(gid && typeof gid === 'string' && gid.trim() && gid.toLowerCase() !== 'admin');
-          const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
-          const rlKey = isGroupClaim ? `rl:claim:${gid.trim().toLowerCase()}:${clientIp}` : `rl:claim:admin:${userBlindId}`;
-
-          const attemptsRaw = await env.APP_DATA.get(rlKey);
-          const attempts = attemptsRaw ? parseInt(attemptsRaw, 10) : 0;
-          if (attempts >= 5) {
-            return new Response(JSON.stringify({ error: "Too many attempts. Please try again later." }), {
-              status: 429,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          // 1. Check if code matches global admin (g:admin or env.ADMIN_CODE_HASH)
-          const adminRaw = await env.APP_DATA.get("g:admin");
-          let adminData = null;
-          if (adminRaw) {
-            try { adminData = JSON.parse(adminRaw); } catch {}
-          } else if (env && env.ADMIN_CODE_HASH) {
-            adminData = {
-              codeSalt: env.ADMIN_CODE_SALT || "",
-              codeHash: env.ADMIN_CODE_HASH,
-              staff: []
-            };
-          }
-
-          if (adminData && adminData.codeSalt && adminData.codeHash) {
-            let isAdminMatch = false;
-            for (const cand of candidates) {
-              const calcHash = await pbkdf2(cand, adminData.codeSalt);
-              if (await safeEqual(calcHash, adminData.codeHash)) {
-                isAdminMatch = true;
-                break;
-              }
-            }
-
-            if (isAdminMatch) {
-              await env.APP_DATA.delete(rlKey);
-              adminData.staff = Array.isArray(adminData.staff) ? adminData.staff : [];
-              if (userBlindId && !adminData.staff.includes(userBlindId)) {
-                adminData.staff.push(userBlindId);
-                await env.APP_DATA.put("g:admin", JSON.stringify(adminData));
-              }
-              if (!env?.ID_PEPPER) {
-                return new Response(JSON.stringify({ error: "Server configuration error: ID_PEPPER missing" }), {
-                  status: 500,
-                  headers: { ...corsHeaders, "Content-Type": "application/json" }
-                });
-              }
-              const staffToken = await createStaffToken(env.ID_PEPPER, {
-                gid: "admin",
-                role: "admin",
-                exp: Date.now() + 30 * 86400000
-              });
-              return new Response(JSON.stringify({ ok: true, role: "admin", token: staffToken }), {
-                status: 200,
-                headers: { ...corsHeaders, "Content-Type": "application/json" }
-              });
-            }
-          }
-
-          const rawGid = (gid && typeof gid === 'string') ? gid.trim().toLowerCase() : '';
-          const CANONICAL_ALIASES = {
-            // FAID (Факультет архитектуры и дизайна)
-            '3-фаид-110': 'faid-310',
-            '3-faid-110': 'faid-310',
-            '3 фаид 110': 'faid-310',
-            'фаид-110': 'faid-310',
-            'faid-110': 'faid-310',
-            '24фад-110': 'faid-310',
-            '24фаид-110': 'faid-310',
-            'фаид-310': 'faid-310',
-            '3-фаид-310': 'faid-310',
-
-            // INGT (Институт нефтегазовых технологий)
-            'ingt-1': 'ingt-301',
-            '3-ингт-101': 'ingt-301',
-            '3-ingt-101': 'ingt-301',
-            '3-ингт-110': 'ingt-310',
-            '3-ingt-110': 'ingt-310',
-            '3-ингт-111': 'ingt-311',
-            '3-ingt-111': 'ingt-311',
-            '3-ингт-113': 'ingt-313',
-            '3-ingt-113': 'ingt-313',
-            '2-ингт-109': 'ingt-209',
-            '2-ingt-109': 'ingt-209',
-            'ingt-109': 'ingt-209',
-
-            // IAIT (Институт автоматики и информационных технологий)
-            '3-иаит-108': 'iait-308',
-            '3-iait-108': 'iait-308',
-
-            // HTF (Химико-технологический факультет)
-            '2 хтф 115': 'htf-215',
-            '2-хтф-115': 'htf-215',
-            '2-htf-115': 'htf-215',
-            'хтф-115': 'htf-215',
-            'htf-115': 'htf-215'
-          };
-          let targetGid = CANONICAL_ALIASES[rawGid] || rawGid;
-
-          if (!targetGid) {
-            await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
-            return new Response(JSON.stringify({ error: "Invalid claim code or missing gid" }), {
-              status: 401,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          let groupRaw = await env.APP_DATA.get("g:" + targetGid);
-          if (!groupRaw && targetGid !== rawGid) {
-            groupRaw = await env.APP_DATA.get("g:" + rawGid);
-          }
-          if (!groupRaw) {
-            await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
-            return new Response(JSON.stringify({ error: "Group not found" }), {
-              status: 404,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          let groupData;
-          try {
-            groupData = JSON.parse(groupRaw);
-          } catch {
-            return new Response(JSON.stringify({ error: "Corrupted group record" }), {
-              status: 500,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          if (!groupData.codeSalt || !groupData.codeHash) {
-            await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
-            return new Response(JSON.stringify({ error: "Group code not configured" }), {
-              status: 403,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          let isValid = false;
-          for (const cand of candidates) {
-            const calcHash = await pbkdf2(cand, groupData.codeSalt);
-            if (await safeEqual(calcHash, groupData.codeHash)) {
-              isValid = true;
-              break;
-            }
-          }
-
-          if (!isValid) {
-            await env.APP_DATA.put(rlKey, String(attempts + 1), { expirationTtl: 900 });
-            return new Response(JSON.stringify({ error: "Invalid group code" }), {
-              status: 401,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          await env.APP_DATA.delete(rlKey);
-          groupData.staff = Array.isArray(groupData.staff) ? groupData.staff : [];
-          if (userBlindId && !groupData.staff.includes(userBlindId)) {
-            groupData.staff.push(userBlindId);
-          }
-          await env.APP_DATA.put("g:" + targetGid, JSON.stringify(groupData));
-
-          if (!env?.ID_PEPPER) {
-            return new Response(JSON.stringify({ error: "Server configuration error: ID_PEPPER missing" }), {
-              status: 500,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-
-          const staffToken = await createStaffToken(env.ID_PEPPER, {
-            gid: targetGid,
-            role: "starosta",
-            exp: Date.now() + 30 * 86400000
-          });
-
-          return new Response(JSON.stringify({ ok: true, role: "starosta", gid: targetGid, token: staffToken }), {
-            status: 200,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
+          return handleStaffClaim(request, env, corsHeaders, userBlindId);
         }
 
         // 2. POST /v3/slots
@@ -1174,6 +1187,15 @@ export default {
               headers: { ...corsHeaders, "Content-Type": "application/json" }
             });
           }
+          {
+            const paramError = validateAttParams(gid, month);
+            if (paramError) {
+              return new Response(JSON.stringify({ error: paramError }), {
+                status: 400,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+          }
 
           const groupRaw = await env.APP_DATA.get("g:" + gid);
           if (!groupRaw) {
@@ -1201,7 +1223,7 @@ export default {
           }
 
           const attRaw = await env.APP_DATA.get(`a:${gid}:${month}`);
-          let monthData = { ver: 0, slots: {}, cancelled: [] };
+          let monthData = { ver: 0, slots: {}, cancelled: [], hours: {} };
           if (attRaw) {
             try {
               const parsed = JSON.parse(attRaw);
@@ -1209,6 +1231,7 @@ export default {
                 ver: Number(parsed.ver) || 0,
                 slots: (parsed.slots && typeof parsed.slots === 'object') ? parsed.slots : {},
                 cancelled: Array.isArray(parsed.cancelled) ? parsed.cancelled : [],
+                hours: (parsed.hours && typeof parsed.hours === 'object' && !Array.isArray(parsed.hours)) ? parsed.hours : {},
                 updatedAt: Number(parsed.updatedAt) || 0
               };
             } catch {}
@@ -1232,12 +1255,21 @@ export default {
             });
           }
 
-          const { gid, month, baseVer, patch, cancel } = body || {};
+          const { gid, month, baseVer, patch, cancel, hours } = body || {};
           if (!gid || !month || typeof gid !== 'string' || typeof month !== 'string') {
             return new Response(JSON.stringify({ error: "Missing or invalid gid or month" }), {
               status: 400,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
             });
+          }
+          {
+            const paramError = validateAttParams(gid, month) || validateAttPatch(patch, cancel, hours);
+            if (paramError) {
+              return new Response(JSON.stringify({ error: paramError }), {
+                status: 400,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
           }
 
           const groupRaw = await env.APP_DATA.get("g:" + gid);
@@ -1266,7 +1298,7 @@ export default {
           }
 
           const attRaw = await env.APP_DATA.get(`a:${gid}:${month}`);
-          let current = { ver: 0, slots: {}, cancelled: [], updatedAt: 0 };
+          let current = { ver: 0, slots: {}, cancelled: [], hours: {}, updatedAt: 0 };
           if (attRaw) {
             try {
               const parsed = JSON.parse(attRaw);
@@ -1274,6 +1306,7 @@ export default {
                 ver: Number(parsed.ver) || 0,
                 slots: (parsed.slots && typeof parsed.slots === 'object') ? parsed.slots : {},
                 cancelled: Array.isArray(parsed.cancelled) ? parsed.cancelled : [],
+                hours: (parsed.hours && typeof parsed.hours === 'object' && !Array.isArray(parsed.hours)) ? parsed.hours : {},
                 updatedAt: Number(parsed.updatedAt) || 0
               };
             } catch {}
@@ -1287,6 +1320,7 @@ export default {
               ver: current.ver,
               slots: current.slots,
               cancelled: current.cancelled,
+              hours: current.hours,
               updatedAt: current.updatedAt
             }), {
               status: 409,
@@ -1322,6 +1356,13 @@ export default {
                 }
               }
               current.cancelled = Array.from(cancelledSet);
+            }
+          }
+
+          if (hours && typeof hours === 'object' && !Array.isArray(hours)) {
+            for (const [lessonKey, val] of Object.entries(hours)) {
+              if (val === null) delete current.hours[lessonKey];
+              else if (Number.isInteger(val) && val >= 1 && val <= 12) current.hours[lessonKey] = val;
             }
           }
 
@@ -1546,28 +1587,9 @@ export default {
               } catch {}
             }
 
-            const targetMonths = new Set();
-            if (url.searchParams.get("month")) {
-              targetMonths.add(url.searchParams.get("month"));
-            }
-            const now = new Date(Date.now() + 4 * 60 * 60 * 1000);
-            const y = now.getUTCFullYear();
-            for (let m = 1; m <= 12; m++) {
-              targetMonths.add(`${y}-${String(m).padStart(2, '0')}`);
-              targetMonths.add(`${y - 1}-${String(m).padStart(2, '0')}`);
-            }
-            for (const m of targetMonths) {
-              const attRaw = await env.APP_DATA.get(`a:${userData.gid}:${m}`);
-              if (attRaw) {
-                try {
-                  const attData = JSON.parse(attRaw);
-                  if (attData.slots && attData.slots[userData.slot]) {
-                    delete attData.slots[userData.slot];
-                    await env.APP_DATA.put(`a:${userData.gid}:${m}`, JSON.stringify(attData));
-                  }
-                } catch {}
-              }
-            }
+            // ИСПРАВЛЕНО (A-5): Журнал посещаемости принадлежит группе и деканату.
+            // Студент при отвязке аккаунта удаляет только свою связку u:{blindId},
+            // но НЕ может стереть выставленные старостой пропуски в a:{gid}:{month}.
           }
 
           return new Response(JSON.stringify({ ok: true, deleted: true }), {
@@ -1721,10 +1743,24 @@ export default {
             });
           }
 
+          if (String(data).length > 50000 || String(iv).length > 100 || String(salt).length > 100) {
+            return new Response(JSON.stringify({ error: "Roster payload too large" }), {
+              status: 413,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+
           const existingRaw = await env.APP_DATA.get("r:" + canonicalGid);
           let existingVer = 0;
           if (existingRaw) {
             try { existingVer = JSON.parse(existingRaw)?.ver || 0; } catch {}
+          }
+          // Optional optimistic concurrency: a client that sends its last known `ver` gets 409 when it is stale.
+          if (typeof ver === 'number' && existingVer > 0 && ver !== existingVer) {
+            return new Response(JSON.stringify({ error: "Conflict: roster was modified by another session", ver: existingVer }), {
+              status: 409,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
           }
           const nextVer = existingVer + 1;
           const payloadToStore = {
@@ -1944,7 +1980,9 @@ export default {
           : null;
 
         if (expectedSecret) {
-          if (headerSecret !== expectedSecret && pathSecret !== expectedSecret) {
+          const headerOk = headerSecret ? await safeEqual(headerSecret, String(expectedSecret)) : false;
+          const pathOk = pathSecret ? await safeEqual(pathSecret, String(expectedSecret)) : false;
+          if (!headerOk && !pathOk) {
             return new Response(JSON.stringify({ error: "Unauthorized: Invalid webhook secret" }), {
               status: 401,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2418,7 +2456,18 @@ export default {
             data.sig = sig;
           }
         }
-        return new Response(JSON.stringify(data), {
+        // Never echo Telegram's raw response (it contains the receiving chat and the bot);
+        // return only the fields clients actually use.
+        const pickFile = (f) => f ? { file_id: f.file_id, file_unique_id: f.file_unique_id, file_name: f.file_name, file_size: f.file_size, mime_type: f.mime_type } : undefined;
+        const safeBody = { ok: Boolean(data && data.ok) };
+        if (data && data.ok && data.result) {
+          const photo = Array.isArray(data.result.photo) && data.result.photo.length ? data.result.photo[data.result.photo.length - 1] : null;
+          safeBody.result = { document: pickFile(data.result.document || photo) };
+        } else if (data && data.description) {
+          safeBody.description = String(data.description).slice(0, 200);
+        }
+        for (const k of ['direct_url', 'exp', 'sig', 'stored', 'warning']) if (data && data[k] !== undefined) safeBody[k] = data[k];
+        return new Response(JSON.stringify(safeBody), {
           status: resStatus,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -2426,11 +2475,18 @@ export default {
 
       // 2b. Private Document Export for Starosta (Word .docx reports)
       if (url.pathname === "/export-doc" && request.method === "POST") {
-        if (!(await requireAppKey(request, APP_SECRET))) {
-          return new Response(JSON.stringify({ error: "Unauthorized: Invalid or missing X-App-Key" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
+        const exportHasAppKey = await requireAppKey(request, APP_SECRET);
+        if (!exportHasAppKey) {
+          const exportInit = extractInitDataFromRequest(request);
+          const exportVerify = exportInit
+            ? await verifyTelegramInitData(exportInit, TELEGRAM_BOT_TOKEN)
+            : { ok: false };
+          if (!exportVerify.ok || !exportVerify.user || !exportVerify.user.id) {
+            return new Response(JSON.stringify({ error: "Unauthorized: Telegram initData required" }), {
+              status: 401,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
         }
 
         if (!BOT_TOKEN) {
@@ -2498,6 +2554,16 @@ export default {
         }
 
         // Step 2: Fallback to private storage chat if direct send failed or initData is absent
+        // Документ содержит реальные ФИО студентов: его нельзя пересылать в чат разработчика!
+        if (!sentToUser && !exportHasAppKey) {
+          return new Response(JSON.stringify({
+            error: "Не удалось отправить файл в личные сообщения. Откройте бота в Telegram, нажмите Start и повторите попытку.",
+            code: "PM_NOT_DELIVERED"
+          }), {
+            status: 502,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
         if (!sentToUser) {
           const fallbackFormData = new FormData();
           fallbackFormData.append("chat_id", String(PRIVATE_STORAGE_CHAT));
@@ -2767,6 +2833,11 @@ export default {
           });
         }
 
+        if (body && typeof body === 'object') {
+          for (const [k, max] of [['message', 600], ['stack', 2000], ['component', 80], ['group', 64], ['platform', 80], ['userAgent', 200], ['timestamp', 40]]) {
+            if (typeof body[k] === 'string' && body[k].length > max) body[k] = body[k].slice(0, max);
+          }
+        }
         const message = body.message;
         if (!message || typeof message !== 'string') {
           return new Response(JSON.stringify({ error: "Missing or invalid 'message' field" }), {
@@ -2830,7 +2901,7 @@ export default {
         });
 
         const tgJson = await tgRes.json().catch(() => ({}));
-        return new Response(JSON.stringify({ ok: true, telegram: tgJson }), {
+        return new Response(JSON.stringify({ ok: Boolean(tgJson && tgJson.ok) }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });

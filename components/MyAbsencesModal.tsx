@@ -16,6 +16,10 @@ import {
   getLocalStudentLink
 } from '../utils/attendanceStorage';
 import { toast } from 'sonner';
+import { SCHEDULE_REGISTRY } from '../constants';
+import { getSemesterWeek, getDayName } from '../utils/samaraDate';
+import { isPhysicalEducationLesson, isPhysicalEducationLessonId } from '../utils/scheduleLoader';
+import { Lesson } from '../types';
 
 interface MyAbsencesModalProps {
   isOpen: boolean;
@@ -28,6 +32,74 @@ interface AbsenceEntry {
   dateStr: string;
   pairNum: string;
   type: 'e' | 'u';
+  hours: number;
+  subject?: string;
+}
+
+function resolveLessonDetails(gid: string, dateStr: string, pairNum: string): { lesson?: Lesson; isPE: boolean; hours: number } {
+  try {
+    const curYear = new Date().getFullYear();
+    const parts = dateStr.split('-').map(Number);
+    let yr = curYear;
+    let mo = 1;
+    let da = 1;
+    if (parts.length === 3) {
+      yr = parts[0];
+      mo = parts[1];
+      da = parts[2];
+    } else if (parts.length === 2) {
+      mo = parts[0];
+      da = parts[1];
+    }
+    const dt = new Date(yr, mo - 1, da, 12, 0, 0);
+    const week = getSemesterWeek(dt, gid);
+    const dayName = getDayName(dt);
+
+    let scheduleDays = (SCHEDULE_REGISTRY as any)[gid]?.[week];
+    if (!scheduleDays) {
+      try {
+        const cached = localStorage.getItem(`sched_cache_v1:${gid}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          scheduleDays = parsed?.data?.[week];
+        }
+      } catch {}
+    }
+
+    if (Array.isArray(scheduleDays)) {
+      const dayObj = scheduleDays.find((d: any) => d.dayName === dayName);
+      if (dayObj && Array.isArray(dayObj.lessons)) {
+        // 1. Primary: match by trailing lessonId number (since /v3/att key was created from rec.lessonId.match(/(\d+)$/))
+        let matched: Lesson | undefined = dayObj.lessons.find((l: any) => {
+          if (!l || !l.id) return false;
+          return l.id.endsWith('-' + pairNum) || (l.id.match(/-(\d+)$/) || [])[1] === pairNum;
+        });
+
+        // 2. Secondary: match by order/slot
+        if (!matched) {
+          matched = dayObj.lessons.find((l: any) => {
+            if (!l) return false;
+            return l.order !== undefined && String(l.order) === pairNum;
+          });
+        }
+
+        // 3. Fallback: array index
+        if (!matched) {
+          const pIdx = Number(pairNum) - 1;
+          if (pIdx >= 0 && pIdx < dayObj.lessons.length) {
+            matched = dayObj.lessons[pIdx];
+          }
+        }
+
+        if (matched) {
+          const isPE = isPhysicalEducationLesson(matched) || isPhysicalEducationLessonId(matched.id, gid);
+          const hours = matched.hours === 4 ? 4 : 2;
+          return { lesson: matched, isPE, hours };
+        }
+      }
+    }
+  } catch {}
+  return { isPE: false, hours: 2 };
 }
 
 const RUSSIAN_MONTHS = [
@@ -65,6 +137,7 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
   const [gid, setGid] = useState<string>('');
   const [slot, setSlot] = useState<string>('');
   const [marks, setMarks] = useState<Record<string, 'e' | 'u'>>({});
+  const [cancelledList, setCancelledList] = useState<string[]>([]);
   const [isLinked, setIsLinked] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -87,8 +160,10 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
           if (res.gid) setGid(res.gid);
           if (res.slot) setSlot(res.slot);
           setMarks(res.marks || {});
+          setCancelledList(res.cancelled || []);
         } else {
           setMarks({});
+          setCancelledList([]);
         }
       } else {
         setErrorMessage(res.error || 'Не удалось загрузить данные');
@@ -109,30 +184,53 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
   // Compute parsed absence items & statistics
   const { absenceList, totalHours, unexcusedHours, excusedHours, totalPairs, unexcusedPairs, excusedPairs } = useMemo(() => {
     const list: AbsenceEntry[] = [];
-    let unexcusedCount = 0; // 'u' = unexcused / неуважительная (Н)
-    let excusedCount = 0;   // 'e' = excused / уважительная (УП)
+    let unexcusedH = 0;
+    let excusedH = 0;
+    let unexcusedP = 0;
+    let excusedP = 0;
+
+    const cancelledSet = new Set(cancelledList);
 
     Object.entries(marks).forEach(([key, type]) => {
       const dotIndex = key.lastIndexOf('.');
       const dateStr = dotIndex !== -1 ? key.substring(0, dotIndex) : key;
       const pairNum = dotIndex !== -1 ? key.substring(dotIndex + 1) : '1';
 
-      list.push({ rawKey: key, dateStr, pairNum, type });
-      if (type === 'u') unexcusedCount++;
-      else if (type === 'e') excusedCount++;
+      if (cancelledSet.has(key)) return;
+
+      const details = resolveLessonDetails(gid, dateStr, pairNum);
+      // Strictly exclude PE lessons so student profile is 100% in sync with dean office and attendance matrix
+      if (details.isPE) return;
+
+      const hours = details.hours;
+      list.push({
+        rawKey: key,
+        dateStr,
+        pairNum,
+        type,
+        hours,
+        subject: details.lesson?.subject
+      });
+
+      if (type === 'u') {
+        unexcusedH += hours;
+        unexcusedP++;
+      } else if (type === 'e') {
+        excusedH += hours;
+        excusedP++;
+      }
     });
 
-    const totPairs = unexcusedCount + excusedCount;
     return {
       absenceList: list,
-      totalHours: totPairs * 2,
-      unexcusedHours: unexcusedCount * 2,
-      excusedHours: excusedCount * 2,
-      totalPairs: totPairs,
-      unexcusedPairs: unexcusedCount,
-      excusedPairs: excusedCount
+      totalHours: unexcusedH + excusedH,
+      unexcusedHours: unexcusedH,
+      excusedHours: excusedH,
+      totalPairs: unexcusedP + excusedP,
+      unexcusedPairs: unexcusedP,
+      excusedPairs: excusedP
     };
-  }, [marks]);
+  }, [marks, cancelledList, gid]);
 
   // Group absences by date, sorted descending
   const groupedAbsences = useMemo(() => {
@@ -287,7 +385,7 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
 
               <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
                 <Clock className="w-3.5 h-3.5" />
-                <span>Каждая пара = 2 академических часа</span>
+                <span>Официальный подсчет (без физкультуры, 2 ч или 4 ч за пару)</span>
               </div>
 
               {/* Absences List Grouped by Date */}
@@ -329,13 +427,20 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
                               key={item.rawKey}
                               className="flex items-center justify-between py-1.5 px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700/40 text-xs"
                             >
-                              <div className="flex items-center gap-2">
-                                <span className="font-bold text-slate-700 dark:text-slate-300">
-                                  {item.pairNum} пара
-                                </span>
-                                <span className="text-[10px] text-slate-400">
-                                  (2 ч)
-                                </span>
+                              <div className="flex flex-col pr-2 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-slate-700 dark:text-slate-300">
+                                    {item.pairNum} пара
+                                  </span>
+                                  <span className="text-[10px] text-slate-400">
+                                    ({item.hours} ч)
+                                  </span>
+                                </div>
+                                {item.subject && (
+                                  <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[190px] sm:max-w-[260px]">
+                                    {item.subject}
+                                  </span>
+                                )}
                               </div>
 
                               <div>

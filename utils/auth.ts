@@ -63,12 +63,8 @@ export async function verifyPinCode(inputPin: string, targetGroupId?: string): P
       };
     }
 
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem('user_role');
-        localStorage.removeItem('starosta_group_id');
-      }
-    } catch (e) {}
+    // N-8: Do not wipe existing starosta session from localStorage on 429 or network errors.
+    // Explicit sign-out is handled exclusively by handleLogout.
     return null;
   } catch (err) {
     console.warn('Network or temporary server error during verifyPinCode:', err);

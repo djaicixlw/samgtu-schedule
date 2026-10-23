@@ -17,11 +17,11 @@ import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuPa
 import { normalizeGroupId } from './utils/groupAliases';
 import ScheduleState from './components/ScheduleState';
 import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason, isPhysicalEducationLesson } from './utils/scheduleLoader';
-import { getLocalStudentLink, claimStaffRole, getLocalStudents, restoreRosterFromCloud } from './utils/attendanceStorage';
+import { getLocalStudentLink, claimStaffRole, getLocalStudents, restoreRosterFromCloud, syncAttendanceRecordsToV3, unlinkStudentV3 } from './utils/attendanceStorage';
 import {
   LogIn, LogOut, Calendar, BookOpen, Bug, ClipboardCheck, Sun, Moon,
   GraduationCap, Users, RefreshCw, Shield, User as UserIcon, Key, UserCheck, ChevronDown,
-  Search, Plus, X, Terminal, RotateCcw, Database, Bell, BellOff
+  Search, Plus, X, Terminal, RotateCcw, Database, Bell, BellOff, Trash2
 } from 'lucide-react';
 
 // Code-split heavy tabs and modals with auto-retry on new deployments
@@ -797,11 +797,11 @@ const App: React.FC = () => {
     };
 
     const getNextDelay = (failures: number): number => {
-      // Exponential backoff: 15s -> 30s -> 60s max
-      const base = Math.min(60000, 15000 * Math.pow(2, failures));
-      // Jitter ±3 seconds (±3000ms)
-      const jitter = (Math.random() * 6000) - 3000;
-      return Math.max(5000, Math.min(60000, Math.round(base + jitter)));
+      // Exponential backoff: 60s -> 120s -> 180s max
+      const base = Math.min(180000, 60000 * Math.pow(2, failures));
+      // Jitter ±10 seconds
+      const jitter = (Math.random() * 20000) - 10000;
+      return Math.max(30000, Math.min(180000, Math.round(base + jitter)));
     };
 
     const scheduleNextPoll = () => {
@@ -914,6 +914,30 @@ const App: React.FC = () => {
     setIsRefreshing(true);
     setRefreshTrigger(prev => prev + 1);
     try {
+      // If there are unsaved local attendance changes, push them before refreshing
+      const dirty = typeof localStorage !== 'undefined' && localStorage.getItem(`attendance_dirty_${currentGroupId}`) === 'true';
+      if (dirty) {
+        try {
+          await syncAttendanceRecordsToV3(currentGroupId);
+        } catch (e) {
+          console.warn('Pre-refresh attendance sync error:', e);
+        }
+      }
+
+      // Clear HTTP/PWA caches without touching localStorage
+      if (typeof window !== 'undefined' && 'caches' in window) {
+        try {
+          const cacheKeys = await window.caches.keys();
+          await Promise.all(cacheKeys.map(k => window.caches.delete(k)));
+        } catch {}
+      }
+      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+        try {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(regs.map(r => r.update()));
+        } catch {}
+      }
+
       const cloud = await fetchGroupCloudData(true, currentGroupId);
       if (cloud && cloud.fromNetwork) {
         if (cloud.scheduleOverrides !== undefined) {
@@ -939,6 +963,65 @@ const App: React.FC = () => {
       toast.error('Не удалось обновить данные с сервера');
     } finally {
       setTimeout(() => setIsRefreshing(false), 500);
+    }
+  };
+
+  const [isDeletingData, setIsDeletingData] = useState(false);
+
+  const handleDeleteMyData = async () => {
+    let hasDirty = false;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('attendance_dirty_') && localStorage.getItem(key) === 'true') {
+          hasDirty = true;
+          break;
+        }
+      }
+    } catch {}
+
+    if (hasDirty) {
+      const confirmDirty = window.confirm(
+        'Внимание! На этом устройстве есть несинхронизированные отметки посещаемости. При удалении локальных данных они будут потеряны. Вы уверены, что хотите продолжить?'
+      );
+      if (!confirmDirty) return;
+    }
+
+    const confirmed = window.confirm(
+      'Вы уверены, что хотите удалить персональные данные и отвязать ваш Telegram-аккаунт от группы? Ваши локальные настройки будут сброшены. Облачный журнал старосты останется неизменным.'
+    );
+    if (!confirmed) return;
+
+    setIsDeletingData(true);
+    try {
+      const res = await unlinkStudentV3();
+      if (res.ok) {
+        try {
+          const keysToRemove: string[] = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && (
+              key.startsWith('student_link_') ||
+              key.startsWith('tg_user_') ||
+              key.startsWith('user_role') ||
+              key.startsWith('attendance_dirty_')
+            )) {
+              keysToRemove.push(key);
+            }
+          }
+          keysToRemove.forEach(k => localStorage.removeItem(k));
+        } catch {}
+
+        toast.success('Персональные данные успешно удалены, аккаунт отвязан');
+        setUserRole('student');
+        setRefreshTrigger(prev => prev + 1);
+      } else {
+        toast.error(res.error || 'Не удалось удалить данные на сервере');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Ошибка сети при обращении к серверу');
+    } finally {
+      setIsDeletingData(false);
     }
   };
 
@@ -1036,6 +1119,8 @@ const App: React.FC = () => {
     // If note is emptied or whitespace, delete the note property so it does not persist
     if (updatedLesson.note !== undefined && updatedLesson.note.trim() === '') {
       delete merged.note;
+      delete merged.noteDate;
+      delete merged.isNoteRecurring;
     }
 
     // Cancellation is always date-specific and stored in attendanceRecords for the selected date (not global across all weeks)
@@ -1293,9 +1378,25 @@ const App: React.FC = () => {
           r => r.date === isoDate && r.lessonId === lesson.id && r.isCancelled
         );
 
+        let resolvedNote = override.note !== undefined ? override.note : lesson.note;
+        let resolvedNoteDate = override.noteDate !== undefined ? override.noteDate : lesson.noteDate;
+        let resolvedIsNoteRecurring = override.isNoteRecurring !== undefined ? override.isNoteRecurring : lesson.isNoteRecurring;
+
+        // Date-bound note check: suppress notes from other dates or un-dated legacy notes from September
+        if (resolvedNote && !resolvedIsNoteRecurring) {
+          if (resolvedNoteDate && resolvedNoteDate !== isoDate) {
+            resolvedNote = undefined;
+          } else if (!resolvedNoteDate && isoDate && !isoDate.startsWith('2026-09')) {
+            resolvedNote = undefined;
+          }
+        }
+
         return {
           ...lesson,
           ...override,
+          note: resolvedNote,
+          noteDate: resolvedNote ? resolvedNoteDate : undefined,
+          isNoteRecurring: resolvedNote ? resolvedIsNoteRecurring : false,
           teacher: resolvedTeacher,
           isCancelled: isCancelledInAttendance,
           isHidden: !!override.isHidden
@@ -1313,6 +1414,18 @@ const App: React.FC = () => {
         })
         .map(([id, rawOv]) => {
           const ov = rawOv as Partial<Lesson>;
+          let resolvedNote = ov.note;
+          let resolvedNoteDate = ov.noteDate;
+          let resolvedIsNoteRecurring = ov.isNoteRecurring;
+
+          if (resolvedNote && !resolvedIsNoteRecurring) {
+            if (resolvedNoteDate && resolvedNoteDate !== isoDate) {
+              resolvedNote = undefined;
+            } else if (!resolvedNoteDate && isoDate && !isoDate.startsWith('2026-09')) {
+              resolvedNote = undefined;
+            }
+          }
+
           return {
             id,
             timeStart: ov.timeStart || '08:00',
@@ -1322,7 +1435,10 @@ const App: React.FC = () => {
             location: ov.location || '',
             teacher: ov.teacher || '',
             order: ov.order || (standardLessons.length + 1),
-            ...ov
+            ...ov,
+            note: resolvedNote,
+            noteDate: resolvedNote ? resolvedNoteDate : undefined,
+            isNoteRecurring: resolvedNote ? resolvedIsNoteRecurring : false
           } as Lesson;
         });
 
@@ -1865,7 +1981,7 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Privacy Policy Card */}
+            {/* Privacy and Data Management Card */}
             <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/50 space-y-3">
               <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
                 <Shield className="w-4 h-4 text-indigo-500" />
@@ -1874,13 +1990,23 @@ const App: React.FC = () => {
               <p className="text-[11px] text-slate-400">
                 Как защищены ваши данные, почему сервер не знает фамилий и как удалить свои сведения в один клик.
               </p>
-              <button
-                onClick={() => setIsPrivacyModalOpen(true)}
-                className="w-full py-2.5 px-4 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold text-xs rounded-xl transition-all shadow-sm min-h-[44px] flex items-center justify-center gap-2"
-              >
-                <Shield className="w-3.5 h-3.5 text-indigo-500" />
-                Политика конфиденциальности
-              </button>
+              <div className="flex flex-col gap-2 pt-1">
+                <button
+                  onClick={() => setIsPrivacyModalOpen(true)}
+                  className="w-full py-2.5 px-4 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold text-xs rounded-xl transition-all shadow-sm min-h-[44px] flex items-center justify-center gap-2"
+                >
+                  <Shield className="w-3.5 h-3.5 text-indigo-500" />
+                  Политика конфиденциальности
+                </button>
+                <button
+                  onClick={handleDeleteMyData}
+                  disabled={isDeletingData}
+                  className="w-full py-2.5 px-4 bg-white dark:bg-slate-800 hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/40 font-bold text-xs rounded-xl transition-all shadow-sm min-h-[44px] flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                  {isDeletingData ? 'Удаление данных...' : 'Удалить мои данные'}
+                </button>
+              </div>
             </div>
 
             {/* Diagnostics & In-App Console Card - Only visible to Admin */}

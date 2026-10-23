@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Student, Registry } from './types';
-import { syncAttendanceRecordsToV3, pullAttendanceRecordsFromV3, getSavedStaffToken } from './utils/attendanceStorage';
+import { syncAttendanceRecordsToV3, pullAttendanceRecordsFromV3, getSavedStaffToken, rebaseAttendanceBase } from './utils/attendanceStorage';
+import { merge3, snapshotBase, BaseMap } from './utils/attendanceMerge3';
 import { getSamaraISODate } from './utils/samaraDate';
 import { SEED_ATTENDANCE } from './defaultData';
 import { isPhysicalEducationLesson, isPhysicalEducationLessonId } from './utils/scheduleLoader';
@@ -67,6 +68,10 @@ export function mergeAttendance(
 ): AttendanceRecord[] {
   const map = new Map<string, AttendanceRecord>();
 
+  // Lesson length is a property of the lesson, not of who marked it: never lose it when one side lacks it.
+  const withHours = (winner: AttendanceRecord, other?: AttendanceRecord): AttendanceRecord =>
+    (winner.hours === undefined && other && other.hours !== undefined) ? { ...winner, hours: other.hours } : winner;
+
   const getRecordTime = (r: AttendanceRecord): number => {
     if (r.updatedAt) {
       if (typeof r.updatedAt === 'number') return r.updatedAt;
@@ -100,7 +105,7 @@ export function mergeAttendance(
       const key = `${r.date}_${r.lessonId}`;
       const existing = map.get(key);
       if (!existing || getRecordTime(r) > getRecordTime(existing)) {
-        map.set(key, r);
+        map.set(key, withHours(r, existing));
       }
     }
   }
@@ -113,10 +118,10 @@ export function mergeAttendance(
       const existing = map.get(key);
       if (!existing) {
         map.set(key, r);
+      } else if (getRecordTime(r) > getRecordTime(existing)) {
+        map.set(key, withHours(r, existing));
       } else {
-        if (getRecordTime(r) > getRecordTime(existing)) {
-          map.set(key, r);
-        }
+        map.set(key, withHours(existing, r));
       }
     }
   }
@@ -124,7 +129,39 @@ export function mergeAttendance(
   return Array.from(map.values());
 }
 
-let globalSyncQueue: Promise<void> = Promise.resolve();
+// Cloud pushes are coalesced per group: taps made while a push is running or waiting collapse into
+// one push of the latest snapshot (each push only sends changed cells anyway).
+const SYNC_DEBOUNCE_MS = 400;
+const pendingSyncByGroup = new Map<string, AttendanceRecord[]>();
+const runningSyncGroups = new Set<string>();
+
+const runCoalescedSync = async (groupId: string): Promise<void> => {
+  if (runningSyncGroups.has(groupId)) return; // the running loop will pick up the newest snapshot
+  runningSyncGroups.add(groupId);
+  try {
+    while (pendingSyncByGroup.has(groupId)) {
+      await new Promise(resolve => setTimeout(resolve, SYNC_DEBOUNCE_MS));
+      const snapshot = pendingSyncByGroup.get(groupId)!;
+      pendingSyncByGroup.delete(groupId);
+      try {
+        const res = await syncAttendanceRecordsToV3(groupId, snapshot);
+        if (res && res.ok) {
+          // A newer snapshot may have been queued while this push was running: keep the dirty flag then.
+          if (!pendingSyncByGroup.has(groupId)) localStorage.removeItem(`attendance_dirty_${groupId}`);
+        } else {
+          localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
+          if ((res as any)?.status === 401 && typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('samgtu:auth-expired'));
+          }
+        }
+      } catch (e) {
+        localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
+      }
+    }
+  } finally {
+    runningSyncGroups.delete(groupId);
+  }
+};
 
 export const useAttendance = (isAuthenticated: boolean, currentGroupId: string | null, refreshTrigger: number = 0) => {
   const sanitizeGroupRecords = (recs: AttendanceRecord[], gid: string): AttendanceRecord[] => {
@@ -227,22 +264,35 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
         const dirty = typeof localStorage !== 'undefined' && localStorage.getItem(`attendance_dirty_${currentGroupId}`) === 'true';
         let merged = local;
         if (remote && remote.length > 0) {
-          // If local records are dirty/unpushed, prioritize local over remote in collision
-          merged = dirty 
-            ? mergeAttendance(remote, local, currentGroupId)
-            : mergeAttendance(local, remote, currentGroupId);
+          let baseMap: BaseMap | null = null;
+          try {
+            const rawBase = typeof localStorage !== 'undefined' ? localStorage.getItem(`attendance_base_map_${currentGroupId}`) : null;
+            if (rawBase) baseMap = JSON.parse(rawBase);
+          } catch {}
+
+          const fetchedMonths = new Set<string>();
+          remote.forEach(r => { if (r && r.date) fetchedMonths.add(r.date.slice(0, 7)); });
+
+          const res3 = merge3(local, baseMap, remote, fetchedMonths);
+          merged = res3.merged;
           setRecords(merged);
           recordsRef.current = merged;
           try {
             localStorage.setItem(`attendance_${currentGroupId}`, JSON.stringify(merged));
+            localStorage.setItem(`attendance_base_map_${currentGroupId}`, JSON.stringify(res3.base));
           } catch {}
+          // Nothing pending locally: the merged state equals the server state, so it becomes the new sync base.
+          if (!dirty) rebaseAttendanceBase(currentGroupId, merged);
         }
 
         // 2. PUSH any local marks that may have been created or are marked dirty
         if (dirty || (local.length > 0 && (!remote || remote.length === 0))) {
-          await syncAttendanceRecordsToV3(currentGroupId, merged);
-          if (isMounted) {
+          const pushRes = await syncAttendanceRecordsToV3(currentGroupId, merged);
+          if (isMounted && pushRes && pushRes.ok) {
             localStorage.removeItem(`attendance_dirty_${currentGroupId}`);
+            try {
+              localStorage.setItem(`attendance_base_map_${currentGroupId}`, JSON.stringify(snapshotBase(merged)));
+            } catch {}
           }
         }
       } catch (e) {
@@ -336,22 +386,10 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
       localStorage.setItem(`attendance_${groupId}`, JSON.stringify(updatedRecords));
     } catch (e) {}
 
-    // 4. Linearize cloud push requests through promise queue to prevent race conditions
-    globalSyncQueue = globalSyncQueue.then(async () => {
-      try {
-        const res = await syncAttendanceRecordsToV3(groupId, updatedRecords);
-        if (res && res.ok) {
-          localStorage.removeItem(`attendance_dirty_${groupId}`);
-        } else {
-          localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
-          if ((res as any)?.status === 401 && typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('samgtu:auth-expired'));
-          }
-        }
-      } catch (e) {
-        localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
-      }
-    });
+    // 4. Mark dirty immediately (a pull must not overwrite unsent marks), then push coalesced snapshots.
+    try { localStorage.setItem(`attendance_dirty_${groupId}`, 'true'); } catch {}
+    pendingSyncByGroup.set(groupId, updatedRecords);
+    void runCoalescedSync(groupId);
   };
 
   const markAttendance = async (

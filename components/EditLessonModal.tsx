@@ -12,6 +12,7 @@ interface EditLessonModalProps {
   onClose: () => void;
   onSave: (updatedLesson: Partial<Lesson>, applyScope?: TeacherAssignmentScope) => void;
   onReset: () => void;
+  targetDate?: string;
 }
 
 const EditLessonModal: React.FC<EditLessonModalProps> = ({
@@ -20,11 +21,14 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
   onClose,
   onSave,
   onReset,
+  targetDate,
 }) => {
   const [subject, setSubject] = useState(lesson.subject);
   const [teacher, setTeacher] = useState(lesson.teacher || '');
   const [location, setLocation] = useState(lesson.location || '');
   const [note, setNote] = useState(lesson.note || '');
+  const [noteDate, setNoteDate] = useState<string | undefined>(lesson.noteDate || targetDate);
+  const [isNoteRecurring, setIsNoteRecurring] = useState<boolean>(!!lesson.isNoteRecurring);
   const [hours, setHours] = useState<number>(lesson.hours === 4 ? 4 : 2);
   const [isCancelled, setIsCancelled] = useState<boolean>(!!lesson.isCancelled);
   const [isHidden, setIsHidden] = useState<boolean>(!!lesson.isHidden);
@@ -40,6 +44,27 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isUploadingRef = useRef(false);
+  const uploadFileRef = useRef<(file: File) => void>(() => {});
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          const file = items[i].getAsFile();
+          if (file) {
+            e.preventDefault();
+            uploadFileRef.current(file);
+            break;
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -60,12 +85,9 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
     setAttachments(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  const uploadAndAttach = async (file: File) => {
     if (isUploadingRef.current) return;
     isUploadingRef.current = true;
-    const file = files[0];
 
     if (attachments.length >= 10) {
       toast.error('Максимум 10 материалов к одной паре');
@@ -92,13 +114,24 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
     }
   };
 
+  uploadFileRef.current = (file: File) => { void uploadAndAttach(file); };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    await uploadAndAttach(files[0]);
+  };
+
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    const cleanNote = note.trim();
     onSave({
       subject,
       teacher,
       location,
-      note,
+      note: cleanNote,
+      noteDate: cleanNote ? (isNoteRecurring ? undefined : (noteDate || targetDate)) : undefined,
+      isNoteRecurring: cleanNote ? isNoteRecurring : false,
       isCancelled,
       isHidden,
       hours,
@@ -222,6 +255,27 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
               onChange={(e) => setNote(e.target.value)}
               className="w-full px-3.5 py-2.5 text-base sm:text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none text-slate-900 dark:text-white"
             />
+            {note.trim().length > 0 && (
+              <div className="mt-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/60 p-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700/60">
+                <span>Повторять каждые 4 недели:</span>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isNoteRecurring}
+                    onChange={(e) => {
+                      setIsNoteRecurring(e.target.checked);
+                      if (e.target.checked) {
+                        setNoteDate(undefined);
+                      } else {
+                        setNoteDate(targetDate);
+                      }
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="w-8 h-4 bg-slate-300 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
+                </label>
+              </div>
+            )}
           </div>
 
           {/* Lesson Duration Switcher (№3: 2 часа / 4 часа сдвоенная) */}

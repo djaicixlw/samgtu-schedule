@@ -8,6 +8,7 @@ import { isPhysicalEducationLesson } from '../utils/scheduleLoader';
 interface ClassCardProps {
   lesson: Lesson;
   dayName?: string;
+  dayIso?: string;
   userRole?: string;
   isCurrent?: boolean;
   onUpdateLesson?: (lessonId: string, updated: Partial<Lesson>, applyScope?: TeacherAssignmentScope, lessonDayName?: string) => void;
@@ -17,6 +18,7 @@ interface ClassCardProps {
 const ClassCard: React.FC<ClassCardProps> = ({ 
   lesson, 
   dayName,
+  dayIso,
   userRole = 'student',
   isCurrent = false,
   onUpdateLesson,
@@ -109,7 +111,7 @@ const ClassCard: React.FC<ClassCardProps> = ({
             {lesson.subject}
           </h3>
 
-          {lesson.note && lesson.note.trim() !== '' && (
+          {lesson.note && lesson.note.trim() !== '' && (lesson.isNoteRecurring || !lesson.noteDate || !dayIso || lesson.noteDate === dayIso) && (
             <div className="mb-2.5 p-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200/60 dark:border-amber-700/30 rounded-xl flex items-start gap-1.5 text-xs text-amber-900 dark:text-amber-300">
               <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
               <span className="leading-tight text-[11px] font-medium">{lesson.note.trim()}</span>
@@ -185,6 +187,7 @@ const ClassCard: React.FC<ClassCardProps> = ({
         <EditLessonModal
           lesson={lesson}
           isOpen={isEditModalOpen}
+          targetDate={dayIso}
           onClose={() => setIsEditModalOpen(false)}
           onSave={(updated, applyScope) => onUpdateLesson && onUpdateLesson(lesson.id, updated, applyScope, dayName)}
           onReset={() => onResetLesson && onResetLesson(lesson.id)}

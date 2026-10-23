@@ -114,9 +114,12 @@ export const exportAttendanceToWord = async (
       cumulativeAbsences += blockAbsences;
       cumulativeExcused += blockExcused;
       
+      const hasStarted = today >= block.start || blockAbsences > 0 || blockExcused > 0;
       const parts = [];
-      if (cumulativeAbsences > 0) parts.push(`${cumulativeAbsences} Не УП`);
-      if (cumulativeExcused > 0) parts.push(`${cumulativeExcused} УП`);
+      if (hasStarted) {
+        if (cumulativeAbsences > 0) parts.push(`${cumulativeAbsences} Не УП`);
+        if (cumulativeExcused > 0) parts.push(`${cumulativeExcused} УП`);
+      }
       const cellText = parts.length > 0 ? parts.join(', ') : '0';
 
       return new TableCell({
@@ -278,25 +281,7 @@ export const exportAttendanceToWord = async (
         console.warn('/export-doc probe failed, trying live upload fallback:', docErr);
       }
 
-      // Live worker fallback: If /export-doc is not active on live worker, use live /upload
-      if (!directUrl) {
-        try {
-          const uploadRes = await fetch(`${WORKER_BASE}/upload`, {
-            method: 'POST',
-            headers,
-            body: formData
-          });
-          if (uploadRes.ok) {
-            const uploadData = await uploadRes.json();
-            const fileId = uploadData.result?.document?.file_id;
-            if (fileId) {
-              directUrl = `${WORKER_BASE}/file?file_id=${fileId}&download=1&filename=${encodeURIComponent(filename)}`;
-            }
-          }
-        } catch (uploadErr) {
-          console.warn('/upload fallback failed:', uploadErr);
-        }
-      }
+
 
       if (directUrl) {
         // 2.A. Telegram Bot API >= 8.0: Native Telegram download dialog

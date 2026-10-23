@@ -46,6 +46,10 @@ async function runSanitizationTests() {
       { name: 'task.pdf', type: 'pdf', size: 1024, url: 'https://example.com/file', backdoor: 'malicious' }
     ],
     createdAt: '2026-09-20T04:00:00.000Z',
+    lessonId: 'lesson-42',
+    teacher: 'Петров П.П.',
+    createdBy: 'starosta_id',
+    updatedAt: 1726800000000,
     // Injected fields (Mass Assignment attempt)
     role: 'admin',
     isAdmin: true,
@@ -54,7 +58,7 @@ async function runSanitizationTests() {
   };
 
   const cleanHw = sanitizeHomeworkItem(maliciousHw);
-  check('Valid fields preserved in homework', cleanHw !== null && cleanHw.title === 'ДЗ №1' && cleanHw.subject === 'Математика');
+  check('Valid fields preserved in homework', cleanHw !== null && cleanHw.title === 'ДЗ №1' && cleanHw.subject === 'Математика' && cleanHw.lessonId === 'lesson-42' && cleanHw.teacher === 'Петров П.П.' && cleanHw.createdBy === 'starosta_id' && cleanHw.updatedAt === 1726800000000);
   check('Injected "role" stripped from homework', (cleanHw as any).role === undefined);
   check('Injected "isAdmin" stripped from homework', (cleanHw as any).isAdmin === undefined);
   check('Injected "secretToken" stripped from homework', (cleanHw as any).secretToken === undefined);
@@ -132,13 +136,19 @@ async function runSanitizationTests() {
     teacher: 'Иванов И.И.',
     isCancelled: true,
     note: 'Перенос пары',
+    noteDate: '2026-10-23',
+    isNoteRecurring: true,
+    order: 3,
+    timeStart: '11:30',
+    timeEnd: '13:00',
+    updatedAt: 1726800000000,
     // Injected fields
     deleteWholeDatabase: true,
     executeCommand: 'rm -rf /'
   };
 
   const cleanOv = sanitizeScheduleOverride(maliciousOverride);
-  check('Valid override fields preserved', cleanOv !== null && cleanOv.subject === 'Высшая математика' && cleanOv.isCancelled === true);
+  check('Valid override fields preserved', cleanOv !== null && cleanOv.subject === 'Высшая математика' && cleanOv.isCancelled === true && cleanOv.noteDate === '2026-10-23' && cleanOv.isNoteRecurring === true && cleanOv.order === 3 && cleanOv.timeStart === '11:30' && cleanOv.timeEnd === '13:00' && cleanOv.updatedAt === 1726800000000);
   check('Injected "deleteWholeDatabase" stripped', (cleanOv as any).deleteWholeDatabase === undefined);
   check('Injected "executeCommand" stripped', (cleanOv as any).executeCommand === undefined);
 

@@ -37,7 +37,6 @@ android/app/google-services.json
 /screenshots/*.png
 
 # Environment variables and secrets
-# Environment variables and secrets
 .env*
 *.env
 .dev.vars
@@ -59,7 +58,14 @@ qa_screenshots/
 
 # Internal documentation and audits
 ARCHITECT-HANDOVER.md
-AUDIT_BRIEF_AND_QUESTIONS_FOR_GEMINI.md
+AUDIT_BRIEF*
+CLAUDE.md
+claude_md_cursorrules.md
+2_*.md
+samgtu-p0.patch
+samgtu-p0-changed-files.zip
+purge-names-from-history.sh
+*паспорт*.md
 BIG-PICTURE.md
 ARCHITECTURE.md
 docs/

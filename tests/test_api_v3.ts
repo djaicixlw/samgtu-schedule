@@ -479,9 +479,9 @@ assert(delete1Body.ok === true && delete1Body.deleted === true, 'Response confir
 // 10.2 Verify user binding deleted from KV
 assert(!kvStore.has(`u:${student1BlindId}`), 'User record u:{blindId} completely removed from KV');
 
-// 10.3 Verify attendance marks for SLOT-A1 were wiped from month record
+// 10.3 Verify attendance marks for SLOT-A1 are preserved in group journal (P7 / A-5: student cannot wipe group records)
 const monthAfterRevoke = JSON.parse((await mockAppData.get(`a:${testGid}:${testMonth}`))!);
-assert(monthAfterRevoke.slots['SLOT-A1'] === undefined, 'Attendance marks for revoked slot purged from month record');
+assert(monthAfterRevoke.slots['SLOT-A1'] !== undefined, 'Attendance marks for revoked slot are preserved in group journal');
 assert(monthAfterRevoke.slots['SLOT-B2'] !== undefined, 'Other students attendance records remain intact');
 
 // 10.4 GET /v3/me for Student 1 now reports unlinked
