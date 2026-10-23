@@ -406,6 +406,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
         const fileName = `report_${cleanGroup.replace(/[^a-zA-Z0-9а-яА-ЯёЁ]/g, '_')}_${Date.now()}.txt`;
         const formData = new FormData();
         formData.append('document', blob, fileName);
+        formData.append('type', 'bugreport');
         formData.append('caption', caption);
         formData.append('diagnostics', JSON.stringify(diagnostics));
 
@@ -462,6 +463,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
 
         const formData = new FormData();
         formData.append('document', fileToSend, fileToSend.name || `bugreport_${Date.now()}.jpg`);
+        formData.append('type', 'bugreport');
         formData.append('caption', finalCaption);
         formData.append('diagnostics', JSON.stringify(diagnostics));
 
@@ -522,6 +524,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
             const descCaption = `📎 Полное описание проблемы (${cleanGroup}) #${groupTag || 'samgtu'}`;
             const descFormData = new FormData();
             descFormData.append('document', descBlob, descFileName);
+            descFormData.append('type', 'bugreport');
             descFormData.append('caption', descCaption);
             await fetch(`${WORKER_BASE}/upload`, {
               method: 'POST',
@@ -543,6 +546,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({
           
           const diagFormData = new FormData();
           diagFormData.append('document', diagBlob, diagFileName);
+          diagFormData.append('type', 'bugreport');
           diagFormData.append('caption', diagCaption);
           await fetch(`${WORKER_BASE}/upload`, {
             method: 'POST',

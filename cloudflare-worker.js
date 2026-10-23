@@ -2356,7 +2356,14 @@ export default {
           });
         }
 
-        let targetChat = (env && (env.TELEGRAM_CHANNEL_ID || env.CHANNEL_ID)) || (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID)) || CHANNEL_ID;
+        const uploadType = String(formData.get("type") || "");
+        const captionText = String(formData.get("caption") || "");
+        const isBugReport = uploadType === "bugreport" || captionText.includes("БАГ-РЕПОРТ") || captionText.includes("Полное описание проблемы") || captionText.includes("Диагностический дамп");
+
+        const DEV_CHAT_ID = (env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID)) || null;
+        const CHANNEL_ID_TARGET = (env && (env.TELEGRAM_CHANNEL_ID || env.CHANNEL_ID)) || CHANNEL_ID || null;
+
+        let targetChat = isBugReport ? (DEV_CHAT_ID || CHANNEL_ID_TARGET) : (CHANNEL_ID_TARGET || DEV_CHAT_ID);
         if (!targetChat && verifiedUserId) {
           targetChat = verifiedUserId;
         }
