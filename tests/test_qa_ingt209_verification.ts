@@ -4,6 +4,8 @@
  */
 
 import './setup_mock_auth';
+import { preloadAllSchedulesSync } from '../utils/scheduleNodeLoader';
+preloadAllSchedulesSync();
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { verifyPinCode } from '../utils/auth';
 import { STUDENTS_REGISTRY } from '../attendance';
@@ -50,7 +52,9 @@ const schedule209 = SCHEDULE_REGISTRY['ingt-209'];
 check("Наличие расписания SCHEDULE_REGISTRY['ingt-209']", !!schedule209);
 check("Наличие всех 4 недель в расписании", !!(schedule209?.[1] && schedule209?.[2] && schedule209?.[3] && schedule209?.[4]));
 check("Алиас '2-ingt-109' ссылается на расписание ingt-209", SCHEDULE_REGISTRY['2-ingt-109'] === schedule209);
-check("Алиас 'ingt-109' ссылается на расписание ingt-209", SCHEDULE_REGISTRY['ingt-109'] === schedule209);
+// AUD-028: коллизия удалена — 'ingt-109' теперь настоящая группа 1-ИНГТ-109
+check("Алиас 'ingt-109' больше НЕ указывает на ingt-209 (AUD-028)", SCHEDULE_REGISTRY['ingt-109'] !== schedule209);
+check("'ingt-109' содержит расписание реальной группы 1-ИНГТ-109", SCHEDULE_REGISTRY['ingt-109'] !== undefined);
 
 // ============================================================================
 // SECTION 3: WEEK 1 (ЧИСЛИТЕЛЬ) - 16 ПАР

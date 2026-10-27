@@ -9,8 +9,11 @@ import { HomeworkItem, HomeworkAttachment } from '../types';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, getGroupTag } from '../constants';
 import { getSamaraDate, getSamaraISODate, getSamaraFutureISODate } from '../attendance';
 import { toast } from 'sonner';
-import { fetchGroupCloudData, pushGroupCloudData, WORKER_BASE } from '../utils/cloudSync';
-import { openAttachmentSafe } from '../utils/upload';
+import { fetchHomeworkSlice, pushGroupCloudData, WORKER_BASE } from '../utils/cloudSync';
+import { mergeHomeworkItems } from '../utils/homeworkMerge';
+import { useCloudSync } from '../utils/useCloudSync';
+import { openAttachmentSafe, uploadToTelegramStorage, formatUploadedSize } from '../utils/upload';
+import { safeSetItem, safeGetItem, safeRemoveItem } from '../utils/safeStorage';
 import { SEED_HOMEWORK } from '../defaultData';
 
 export const isHomeworkArchived = (dueDate: string, today: string): boolean => {
@@ -105,78 +108,50 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // 1. Universal Cloud Sync & Polling (Works across all classmates' phones without auth)
-  useEffect(() => {
-    let isMounted = true;
+  const itemsRef = useRef<HomeworkItem[]>(items);
 
-    const loadCloud = async (force: boolean = false) => {
-      const cloud = await fetchGroupCloudData(force, currentGroupId);
-      if (!isMounted || !cloud) return;
+  const persistItems = (next: HomeworkItem[]) => {
+    try {
+      localStorage.setItem(`homework_${currentGroupId}`, JSON.stringify(next));
+    } catch (e) {}
+  };
 
-      // Read tombstone deleted items (freshly synced from cloud by fetchGroupCloudData)
-      let deletedSet = new Set<string>();
+  const hwPendingStore = useMemo(() => ({
+    has: () => safeGetItem(`hw_pending_push_${currentGroupId}`) !== null,
+    mark: () => { safeSetItem(`hw_pending_push_${currentGroupId}`, String(Date.now()), { component: 'homework' }); },
+    clear: () => { safeRemoveItem(`hw_pending_push_${currentGroupId}`); }
+  }), [currentGroupId]);
+
+  const hwSync = useCloudSync<{ items: HomeworkItem[]; deletedIds: string[] }, HomeworkItem[]>({
+    scope: `homework:${currentGroupId}`,
+    refreshKey: `${currentGroupId}:${refreshTrigger}`,
+    pendingStore: hwPendingStore,
+    fetchState: ({ etag }) => fetchHomeworkSlice(currentGroupId, etag),
+    mergeFn: (local, remote) => {
+      const deletedSet = new Set<string>(remote.deletedIds);
       try {
         const d = JSON.parse(localStorage.getItem(`deleted_hw_${currentGroupId}`) || '[]');
-        deletedSet = new Set(d);
+        (Array.isArray(d) ? d : []).forEach((id: any) => { if (id) deletedSet.add(String(id)); });
       } catch (e) {}
-      (cloud.deletedIds || []).forEach(id => { if (id) deletedSet.add(String(id)); });
-
-      let localItems: HomeworkItem[] = [];
-      try {
-        const saved = localStorage.getItem(`homework_${currentGroupId}`);
-        if (saved) localItems = JSON.parse(saved);
-      } catch (e) {}
-
-      const itemMap = new Map<string, HomeworkItem>();
-      // 1. Cloud items are authoritative for the group (Strict isolation: only currentGroupId!)
-      (cloud.homework || []).forEach(it => {
-        if (it && it.id && !deletedSet.has(it.id) && (it.groupId || 'ingt-310') === currentGroupId) {
-          itemMap.set(it.id, { ...it, groupId: currentGroupId });
-        }
-      });
-      // 2. Preserve any local items that are NOT deleted and not yet in cloud
-      let hasUnsyncedLocal = false;
-      localItems.forEach(it => {
-        if (it && it.id && !deletedSet.has(it.id) && (it.groupId || 'ingt-310') === currentGroupId && !itemMap.has(it.id)) {
-          itemMap.set(it.id, { ...it, groupId: currentGroupId });
-          hasUnsyncedLocal = true;
-        }
-      });
-
-      const mergedHw = Array.from(itemMap.values())
+      const { merged: mergedArr, hasLocalNewer } = mergeHomeworkItems<HomeworkItem>(
+        remote.items,
+        local,
+        deletedSet,
+        (it) => (it.groupId || 'ingt-310') === currentGroupId
+      );
+      const mergedHw = mergedArr
+        .map(it => ({ ...it, groupId: currentGroupId }))
         .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
-
-      setItems(mergedHw);
-      try {
-        localStorage.setItem(`homework_${currentGroupId}`, JSON.stringify(mergedHw));
-      } catch (e) {}
-
-      // Auto-heal: If this device has local homework that never made it to cloud, push it immediately!
-      if (hasUnsyncedLocal && mergedHw.length > 0) {
-        pushGroupCloudData({ homework: mergedHw }, currentGroupId).then(ok => {
-          if (ok) console.log('Auto-healed and synced unsaved local homework to cloud');
-        });
-      }
-    };
-
-    // Load on mount or refresh
-    loadCloud(true);
-
-    // Instant sync on tab focus or returning from Telegram
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        loadCloud(true);
-      }
-    };
-    window.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleVisibilityChange);
-
-    return () => {
-      isMounted = false;
-      window.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleVisibilityChange);
-    };
-  }, [currentGroupId, refreshTrigger]);
+      return { state: mergedHw, hasLocalNewer };
+    },
+    getState: () => itemsRef.current,
+    setState: (next) => {
+      itemsRef.current = next;
+      setItems(next);
+      persistItems(next);
+    },
+    pushState: (state) => pushGroupCloudData({ homework: state }, currentGroupId)
+  });
 
   const openAddModal = () => {
     setEditingItem(null);
@@ -214,60 +189,35 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
 
     setIsUploading(true);
     const fileName = file.name || `screenshot_${Date.now()}.png`;
-    const toastId = toast.loading(`Загрузка «${fileName}» в хранилище Telegram...`);
+    const toastId = toast.loading(`Загружаем «${fileName}»...`);
 
     try {
       const groupConfig = AVAILABLE_GROUPS.find(g => g.id === currentGroupId);
       const groupName = groupConfig?.name || currentGroupId;
       const groupTag = groupConfig?.name ? getGroupTag(groupConfig.name) : currentGroupId;
 
-      const formData = new FormData();
-      formData.append('document', file, fileName);
-      formData.append('caption', `[${groupName}] 📚 ДЗ: ${fileName} #${groupTag}`);
-
-      const tg = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp) || null;
-      const initData = tg?.initData || '';
-
-      const res = await fetch(`${TG_WORKER_URL}/upload`, {
-        method: 'POST',
-        headers: {
-          ...(initData ? { 'X-Telegram-Init-Data': initData } : {})
-        },
-        body: formData
+      const core = await uploadToTelegramStorage(file, {
+        caption: `[${groupName}] 📚 ДЗ: ${fileName} #${groupTag}`,
+        maxSizeBytes: 50 * 1024 * 1024
       });
 
-      if (!res.ok) {
-        throw new Error(`Ошибка загрузки: статус ${res.status}`);
-      }
-
-      const json = await res.json();
-      if (!json.ok || !json.result) {
-        throw new Error(json.description || 'Сервер Telegram отклонил файл');
-      }
-
-      const doc = json.result.document || (json.result.photo ? json.result.photo[json.result.photo.length - 1] : null);
-      const fileId = doc?.file_id;
-
-      const streamUrl = json.direct_url || (json.sig && json.exp
-        ? `${TG_WORKER_URL}/file?file_id=${fileId}&exp=${json.exp}&sig=${json.sig}&download=1`
-        : `${TG_WORKER_URL}/file?file_id=${fileId}`);
-      const sizeFormatted = file.size > 1024 * 1024 
-        ? (file.size / (1024 * 1024)).toFixed(1) + ' МБ'
-        : (file.size / 1024).toFixed(0) + ' КБ';
+      const streamUrl = core.directUrl || (core.sig && core.exp
+        ? `${TG_WORKER_URL}/file?file_id=${core.fileId}&exp=${core.exp}&sig=${core.sig}&download=1`
+        : `${TG_WORKER_URL}/file?file_id=${core.fileId}`);
 
       setFormAttachments(prev => [
         ...prev,
         {
-          name: fileName,
+          name: core.fileName,
           url: streamUrl,
           tgUrl: streamUrl,
           type: file.type.startsWith('image/') ? 'image' : 'file',
-          size: sizeFormatted
+          size: formatUploadedSize(file.size)
         }
       ]);
 
       toast.dismiss(toastId);
-      toast.success(`Файл «${fileName}» сохранен в Telegram навсегда!`);
+      toast.success(`Файл «${core.fileName}» прикреплён`);
     } catch (err: any) {
       console.error('Telegram upload error:', err);
       toast.dismiss(toastId);
@@ -359,7 +309,8 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       assignedDate: formAssignedDate,
       dueDate: formDueDate,
       attachments: formAttachments,
-      createdAt: editingItem ? editingItem.createdAt : new Date().toISOString()
+      createdAt: editingItem ? editingItem.createdAt : new Date().toISOString(),
+      updatedAt: Date.now()
     };
 
     const updated = editingItem 
@@ -367,6 +318,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
       : [...freshItems.filter(it => it.id !== id), newHomework];
 
     // Save locally immediately
+    itemsRef.current = updated;
     setItems(updated);
     try {
       localStorage.setItem(`homework_${currentGroupId}`, JSON.stringify(updated));
@@ -375,10 +327,9 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
     setIsModalOpen(false);
     toast.success(editingItem ? 'Задание обновлено' : 'Новое ДЗ опубликовано для группы!');
 
-    // Push to REST Cloud immediately (syncs to all classmates)
-    pushGroupCloudData({ homework: updated }, currentGroupId).then(ok => {
+    hwSync.flushPush().then(ok => {
       if (!ok) {
-        console.warn('Homework cloud sync warning: push returned false');
+        toast.error('Не удалось синхронизировать задание. Изменение сохранено и уедет в облако автоматически');
       } else {
         console.log('Homework synced to cloud successfully');
       }
@@ -410,6 +361,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
     }
 
     const updated = freshItems.filter(it => it.id !== id);
+    itemsRef.current = updated;
     setItems(updated);
     try {
       localStorage.setItem(`homework_${currentGroupId}`, JSON.stringify(updated));
@@ -417,8 +369,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
 
     toast.info('Задание удалено');
 
-    // Push to REST Cloud immediately (syncs deletion to all classmates)
-    pushGroupCloudData({ homework: updated, deletedIds: deletedList }, currentGroupId).then(ok => {
+    hwSync.flushPush().then(ok => {
       if (!ok) {
         console.warn('Homework deletion cloud push warning');
       } else {

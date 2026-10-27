@@ -1,9 +1,13 @@
-import React, { useState, useEffect, useLayoutEffect, useMemo, Suspense, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, Suspense, useRef } from 'react';
 import { ThemePref, getThemePref, setThemePref, syncTelegramTheme } from './utils/theme';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES, createEmptyWeek } from './constants';
 import { getSemesterWeek, getWeekDateRange, getDayISODate, useAttendance, getSamaraISODate } from './attendance';
 import { getSamaraDate, getSemesterConfig, getDayName, samaraISO } from './utils/samaraDate';
-import { useNow } from './utils/useNow';
+import { useSamaraDayTick } from './utils/useNow';
+import { useOnlineStatus } from './utils/useOnlineStatus';
+import { deleteMyData, local_storage, session_storage } from './utils/personalData';
+import { buildLessonOverride, describeLessonSave, clearTeacherOverridesForChangedKeys } from './utils/lessonOverrides';
+import { clearFrozenTeachers, buildLessonIndex, countPinnedTeachers, unpinTeachers } from './utils/teacherOverrides';
 import SwipeableDays from './components/SwipeableDays';
 import BottomNav from './components/BottomNav';
 import TabErrorBoundary from './components/TabErrorBoundary';
@@ -17,7 +21,7 @@ import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuPa
 import { normalizeGroupId } from './utils/groupAliases';
 import ScheduleState from './components/ScheduleState';
 import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason, isPhysicalEducationLesson } from './utils/scheduleLoader';
-import { getLocalStudentLink, claimStaffRole, getLocalStudents, restoreRosterFromCloud, syncAttendanceRecordsToV3, unlinkStudentV3 } from './utils/attendanceStorage';
+import { getLocalStudentLink, claimStaffRole, getLocalStudents, restoreRosterFromCloud, syncAttendanceRecordsToV3, unlinkStudentV3, clearGroupAccessCodes } from './utils/attendanceStorage';
 import {
   LogIn, LogOut, Calendar, BookOpen, Bug, ClipboardCheck, Sun, Moon,
   GraduationCap, Users, RefreshCw, Shield, User as UserIcon, Key, UserCheck, ChevronDown,
@@ -100,25 +104,8 @@ const App: React.FC = () => {
 
   const darkMode = pref === 'auto' ? tgScheme === 'dark' : pref === 'dark';
 
-  // Network online status dot indicator (№26)
-  const [isOnline, setIsOnline] = useState<boolean>(() => {
-    return typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean'
-      ? navigator.onLine
-      : true;
-  });
-
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
+  // Network online status dot indicator (AUD-041)
+  const isOnline = useOnlineStatus();
 
   // Silent mode / notifications toggle (№24)
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => {
@@ -631,13 +618,13 @@ const App: React.FC = () => {
   );
 
   // Calculate current week automatically based on Samara time (UTC+4) starting Aug 31, 2026
-  const liveNow = useNow(60000);
+  const liveNow = useSamaraDayTick(60000);
   const samaraNow = useMemo(() => getSamaraDate(liveNow), [liveNow]);
   const currentWeek = useMemo(() => getSemesterWeek(samaraNow, currentGroupId), [samaraNow, currentGroupId]);
   const [selectedWeek, setSelectedWeek] = useState<number>(currentWeek);
 
   // Activate today's day of week by default based on Samara time
-  const todayDayName = useMemo(() => getDayName(samaraISO()), []);
+  const todayDayName = useMemo(() => getDayName(samaraISO(liveNow)), [liveNow]);
 
   // Global Subject Teachers mapping (e.g. subject -> teacher)
   const [subjectTeachers, setSubjectTeachers] = useState<Record<string, string>>(() => {
@@ -910,9 +897,18 @@ const App: React.FC = () => {
     };
   }, [currentGroupId]);
 
+  const refreshAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    refreshAbortRef.current?.abort();
+    refreshAbortRef.current = null;
+  }, []);
+
   const handleRefresh = async () => {
     setIsRefreshing(true);
     setRefreshTrigger(prev => prev + 1);
+    refreshAbortRef.current?.abort();
+    const refreshController = new AbortController();
+    refreshAbortRef.current = refreshController;
     try {
       // If there are unsaved local attendance changes, push them before refreshing
       const dirty = typeof localStorage !== 'undefined' && localStorage.getItem(`attendance_dirty_${currentGroupId}`) === 'true';
@@ -938,7 +934,8 @@ const App: React.FC = () => {
         } catch {}
       }
 
-      const cloud = await fetchGroupCloudData(true, currentGroupId);
+      const cloud = await fetchGroupCloudData(true, currentGroupId, refreshController.signal);
+      if (refreshController.signal.aborted) return;
       if (cloud && cloud.fromNetwork) {
         if (cloud.scheduleOverrides !== undefined) {
           const cleanOv = sanitizeOverrides(cloud.scheduleOverrides);
@@ -997,22 +994,11 @@ const App: React.FC = () => {
       const res = await unlinkStudentV3();
       if (res.ok) {
         try {
-          const keysToRemove: string[] = [];
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && (
-              key.startsWith('student_link_') ||
-              key.startsWith('tg_user_') ||
-              key.startsWith('user_role') ||
-              key.startsWith('attendance_dirty_')
-            )) {
-              keysToRemove.push(key);
-            }
-          }
-          keysToRemove.forEach(k => localStorage.removeItem(k));
+          deleteMyData({ storage: local_storage(), session: session_storage() });
         } catch {}
+        try { clearGroupAccessCodes(); } catch {}
 
-        toast.success('Персональные данные успешно удалены, аккаунт отвязан');
+        toast.success('Привязка к списку группы снята. Отметки остаются в журнале старосты');
         setUserRole('student');
         setRefreshTrigger(prev => prev + 1);
       } else {
@@ -1053,6 +1039,7 @@ const App: React.FC = () => {
       localStorage.removeItem('starosta_group_id');
       localStorage.removeItem('auth_group');
       sessionStorage.removeItem('admin_maintenance_bypass');
+      clearGroupAccessCodes();
       // Wipe staff tokens and group access codes so session is cleanly purged
       const keysToRemove: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -1095,7 +1082,7 @@ const App: React.FC = () => {
   };
 
   // Schedule Customization Handlers (Editing Teacher, Room, Notes, Attachments, Cancellations)
-  const handleUpdateLesson = async (
+  const handleUpdateLesson = useCallback(async (
     lessonId: string, 
     updatedLesson: Partial<Lesson>, 
     applyScope: TeacherAssignmentScope = 'type',
@@ -1111,35 +1098,6 @@ const App: React.FC = () => {
     } catch (e) {}
 
     const currentOverride = scheduleOverrides[lessonId] || {};
-    const merged = {
-      ...currentOverride,
-      ...updatedLesson
-    };
-
-    // If note is emptied or whitespace, delete the note property so it does not persist
-    if (updatedLesson.note !== undefined && updatedLesson.note.trim() === '') {
-      delete merged.note;
-      delete merged.noteDate;
-      delete merged.isNoteRecurring;
-    }
-
-    // Cancellation is always date-specific and stored in attendanceRecords for the selected date (not global across all weeks)
-    delete merged.isCancelled;
-
-    const updated = {
-      ...scheduleOverrides,
-      [lessonId]: merged
-    };
-
-    // If this lesson has no customized properties left, remove it from overrides
-    if (Object.keys(merged).length === 0) {
-      delete updated[lessonId];
-    }
-
-    setScheduleOverrides(updated);
-    try {
-      localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
-    } catch (e) {}
 
     // Find the original lesson to know its type, default teacher, etc.
     let originalLesson: Lesson | undefined;
@@ -1155,17 +1113,28 @@ const App: React.FC = () => {
       if (originalLesson) break;
     }
 
+    const lessonSubject = updatedLesson.subject || originalLesson?.subject || '';
     const lessonType = originalLesson?.type || updatedLesson.type || 'Занятие';
     const originalTeacher = originalLesson?.teacher || '';
-    const currentTeacher = currentOverride.teacher !== undefined 
-      ? currentOverride.teacher 
-      : (subjectTeachers[`${updatedLesson.subject}::${lessonType}`] || subjectTeachers[updatedLesson.subject || ''] || originalTeacher);
-
+    // Teacher as the schedule shows it without a per-lesson override.
+    const baseTeacher = subjectTeachers[`${lessonSubject}::${lessonType}`] || subjectTeachers[lessonSubject] || originalTeacher;
+    const currentTeacher = currentOverride.teacher !== undefined ? currentOverride.teacher : baseTeacher;
     const isTeacherChanged = updatedLesson.teacher !== undefined && updatedLesson.teacher.trim() !== currentTeacher.trim();
-    const isNoteChanged = updatedLesson.note !== undefined && updatedLesson.note !== (currentOverride.note || '');
-    const isLocationChanged = updatedLesson.location !== undefined && updatedLesson.location !== (currentOverride.location || originalLesson?.location || '');
-    const isCancelledChanged = updatedLesson.isCancelled !== undefined;
-    const isAttachmentsChanged = updatedLesson.attachments !== undefined;
+    const teacherGoesToMapping = isTeacherChanged && Boolean(lessonSubject) && Boolean(updatedLesson.teacher)
+      && (applyScope === 'type' || applyScope === 'all');
+
+    // Only what really changed is stored: a full snapshot would pin the teacher/room/subject of this lesson forever.
+    const { next: nextOverride, changed } = buildLessonOverride(
+      currentOverride,
+      updatedLesson,
+      {
+        subject: originalLesson?.subject ?? lessonSubject,
+        teacher: baseTeacher,
+        location: originalLesson?.location ?? '',
+        hours: originalLesson?.hours || 2
+      },
+      teacherGoesToMapping ? 'mapped' : 'lesson'
+    );
 
     // Resolve accurate dayName and isoDate:
     let resolvedDayName = lessonDayName;
@@ -1176,116 +1145,137 @@ const App: React.FC = () => {
     }
     const isoDate = getDayISODate(resolvedDayName, selectedWeek);
 
-    // ALWAYS synchronize attendance cancellation if updatedLesson.isCancelled was provided:
-    if (isCancelledChanged) {
-      const existingAtt = attendanceRecords.find(r => r.date === isoDate && r.lessonId === lessonId);
-      markAttendance(
-        isoDate, 
-        lessonId, 
-        existingAtt?.absentStudentIds || [], 
-        existingAtt?.excusedStudentIds || [], 
-        !!updatedLesson.isCancelled
-      );
+    // Cancellation is date-specific and lives in the attendance records; act only if it really changed.
+    const existingAtt = attendanceRecords.find(r => r.date === isoDate && r.lessonId === lessonId);
+    const wasCancelled = Boolean(existingAtt?.isCancelled);
+    const cancelChanged = updatedLesson.isCancelled !== undefined && Boolean(updatedLesson.isCancelled) !== wasCancelled;
+
+    const summary = describeLessonSave({
+      changed,
+      cancelChanged,
+      cancelledNow: Boolean(updatedLesson.isCancelled),
+      teacherScope: teacherGoesToMapping ? (applyScope as 'type' | 'all') : 'lesson',
+      teacher: updatedLesson.teacher,
+      lessonType,
+      noteRemoved: changed.includes('note') && !nextOverride.note
+    });
+
+    if (changed.length === 0 && !cancelChanged) {
+      toast.info(summary.text);
+      return;
     }
 
-    // Handle Teacher Assignment Scope (only if teacher actually changed!):
-    if (isTeacherChanged && updatedLesson.subject && updatedLesson.teacher) {
+    let updated = { ...scheduleOverrides };
+    if (Object.keys(nextOverride).length === 0) delete updated[lessonId]; else updated[lessonId] = nextOverride;
+
+    // What the subject/type assignment will look like after this save
+    let teachersAfter: Record<string, string> = subjectTeachers;
+    if (teacherGoesToMapping && updatedLesson.teacher) {
+      teachersAfter = { ...subjectTeachers };
       if (applyScope === 'type') {
-        const key = `${updatedLesson.subject}::${lessonType}`;
-        const updatedTeachers = {
-          ...subjectTeachers,
-          [key]: updatedLesson.teacher
-        };
-        setSubjectTeachers(updatedTeachers);
-        try {
-          localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updatedTeachers));
-        } catch (e) {}
-
-        // Push to REST Cloud immediately (syncs to all classmates)
-        pushGroupCloudData({ scheduleOverrides: updated, subjectTeachers: updatedTeachers }, currentGroupId);
-
-        if (isNoteChanged) {
-          toast.success('Преподаватель и заметка к паре сохранены');
-        } else {
-          toast.success(`Преподаватель «${updatedLesson.teacher}» назначен на все «${lessonType}»`);
-        }
-      } else if (applyScope === 'all') {
-        const updatedTeachers = {
-          ...subjectTeachers,
-          [updatedLesson.subject]: updatedLesson.teacher
-        };
-
-        // Also update all types for this subject
-        const weeks = SCHEDULE_REGISTRY[currentGroupId] || {};
+        teachersAfter[`${lessonSubject}::${lessonType}`] = updatedLesson.teacher;
+      } else {
+        teachersAfter[lessonSubject] = updatedLesson.teacher;
         Object.values(weeks).forEach(days => {
           days.forEach(day => {
             day.lessons.forEach(l => {
-              if (l.subject === updatedLesson.subject) {
-                updatedTeachers[`${l.subject}::${l.type}`] = updatedLesson.teacher!;
-              }
+              if (l.subject === lessonSubject) teachersAfter[`${l.subject}::${l.type}`] = updatedLesson.teacher!;
             });
           });
         });
-
-        setSubjectTeachers(updatedTeachers);
-        try {
-          localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updatedTeachers));
-        } catch (e) {}
-
-        // Push to REST Cloud immediately (syncs to all classmates)
-        pushGroupCloudData({ scheduleOverrides: updated, subjectTeachers: updatedTeachers }, currentGroupId);
-
-        if (isNoteChanged) {
-          toast.success('Преподаватель (на все пары) и заметка сохранены');
-        } else {
-          toast.success(`Преподаватель «${updatedLesson.teacher}» назначен на ВСЕ виды занятий предмета`);
-        }
-      } else {
-        // Push single pair override to cloud
-        pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
-        toast.success(isNoteChanged ? 'Преподаватель и заметка к паре сохранены' : 'Преподаватель пары обновлен');
       }
-    } else if (isCancelledChanged) {
-      pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
-      if (updatedLesson.isCancelled) {
-        toast.warning('Пара отменена на эту дату');
-      } else {
-        toast.success('Пара восстановлена в расписании');
-      }
-    } else if (isAttachmentsChanged) {
-      pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
-      toast.success('Материалы к паре сохранены для группы');
-    } else if (isNoteChanged) {
-      // Only note was changed:
-      pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
-      toast.success(updatedLesson.note ? 'Заметка к паре добавлена для всей группы!' : 'Заметка к паре удалена');
-    } else if (isLocationChanged) {
-      // Only location was changed:
-      pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
-      toast.success('Аудитория пары обновлена для группы');
-    } else {
-      // Push single pair override to cloud
-      pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
-      toast.success('Данные пары сохранены для группы');
     }
-  };
+
+    // If teacher assignment changed, clear frozen copies of old teachers
+    if (teachersAfter !== subjectTeachers) {
+      const cleaned = clearFrozenTeachers(updated, buildLessonIndex(SCHEDULE_REGISTRY[currentGroupId]), subjectTeachers, teachersAfter);
+      updated = cleaned.overrides;
+      setSubjectTeachers(teachersAfter);
+      try {
+        localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(teachersAfter));
+      } catch (e) {}
+    }
+
+    setScheduleOverrides(updated);
+    try {
+      localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
+    } catch (e) {}
+
+    if (cancelChanged) {
+      markAttendance(
+        isoDate,
+        lessonId,
+        existingAtt?.absentStudentIds || [],
+        existingAtt?.excusedStudentIds || [],
+        Boolean(updatedLesson.isCancelled),
+        undefined,
+        false
+      );
+    }
+
+    if (teachersAfter !== subjectTeachers) {
+      pushGroupCloudData({ scheduleOverrides: updated, subjectTeachers: teachersAfter }, currentGroupId);
+    } else {
+      pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
+    }
+
+    if (summary.kind === 'warning') toast.warning(summary.text);
+    else if (summary.kind === 'info') toast.info(summary.text);
+    else toast.success(summary.text);
+  }, [canEdit, currentGroupId, scheduleOverrides, subjectTeachers, attendanceRecords, selectedWeek, markAttendance]);
 
   const handleSaveSubjectTeachers = async (updated: Record<string, string>) => {
     try {
       localStorage.setItem('last_local_edit_' + currentGroupId, String(Date.now()));
     } catch (e) {}
+
+    // A group-wide assignment must win over older per-lesson teacher snapshots for the lessons it covers.
+    const { overrides: cleanedOverrides, cleared } = clearTeacherOverridesForChangedKeys(
+      scheduleOverrides as any,
+      (SCHEDULE_REGISTRY[currentGroupId] || {}) as any,
+      subjectTeachers,
+      updated
+    );
+
+    const cleaned = clearFrozenTeachers(cleanedOverrides, buildLessonIndex(SCHEDULE_REGISTRY[currentGroupId]), subjectTeachers, updated);
+    const finalOverrides = cleaned.overrides;
+
     setSubjectTeachers(updated);
     try {
       localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updated));
     } catch (e) {}
 
-    // Push to REST Cloud immediately
-    pushGroupCloudData({ subjectTeachers: updated }, currentGroupId);
+    if (cleared > 0 || cleaned.cleared.length > 0) {
+      setScheduleOverrides(finalOverrides as any);
+      try {
+        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(finalOverrides));
+      } catch (e) {}
+      pushGroupCloudData({ scheduleOverrides: finalOverrides as any, subjectTeachers: updated }, currentGroupId);
+    } else {
+      pushGroupCloudData({ subjectTeachers: updated }, currentGroupId);
+    }
 
     toast.success('Список преподавателей сохранен для всех 4 недель расписания');
   };
 
-  const handleResetLesson = async (lessonId: string) => {
+  const pinnedTeachers = useMemo(
+    () => countPinnedTeachers(scheduleOverrides, buildLessonIndex(SCHEDULE_REGISTRY[currentGroupId]), subjectTeachers),
+    [scheduleOverrides, subjectTeachers, currentGroupId, refreshTrigger]
+  );
+
+  const handleUnpinTeachers = (key: string) => {
+    const result = unpinTeachers(scheduleOverrides, buildLessonIndex(SCHEDULE_REGISTRY[currentGroupId]), key);
+    if (result.cleared.length === 0) return;
+    try {
+      localStorage.setItem('last_local_edit_' + currentGroupId, String(Date.now()));
+      localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(result.overrides));
+    } catch (e) {}
+    setScheduleOverrides(result.overrides);
+    pushGroupCloudData({ scheduleOverrides: result.overrides }, currentGroupId);
+    toast.success(`Преподаватель теперь берётся из настройки у ${result.cleared.length} пар`);
+  };
+
+  const handleResetLesson = useCallback(async (lessonId: string) => {
     if (!canEdit) return;
 
     try {
@@ -1307,14 +1297,18 @@ const App: React.FC = () => {
     }
 
     const updated = { ...scheduleOverrides };
-    delete updated[lessonId];
 
-    // If subjectTeachers has an override, explicitly restore original lesson teacher
+    // AUD-043: If subjectTeachers has an override for this subject/type, pin original teacher
     if (originalLesson) {
       const typeKey = `${originalLesson.subject}::${originalLesson.type}`;
-      if (subjectTeachers[typeKey] || subjectTeachers[originalLesson.subject]) {
+      const assignedTeacher = subjectTeachers[typeKey] || subjectTeachers[originalLesson.subject];
+      if (assignedTeacher && originalLesson.teacher && assignedTeacher !== originalLesson.teacher) {
         updated[lessonId] = { teacher: originalLesson.teacher };
+      } else {
+        delete updated[lessonId];
       }
+    } else {
+      delete updated[lessonId];
     }
 
     setScheduleOverrides(updated);
@@ -1329,14 +1323,14 @@ const App: React.FC = () => {
     const isoDate = getDayISODate(dayName, selectedWeek);
     const existingAtt = attendanceRecords.find(r => r.date === isoDate && r.lessonId === lessonId);
     if (existingAtt && existingAtt.isCancelled) {
-      markAttendance(isoDate, lessonId, existingAtt.absentStudentIds, existingAtt.excusedStudentIds || [], false);
+      markAttendance(isoDate, lessonId, existingAtt.absentStudentIds, existingAtt.excusedStudentIds || [], false, undefined, false);
     }
 
     // Push reset to REST Cloud immediately
     pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
 
     toast.info('Пара сброшена до исходного расписания');
-  };
+  }, [canEdit, currentGroupId, scheduleOverrides, subjectTeachers, attendanceRecords, selectedWeek, markAttendance]);
 
   // Merge default schedule with subject teachers, attendance cancellations, overrides & custom lessons
   const currentSchedule = useMemo(() => {
@@ -2103,6 +2097,8 @@ const App: React.FC = () => {
             currentGroupId={currentGroupId}
             subjectTeachers={subjectTeachers}
             onSave={handleSaveSubjectTeachers}
+            pinned={pinnedTeachers}
+            onUnpin={handleUnpinTeachers}
           />
         </Suspense>
       )}

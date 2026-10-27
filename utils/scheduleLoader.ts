@@ -311,7 +311,10 @@ export function registerScheduleAliases(canonicalId: string, data: WeekData): vo
     SCHEDULE_REGISTRY['3-faid-110'] = data;
   } else if (canonicalId === 'ingt-209') {
     SCHEDULE_REGISTRY['2-ingt-109'] = data;
-    SCHEDULE_REGISTRY['ingt-109'] = data;
+    // AUD-028: the colliding alias SCHEDULE_REGISTRY['ingt-109'] = data is
+    // REMOVED — 1-ИНГТ-109 is a real group with its own chunk (ingt-109.json);
+    // registering 209's schedule under 'ingt-109' clobbered the real group's
+    // data depending on chunk load order.
     SCHEDULE_REGISTRY['2-ингт-109'] = data;
   } else if (canonicalId === 'htf-215') {
     SCHEDULE_REGISTRY['2-htf-115'] = data;

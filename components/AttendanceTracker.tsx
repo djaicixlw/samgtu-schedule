@@ -6,7 +6,8 @@ import { Lesson, Student, GroupConfig } from '../types';
 import { toast } from 'sonner';
 import { getLocalStudents, syncAttendanceRecordsToV3 } from '../utils/attendanceStorage';
 import { AttendanceMatrix } from './AttendanceMatrix';
-import { isPhysicalEducationLesson, isPhysicalEducationLessonId } from '../utils/scheduleLoader';
+import { isPhysicalEducationLessonId } from '../utils/scheduleLoader';
+import { buildDayLessons } from '../utils/dayLessons';
 
 interface AttendanceTrackerProps {
   isAuthenticated: boolean;
@@ -114,54 +115,10 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
   }, [currentGroupId, refreshTrigger]);
 
-  const lessons: Lesson[] = useMemo(() => {
-    let sourceLessons = daySchedule && Array.isArray(daySchedule.lessons) ? daySchedule.lessons : [];
-    // Fallback for Monday if week 1 Monday is empty: pull from week 3
-    if (dayName === 'Понедельник' && sourceLessons.length === 0) {
-      const w3Mon = SCHEDULE_REGISTRY[currentGroupId]?.[3]?.find(d => d.dayName === 'Понедельник');
-      if (w3Mon && Array.isArray(w3Mon.lessons) && w3Mon.lessons.length > 0) {
-        sourceLessons = w3Mon.lessons;
-      }
-    }
-
-    const standardLessons = sourceLessons.map(lesson => {
-      if (!lesson || !lesson.id) return lesson;
-      const override = scheduleOverrides[lesson.id] || {};
-      return {
-        ...lesson,
-        ...override,
-        isHidden: !!override.isHidden
-      };
-    }).filter(l => !l.isHidden && !isPhysicalEducationLesson(l));
-
-    // Include dynamically added custom lessons for this day/week
-    const customLessons: Lesson[] = Object.entries(scheduleOverrides)
-      .filter(([id, rawOv]) => {
-        const ov = rawOv as Partial<Lesson> & { dayName?: string };
-        const isCustom = id.includes('_extra_') || id.includes('_custom_');
-        const matchesDay = ov.dayName === dayName || id.startsWith(`${dayName.toLowerCase()}_w${week}_`);
-        return isCustom && matchesDay && !ov.isHidden && !isPhysicalEducationLesson(ov);
-      })
-      .map(([id, rawOv]) => {
-        const ov = rawOv as Partial<Lesson> & { dayName?: string };
-        const orderNum = ov.order || 1;
-        const timeSlot = (TIME_SLOTS as any)[String(orderNum)] || { timeStart: '08:30', timeEnd: '10:00' };
-        return {
-          id,
-          subject: ov.subject || 'Пользовательская пара',
-          type: ov.type || 'Практические занятия',
-          timeStart: ov.timeStart || timeSlot.timeStart,
-          timeEnd: ov.timeEnd || timeSlot.timeEnd,
-          location: ov.location || 'Ауд.',
-          teacher: ov.teacher || '',
-          order: orderNum,
-          isCancelled: !!ov.isCancelled,
-          note: ov.note
-        } as Lesson;
-      });
-
-    return [...standardLessons, ...customLessons].sort((a, b) => (a.order || 1) - (b.order || 1));
-  }, [daySchedule, dayName, currentGroupId, week, scheduleOverrides]);
+  const lessons: Lesson[] = useMemo(
+    () => buildDayLessons({ daySchedule, dayName, week, currentGroupId, scheduleOverrides }),
+    [daySchedule, dayName, currentGroupId, week, scheduleOverrides]
+  );
 
   const handleLessonSelect = (lesson: Lesson) => {
     setSelectedLesson(lesson);
@@ -184,6 +141,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
 
     markAttendance(selectedDate, selectedLesson.id, newAbsentIds, newExcusedIds, record.isCancelled, selectedLesson.hours || record.hours || 2);
+    toast.success('Посещаемость сохранена');
   };
 
   const handleSetFullDayStatus = (studentId: number, status: 'absent' | 'excused') => {
@@ -246,7 +204,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       if (!confirmed) return;
     }
 
-    markAttendance(selectedDate, lessonId, record.absentStudentIds, record.excusedStudentIds, willBeCancelled);
+    markAttendance(selectedDate, lessonId, record.absentStudentIds, record.excusedStudentIds, willBeCancelled, undefined, false);
     toast.success(willBeCancelled ? 'Пара отмечена как отменённая' : 'Пара восстановлена');
   };
 
@@ -266,6 +224,10 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       toast.info('Формирование официального Word отчета...');
       const { exportAttendanceToWord } = await import('../utils/exportWord');
       const result = await exportAttendanceToWord(records, activeStudents, groupConfig, faculty);
+      if (result && result.success === false) {
+        toast.error(result.warning || result.error || 'Не удалось выгрузить отчёт в Word');
+        return;
+      }
       if (result?.sentToTelegramChat) {
         toast.success('Ведомость Word отправлена вам в диалог с ботом и сохраняется на устройство!');
       } else if (result?.downloadUrl) {
@@ -284,6 +246,8 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
             }
           }
         });
+      } else if (result?.warning) {
+        toast.warning(result.warning);
       } else {
         toast.success('Официальный отчет в Word выгружен!');
       }
@@ -317,7 +281,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       const b3 = `${row.absences[2]}н / ${row.excused[2]}уп`;
       const b4 = `${row.absences[3]}н / ${row.excused[3]}уп`;
       const total = row.totalAllTimeAbs + row.totalAllTimeExc;
-      lines.push(`${idx + 1}. ${row.name}: Блок 1: ${b1} | Блок 2 (накоп.): ${b2} | Блок 3: ${b3} | Итого: ${total} ч`);
+      lines.push(`${idx + 1}. ${row.name}: Блок 1: ${b1} | Блок 2: ${b2} | Блок 3: ${b3} | Блок 4: ${b4} | Итого: ${total} ч`);
     });
 
     const summaryText = lines.join('\n');

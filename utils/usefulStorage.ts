@@ -89,25 +89,26 @@ export function sanitizeUsefulItem(raw: any, defaultGroupId: string): UsefulItem
 export function checkUsefulSpamLimit(): { allowed: boolean; remaining: number } {
   try {
     const raw = localStorage.getItem('submitted_useful_count');
-    if (!raw) return { allowed: true, remaining: 3 };
+    const MAX_LIMIT = 10;
+    if (!raw) return { allowed: true, remaining: MAX_LIMIT };
     const now = Date.now();
     const oneHour = 60 * 60 * 1000;
 
     if (!isNaN(Number(raw)) && !raw.startsWith('[')) {
       const count = Number(raw);
-      if (count >= 3) return { allowed: false, remaining: 0 };
-      return { allowed: true, remaining: 3 - count };
+      if (count >= MAX_LIMIT) return { allowed: false, remaining: 0 };
+      return { allowed: true, remaining: MAX_LIMIT - count };
     }
 
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       const valid = parsed.filter((t: any) => typeof t === 'number' && (now - t) < oneHour);
-      if (valid.length >= 3) return { allowed: false, remaining: 0 };
-      return { allowed: true, remaining: 3 - valid.length };
+      if (valid.length >= MAX_LIMIT) return { allowed: false, remaining: 0 };
+      return { allowed: true, remaining: MAX_LIMIT - valid.length };
     }
-    return { allowed: true, remaining: 3 };
+    return { allowed: true, remaining: MAX_LIMIT };
   } catch {
-    return { allowed: true, remaining: 3 };
+    return { allowed: true, remaining: 10 };
   }
 }
 
@@ -144,10 +145,7 @@ export function getLocalUsefulItems(groupId: string): UsefulItem[] {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     
-    let deletedSet = new Set<string>();
-    try {
-      deletedSet = new Set(JSON.parse(localStorage.getItem(getDeletedUsefulKey(groupId)) || '[]'));
-    } catch {}
+    const deletedSet = new Set<string>(getDeletedUsefulIds(groupId));
 
     return parsed
       .map((item: any) => sanitizeUsefulItem(item, groupId))
@@ -181,16 +179,30 @@ export function saveLocalUsefulItems(groupId: string, items: UsefulItem[]): void
   }
 }
 
+const MAX_USEFUL_TOMBSTONES = 500;
+
+export function getDeletedUsefulIds(groupId: string): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(getDeletedUsefulKey(groupId)) || '[]');
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDeletedUsefulIds(groupId: string, ids: string[]): void {
+  try {
+    localStorage.setItem(getDeletedUsefulKey(groupId), JSON.stringify(ids.slice(-MAX_USEFUL_TOMBSTONES)));
+  } catch {}
+}
+
 export function recordDeletedUsefulItem(groupId: string, id: string): void {
   if (!groupId || !id) return;
-  try {
-    const key = getDeletedUsefulKey(groupId);
-    const deleted: string[] = JSON.parse(localStorage.getItem(key) || '[]');
-    if (!deleted.includes(id)) {
-      deleted.push(id);
-      localStorage.setItem(key, JSON.stringify(deleted.slice(-100)));
-    }
-  } catch {}
+  const deleted = getDeletedUsefulIds(groupId);
+  if (!deleted.includes(id)) {
+    deleted.push(id);
+    saveDeletedUsefulIds(groupId, deleted);
+  }
 }
 
 export async function fetchGroupUsefulData(
@@ -211,10 +223,12 @@ export async function fetchGroupUsefulData(
     const groupPayload = data?.byGroup?.[groupId.toLowerCase()] || data;
     const rawItems = Array.isArray(groupPayload?.items) ? groupPayload.items : [];
     
-    let deletedSet = new Set<string>();
-    try {
-      deletedSet = new Set(JSON.parse(localStorage.getItem(getDeletedUsefulKey(groupId)) || '[]'));
-    } catch {}
+    // Tombstones travel with the data: deletions made on another device apply here as well.
+    const serverDeleted: string[] = Array.isArray(groupPayload?.deletedIds) ? groupPayload.deletedIds.map(String) : [];
+    const localDeleted = getDeletedUsefulIds(groupId);
+    const unionDeleted = Array.from(new Set([...localDeleted, ...serverDeleted]));
+    if (unionDeleted.length !== localDeleted.length) saveDeletedUsefulIds(groupId, unionDeleted);
+    const deletedSet = new Set<string>(unionDeleted);
 
     const cloudItems: UsefulItem[] = rawItems
       .map((item: any) => sanitizeUsefulItem(item, groupId))
@@ -246,6 +260,102 @@ export async function fetchGroupUsefulData(
   } catch {
     return { items: local, fromNetwork: false };
   }
+}
+
+/**
+ * AUD-023: useful-only cloud slice with ETag support, feeding the sync engine.
+ * Same wire contract as the GET inside fetchGroupUsefulData
+ * (GET /sync/useful?groupId=<lowercased gid>); returns the RAW server payload
+ * (unsanitized items + server tombstones) without merging or persisting.
+ * A 304 is reported as 'not-modified' with no parsing.
+ */
+export interface UsefulFetchMeta {
+  status: 'ok' | 'not-modified' | 'error';
+  etag?: string;
+  data?: { rawItems: any[]; serverDeletedIds: string[] };
+}
+
+export async function fetchUsefulState(groupId: string, etag?: string): Promise<UsefulFetchMeta> {
+  if (!groupId) return { status: 'error' };
+  try {
+    const base = WORKER_BASE;
+    const url = `${base}/sync/useful?groupId=${encodeURIComponent(groupId.toLowerCase())}`;
+    const res = await fetch(url, {
+      headers: etag ? { 'If-None-Match': etag } : undefined
+    });
+    const resEtag = (() => {
+      try {
+        const get = (res as any)?.headers?.get;
+        return typeof get === 'function' ? ((get.call((res as any).headers, 'ETag') as string) || undefined) : undefined;
+      } catch { return undefined; }
+    })();
+    if (res.status === 304) {
+      return { status: 'not-modified', etag: resEtag || etag };
+    }
+    if (!res.ok) return { status: 'error' };
+    const data = await res.json();
+    const groupPayload = data?.byGroup?.[groupId.toLowerCase()] || data;
+    const rawItems = Array.isArray(groupPayload?.items) ? groupPayload.items : [];
+    const serverDeletedIds: string[] = Array.isArray(groupPayload?.deletedIds)
+      ? groupPayload.deletedIds.map(String)
+      : [];
+    return { status: 'ok', etag: resEtag, data: { rawItems, serverDeletedIds } };
+  } catch {
+    return { status: 'error' };
+  }
+}
+
+/**
+ * Pure merge of a remote useful slice into the local state (AUD-023 engine adapter).
+ * Same rules as fetchGroupUsefulData: sanitize, absorb server tombstones (AUD-011),
+ * cloud wins per id, non-deleted local-only items kept, canonical sort. Also
+ * persists the merged tombstone set; item persistence stays with the caller
+ * (setState) so the engine stays storage-agnostic.
+ */
+export function mergeUsefulState(
+  groupId: string,
+  local: UsefulItem[],
+  remote: { rawItems: any[]; serverDeletedIds: string[] }
+): { merged: UsefulItem[]; serverApplied: boolean } {
+  let deletedSet = new Set<string>();
+  try {
+    deletedSet = new Set(JSON.parse(localStorage.getItem(getDeletedUsefulKey(groupId)) || '[]'));
+  } catch {}
+
+  // AUD-011: absorb server tombstones so deletions propagate between devices.
+  if (remote.serverDeletedIds.length > 0) {
+    const mergedTombstones = Array.from(new Set([...deletedSet, ...remote.serverDeletedIds])).slice(-100);
+    try {
+      localStorage.setItem(getDeletedUsefulKey(groupId), JSON.stringify(mergedTombstones));
+    } catch {}
+    deletedSet = new Set(mergedTombstones);
+  }
+
+  const cloudItems: UsefulItem[] = remote.rawItems
+    .map((item: any) => sanitizeUsefulItem(item, groupId))
+    .filter((item: UsefulItem | null): item is UsefulItem => item !== null && !deletedSet.has(item.id));
+
+  const itemMap = new Map<string, UsefulItem>();
+  cloudItems.forEach(item => itemMap.set(item.id, item));
+  (local || []).forEach(item => {
+    if (item && !deletedSet.has(item.id) && !itemMap.has(item.id)) {
+      itemMap.set(item.id, item);
+    }
+  });
+
+  const merged = Array.from(itemMap.values()).sort((a, b) => {
+    if (Boolean(a.isPinned) !== Boolean(b.isPinned)) {
+      return a.isPinned ? -1 : 1;
+    }
+    if (a.order !== undefined && b.order !== undefined) {
+      return a.order - b.order;
+    }
+    if (a.order !== undefined) return -1;
+    if (b.order !== undefined) return 1;
+    return (b.createdAt || '').localeCompare(a.createdAt || '');
+  });
+
+  return { merged, serverApplied: remote.rawItems.length > 0 || remote.serverDeletedIds.length > 0 };
 }
 
 export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]): Promise<boolean> {
@@ -288,6 +398,7 @@ export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]):
       body: JSON.stringify({
         groupId: groupId.toLowerCase(),
         items: sanitizedItems,
+        deletedIds: getDeletedUsefulIds(groupId),
         updatedAt: Date.now()
       })
     });
@@ -296,4 +407,86 @@ export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]):
   } catch {
     return false;
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Student suggestions: delivery to the starosta, moderation, optional Telegram ping
+// ---------------------------------------------------------------------------
+
+function buildAuthHeaders(groupId: string): Record<string, string> {
+  const tgInitData = (typeof window !== 'undefined' ? (window as any).Telegram?.WebApp?.initData : '') || '';
+  const staffToken = typeof localStorage !== 'undefined'
+    ? (localStorage.getItem(`staff_token_${groupId.toLowerCase()}`) || localStorage.getItem('staff_token') || '')
+    : '';
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (tgInitData) headers['X-Telegram-Init-Data'] = tgInitData;
+  if (staffToken) headers['X-Staff-Token'] = staffToken;
+  return headers;
+}
+
+async function suggestionRequest(path: string, groupId: string, init: { method: string; body?: unknown }): Promise<{ ok: boolean; status: number; data: any }> {
+  try {
+    const res = await fetch(`${WORKER_BASE}${path}`, {
+      method: init.method,
+      headers: buildAuthHeaders(groupId),
+      body: init.body === undefined ? undefined : JSON.stringify(init.body)
+    });
+    let data: any = null;
+    try { data = await res.json(); } catch {}
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
+/** A student sends a material to the group's starosta. Resolves with the server-assigned id. */
+export async function submitUsefulSuggestion(
+  groupId: string,
+  item: Partial<UsefulItem>
+): Promise<{ ok: boolean; id?: string; error?: string; code?: string }> {
+  const gid = groupId.toLowerCase();
+  const res = await suggestionRequest('/v3/useful/suggest', gid, {
+    method: 'POST',
+    body: {
+      gid,
+      item: {
+        title: item.title,
+        text: item.text,
+        subject: item.subject,
+        tags: item.tags,
+        links: item.links,
+        attachments: (item.attachments || []).map(a => ({ id: a.id, name: a.name, url: a.url, tgUrl: a.tgUrl, type: a.type, size: a.size }))
+      }
+    }
+  });
+  if (res.ok && res.data?.id) return { ok: true, id: String(res.data.id) };
+  if (res.status === 0) return { ok: false, error: 'Нет связи с сервером. Проверьте интернет и повторите.', code: 'NETWORK' };
+  return { ok: false, error: res.data?.error || 'Не удалось отправить предложение', code: res.data?.code };
+}
+
+/** Staff: suggestions waiting for a decision, and whether this staff member gets Telegram pings. */
+export async function fetchPendingSuggestions(groupId: string): Promise<{ ok: boolean; items: UsefulItem[]; notify: boolean }> {
+  const gid = groupId.toLowerCase();
+  const res = await suggestionRequest(`/v3/useful/pending?gid=${encodeURIComponent(gid)}`, gid, { method: 'GET' });
+  if (!res.ok || !Array.isArray(res.data?.items)) return { ok: false, items: [], notify: false };
+  const items = (res.data.items as UsefulItem[])
+    .map(it => sanitizeUsefulItem(it, gid))
+    .filter((it): it is UsefulItem => Boolean(it))
+    .map(it => ({ ...it, isPending: true }));
+  return { ok: true, items, notify: Boolean(res.data.notify) };
+}
+
+/** Staff: approve (publishes the item for the group) or reject a pending suggestion. */
+export async function resolveSuggestion(groupId: string, id: string, action: 'approve' | 'reject'): Promise<boolean> {
+  const gid = groupId.toLowerCase();
+  const res = await suggestionRequest('/v3/useful/resolve', gid, { method: 'POST', body: { gid, id, action } });
+  return res.ok;
+}
+
+/** Staff: opt in or out of Telegram messages about new suggestions. */
+export async function setSuggestionNotifications(groupId: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> {
+  const gid = groupId.toLowerCase();
+  const res = await suggestionRequest('/v3/useful/notify', gid, { method: 'POST', body: { gid, enabled } });
+  return res.ok ? { ok: true } : { ok: false, error: res.data?.error || 'Не удалось изменить настройку' };
 }

@@ -4,8 +4,9 @@ import { ShieldCheck, Key, CheckCircle2, RefreshCw, Wrench, ChevronDown, Downloa
 import { toast } from 'sonner';
 import { claimStaffRole, getLocalStudents } from '../utils/attendanceStorage';
 import { SAMGTU_GROUP_MAP } from '../utils/samgtuGroupMap';
-import { fetchOfficialSamgtuSchedule, syncOfficialGroupSchedule, getLocalBackup } from '../utils/cloudSync';
-import { registerScheduleAliases, markScheduleLoaded, readCachedSchedule } from '../utils/scheduleLoader';
+import { fetchOfficialCycleWeeks, syncOfficialGroupSchedule, getLocalBackup } from '../utils/cloudSync';
+import { registerScheduleAliases, markScheduleLoaded, readCachedSchedule, loadGroupSchedule, isScheduleLoaded } from '../utils/scheduleLoader';
+import { compareWithOfficial } from '../utils/scheduleCompare';
 import { convertOfficialSamgtuToWeekData } from '../utils/samgtuParser';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { logger } from '../utils/logger';
@@ -102,8 +103,8 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
       return;
     }
 
-    if (groupId === 'ingt-310') {
-      const ok = confirm(`⚠️ Внимание! Расписание группы ${groupConf.name} выверено по Личному Кабинету (ЛК СамГТУ) и является актуальным.\n\nПубличный портал samgtu.ru содержит неполные данные начала семестра (13 расхождений, включая устаревшие пары в 08:00 утра).\n\nВы действительно хотите перезаписать проверенное расписание ЛК данными с портала?`);
+    if (groupConf.lkVerified) {
+      const ok = confirm(`⚠️ Внимание! Расписание группы ${groupConf.name} выверено по Личному Кабинету (ЛК СамГТУ).\n\nПубличный портал samgtu.ru может отставать от ЛК или содержать неполные данные. Сначала посмотрите расхождения в сверке.\n\nВы действительно хотите перезаписать проверенное расписание данными с портала?`);
       if (!ok) return;
     }
 
@@ -157,14 +158,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
     logger.action('SYNC', `Admin initiated official schedule check for ${groupConf.name}`);
 
     try {
-      // 1. Fetch official SamGTU data for all 4 weeks
-      const rawWeeks: Record<number, any> = {};
-      for (let w = 1; w <= 4; w++) {
-        const officialData = await fetchOfficialSamgtuSchedule(groupConf.samgtuGroupId, w);
-        if (officialData && officialData.wd) {
-          rawWeeks[w] = officialData;
-        }
-      }
+      // 1. Portal weeks that describe the schedule valid NOW (current week + next three).
+      //    Weeks 1-4 of the semester are an incomplete draft on the portal: comparing with them produced "differences" that do not exist.
+      const { rawWeeks, usedWeeks } = await fetchOfficialCycleWeeks(groupConf.samgtuGroupId);
 
       if (Object.keys(rawWeeks).length === 0) {
         setAuditResult({
@@ -173,15 +169,18 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
           summary: 'Сервер СамГТУ не вернул данные или временно недоступен. Проверьте сеть.',
           details: []
         });
-        setIsCheckingOfficial(false);
         return;
       }
 
-      // 2. Parse official 4-week schedule
+      // 2. Parse the official 4-week schedule
       const teachers = getLocalBackup(groupId).subjectTeachers || {};
       const { weekData: officialWeekData, totalLessons: officialTotalCount } = convertOfficialSamgtuToWeekData(groupId, rawWeeks, teachers);
 
-      // 3. Read current app schedule (checking custom schedule, in-memory registry, then v1 cache)
+      // 3. Read the app's schedule. A group that was never opened in this session has an EMPTY registry:
+      //    load it first, otherwise every official lesson would be reported as "missing in the app".
+      if (!isScheduleLoaded(groupId)) {
+        try { await loadGroupSchedule(groupId); } catch (e) {}
+      }
       let currentWeekData: any = SCHEDULE_REGISTRY[groupId];
       try {
         const customRaw = localStorage.getItem(`custom_schedule_${groupId}`);
@@ -200,74 +199,37 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentRole, onRoleChange, curr
         }
       }
 
-      // 4. Compare all weeks and days (with Unicode dash/whitespace and location normalization)
-      const normSubj = (s: string) => (s || '')
-        .replace(/[\u2010-\u2015]/g, '-')
-        .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\s]+/g, ' ')
-        .trim()
-        .toLowerCase();
+      // 4. Compare all weeks and days via scheduleCompare
+      const weeksLabel = [1, 2, 3, 4].map(c => usedWeeks[c]).filter(Boolean).sort((a, b) => a - b).join(', ');
+      const cmp = compareWithOfficial(currentWeekData, officialWeekData);
 
-      const normLoc = (loc: string) => {
-        if (!loc) return '';
-        const clean = loc
-          .toLowerCase()
-          .replace(/[\u2010-\u2015]/g, '-')
-          .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\s]+/g, ' ')
-          .replace(/№/g, '')
-          .replace(/,/g, ' ')
-          .replace(/ауд(?:итория)?\.?/g, '')
-          .replace(/корпус/g, 'к')
-          .replace(/3б/g, '3')
-          .trim();
-        return clean.split(/\s+/).filter(Boolean).sort().join(' ');
-      };
-
-      const diffs: string[] = [];
-      let currentTotalCount = 0;
-
-      for (let w = 1; w <= 4; w++) {
-        const curDays = currentWeekData?.[w] || [];
-        const offDays = officialWeekData?.[w] || [];
-
-        for (const curDay of curDays) {
-          currentTotalCount += (curDay.lessons || []).length;
-        }
-
-        for (const offDay of offDays) {
-          const curDay = curDays.find((d: any) => d.dayName === offDay.dayName);
-          const curLessons = curDay?.lessons || [];
-
-          for (const offL of offDay.lessons || []) {
-            const match = curLessons.find((cl: any) => cl.timeStart === offL.timeStart && normSubj(cl.subject) === normSubj(offL.subject));
-            if (!match) {
-              diffs.push(`Н${w} ${offDay.dayName} ${offL.timeStart}: в СамГТУ «${offL.subject}», в приложении нет`);
-            } else if (offL.location && normLoc(match.location) !== normLoc(offL.location)) {
-              diffs.push(`Н${w} ${offDay.dayName} ${offL.timeStart} «${offL.subject}»: ауд. ${match.location || '—'} ➔ ${offL.location}`);
-            }
-          }
-
-          for (const curL of curLessons) {
-            const match = (offDay.lessons || []).find((ol: any) => ol.timeStart === curL.timeStart && normSubj(ol.subject) === normSubj(curL.subject));
-            if (!match) {
-              diffs.push(`Н${w} ${offDay.dayName} ${curL.timeStart}: в приложении «${curL.subject}», в СамГТУ нет`);
-            }
-          }
-        }
+      if (cmp.status === 'no-local-data') {
+        setAuditResult({
+          groupName: groupConf.name,
+          status: 'error',
+          summary: 'Расписание этой группы не удалось загрузить в приложение, сравнивать не с чем. Откройте группу во вкладке «Пары» и повторите сверку.',
+          details: []
+        });
+        return;
       }
 
-      if (diffs.length === 0) {
+      if (cmp.status === 'match') {
         setAuditResult({
           groupName: groupConf.name,
           status: 'match',
-          summary: `Расписание группы ${groupConf.name} полностью совпадает с базой СамГТУ (${officialTotalCount} пар на 4 недели). Расхождений нет.`,
+          summary: `Расписание группы ${groupConf.name} полностью совпадает с порталом СамГТУ (${officialTotalCount} пар на 4 недели, недели портала: ${weeksLabel}). Расхождений нет.`,
           details: []
         });
         toast.success(`Сверка ${groupConf.name}: 0 расхождений`);
       } else {
+        const diffs = cmp.diffs;
         setAuditResult({
           groupName: groupConf.name,
           status: 'diff',
-          summary: `Обнаружено ${diffs.length} расхождений (в СамГТУ: ${officialTotalCount} пар, в приложении: ${currentTotalCount} пар). Нажмите «Применить», чтобы синхронизировать данные.`,
+          summary: `Обнаружено ${diffs.length} расхождений (на портале: ${officialTotalCount} пар, в приложении: ${cmp.currentTotal} пар; недели портала: ${weeksLabel}).`
+            + (groupConf.lkVerified
+              ? ' Эталон этой группы: ЛК СамГТУ, публичный портал может отставать. Не нажимайте «Применить», пока не убедитесь, что портал прав.'
+              : ' Нажмите «Применить», чтобы синхронизировать данные с порталом.'),
           details: diffs.slice(0, 10).concat(diffs.length > 10 ? [`...и еще ${diffs.length - 10} расхождений`] : [])
         });
         toast.warning(`Группа ${groupConf.name}: есть расхождения (${diffs.length})`);

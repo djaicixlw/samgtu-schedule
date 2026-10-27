@@ -1,4 +1,6 @@
 import { Student } from '../types';
+import { getAttendanceMode, refreshServerMirror, pushMonthOps } from './attendanceD1Client';
+import { safeSetItem, safeGetItem } from './safeStorage';
 import type { AttendanceRecord } from '../attendance';
 import { normalizeGroupId } from './groupAliases';
 import { getSemesterWeek, getDayName } from './samaraDate';
@@ -716,6 +718,30 @@ export async function unlinkStudentV3(month?: string): Promise<{
   }
 }
 
+/** Clears stored access codes for a clean logout (sessionStorage + any legacy disk copies). */
+export function clearGroupAccessCodes(): void {
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const drop: string[] = [];
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const k = sessionStorage.key(i);
+        if (k && k.startsWith('group_code_')) drop.push(k);
+      }
+      drop.forEach(k => sessionStorage.removeItem(k));
+    }
+  } catch {}
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const drop: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (k.startsWith('group_code_') || k === 'access_code')) drop.push(k);
+      }
+      drop.forEach(k => localStorage.removeItem(k));
+    }
+  } catch {}
+}
+
 /**
  * Claim starosta staff or admin role using the 80-bit code.
  * POST /v3/staff/claim
@@ -786,23 +812,17 @@ const attendanceBaseKey = (gid: string) => `attendance_base_${gid}`;
 
 function readAttendanceBase(gid: string): Record<string, string> {
   try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(attendanceBaseKey(gid));
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-      }
+    const raw = safeGetItem(attendanceBaseKey(gid));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
     }
   } catch {}
   return {};
 }
 
 function writeAttendanceBase(gid: string, cells: Record<string, string>): void {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(attendanceBaseKey(gid), JSON.stringify(cells));
-    }
-  } catch {}
+  safeSetItem(attendanceBaseKey(gid), JSON.stringify(cells), { component: 'attendanceBase' });
 }
 
 /** Flattens local records into cell keys: `${month}|${slot}|${lessonKey}` -> 'u' | 'e', `c|${month}|${lessonKey}` -> 'c'. */
@@ -842,6 +862,29 @@ export function rebaseAttendanceBase(groupId: string, records: AttendanceRecord[
   const base: Record<string, string> = {};
   for (const [key, value] of buildAttendanceCells(records || [], students).entries()) {
     if (value) base[key] = value;
+  }
+  writeAttendanceBase(gid, base);
+}
+
+/**
+ * Sets the push base to what the SERVER holds for the given months (never to local state), so
+ * pending local edits remain visible to the next push as differences from the base.
+ */
+export function rebaseAttendanceBaseFromServer(
+  groupId: string,
+  serverRecords: AttendanceRecord[],
+  fetchedMonths: string[]
+): void {
+  const gid = groupId.trim().toLowerCase();
+  const students = getLocalStudents(gid);
+  const base = readAttendanceBase(gid);
+  const months = new Set(fetchedMonths);
+  const monthOf = (key: string) => (key.startsWith('c|') || key.startsWith('h|')) ? key.split('|')[1] : key.split('|')[0];
+  for (const key of Object.keys(base)) {
+    if (months.has(monthOf(key))) delete base[key];
+  }
+  for (const [key, value] of buildAttendanceCells(serverRecords || [], students).entries()) {
+    if (value && months.has(monthOf(key))) base[key] = value;
   }
   writeAttendanceBase(gid, base);
 }
@@ -925,10 +968,39 @@ export async function syncAttendanceRecordsToV3(
 
     if (deltas.size === 0) return { ok: true };
 
+    // Time of the local edit per lesson: lets the server order offline edits correctly against other devices.
+    const recTimes = new Map<string, number>();
+    for (const rec of recs) {
+      if (!rec || !rec.date) continue;
+      const pm = (rec.lessonId || '').match(/(\d+)$/);
+      const t = typeof (rec as any).updatedAt === 'number' ? (rec as any).updatedAt : Date.parse(String((rec as any).updatedAt));
+      if (Number.isFinite(t) && t > 0) recTimes.set(`${rec.date.slice(0, 7)}|${rec.date.slice(5)}.${pm ? pm[1] : '1'}`, t);
+    }
+
     const newBase: Record<string, string> = { ...base };
     let failure: { error: string; status?: number } | null = null;
 
     for (const [month, delta] of deltas.entries()) {
+      // D1 groups: idempotent cell ops, one request per month, no read-modify-write and no version conflicts.
+      if (getAttendanceMode(gid) === 'd1') {
+        const pushed = await pushMonthOps(
+          { base: getAttendanceApiBase(), headers: getAuthHeaders(gid) }, gid, month, delta,
+          lessonKey => recTimes.get(`${month}|${lessonKey}`)
+        );
+        if (pushed.ok) {
+          for (const [key, value] of delta.updates) {
+            if (value) newBase[key] = value; else delete newBase[key];
+          }
+          continue;
+        }
+        if (!pushed.notD1) {
+          failure = { error: pushed.error || 'Save failed', status: pushed.status };
+          if (pushed.status === 401) break;
+          continue;
+        }
+        // the group is not on D1 (any more): fall through to the legacy month protocol below
+      }
+
       let attempts = 0;
       let success = false;
       let lastError = '';
@@ -941,6 +1013,12 @@ export async function syncAttendanceRecordsToV3(
           break;
         }
         const baseVer = (fetchRes.ok && fetchRes.data?.ver) ? fetchRes.data.ver : 0;
+        if (fetchRes.ok && isStaleRead(gid, month, baseVer)) {
+          // The edge serving us is behind a version this device already saw: writing on top of it would
+          // silently drop someone's marks. Keep the dirty flag and retry on the next sync.
+          lastError = 'Stale read from a lagging edge location; push postponed';
+          break;
+        }
         const hasCancel = Object.keys(delta.cancel).length > 0;
         const hasHours = Object.keys(delta.hours).length > 0;
         const saveRes = await saveMonthAttendanceV3(
@@ -950,6 +1028,7 @@ export async function syncAttendanceRecordsToV3(
         );
         if (saveRes.ok) {
           success = true;
+          noteSeenVer(gid, month, saveRes.ver);
         } else if (saveRes.conflict) {
           // Another session wrote first. Our payload is a set of per-cell operations that does not
           // depend on the server state, so it is safe to retry it unchanged on top of the new version.
@@ -1192,13 +1271,61 @@ export async function restoreRosterFromCloud(
   }
 }
 
+const STALE_READ_WINDOW_MS = 15_000;
+const seenVersKey = (gid: string) => `attendance_seen_vers_${gid}`;
+
+export function readSeenVers(gid: string): Record<string, { ver: number; at: number }> {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(seenVersKey(gid));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      }
+    }
+  } catch {}
+  return {};
+}
+
+export function noteSeenVer(gid: string, month: string, ver: number | undefined): void {
+  if (!ver || !Number.isFinite(ver)) return;
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const all = readSeenVers(gid);
+    if (!all[month] || ver >= all[month].ver) {
+      all[month] = { ver, at: Date.now() };
+      localStorage.setItem(seenVersKey(gid), JSON.stringify(all));
+    }
+  } catch {}
+}
+
+/** True when `ver` is older than a version this device saw/wrote very recently (lagging edge cache). */
+export function isStaleRead(gid: string, month: string, ver: number): boolean {
+  const seen = readSeenVers(gid)[month];
+  return Boolean(seen && ver < seen.ver && Date.now() - seen.at < STALE_READ_WINDOW_MS);
+}
+
+export interface AttendanceSnapshot {
+  records: AttendanceRecord[];
+  /** Months that were really fetched from the server (even if empty); stale or failed months are excluded. */
+  fetchedMonths: string[];
+}
+
+export async function pullAttendanceRecordsFromV3(groupId: string): Promise<AttendanceRecord[]> {
+  return (await pullAttendanceSnapshotFromV3(groupId)).records;
+}
+
 /**
  * Pull attendance records from Cloudflare Worker API v3 (Blind Server).
  * Reconstructs AttendanceRecord[] from anonymous slots for the current semester.
  */
-export async function pullAttendanceRecordsFromV3(
-  groupId: string
-): Promise<AttendanceRecord[]> {
+export async function pullAttendanceSnapshotFromV3(
+  groupId: string,
+  options?: { recentOnly?: boolean }
+): Promise<AttendanceSnapshot> {
+  const fetchedMonths: string[] = [];
+  const recordsByLesson = new Map<string, AttendanceRecord>();
+
   try {
     const gid = normalizeGroupId(groupId).trim().toLowerCase();
     let students = getLocalStudents(gid);
@@ -1232,6 +1359,13 @@ export async function pullAttendanceRecordsFromV3(
       ];
     }
 
+    if (options?.recentOnly) {
+      const curMonthStr = `${curYear}-${String(curMonth).padStart(2, '0')}`;
+      const prevDate = new Date(now.getTime() - 28 * 86400000);
+      const prevMonthStr = `${prevDate.getUTCFullYear()}-${String(prevDate.getUTCMonth() + 1).padStart(2, '0')}`;
+      monthsToFetch = monthsToFetch.filter(m => m === curMonthStr || m === prevMonthStr);
+    }
+
     // Build slot-to-student mapping
     let slotToStudentId = new Map<string, number>();
     for (const s of students) {
@@ -1240,13 +1374,31 @@ export async function pullAttendanceRecordsFromV3(
       }
     }
 
-    const recordsByLesson = new Map<string, AttendanceRecord>();
+    // D1 groups: ONE incremental request to the change feed replaces one GET per month. The local mirror has the
+    // shape of the legacy month documents, so everything below (slot mapping, records, merge) stays unchanged.
+    let mirror: Awaited<ReturnType<typeof refreshServerMirror>> | null = null;
+    if (getAttendanceMode(gid) !== 'kv') {
+      mirror = await refreshServerMirror({ base: getAttendanceApiBase(), headers: getAuthHeaders(gid) }, gid);
+      if (mirror.mode === 'kv') mirror = null;                          // group is not on D1: legacy month protocol
+      else if (!mirror.ok) return { records: Array.from(recordsByLesson.values()), fetchedMonths }; // feed failed
+    }
 
     for (const monthStr of monthsToFetch) {
-      const res = await fetchMonthAttendanceV3(gid, monthStr);
-      if (!res.ok || !res.data) continue;
+      let data: any = null;
+      if (mirror && mirror.getMonth) {
+        data = mirror.getMonth(monthStr);
+        fetchedMonths.push(monthStr);
+      } else {
+        const res = await fetchMonthAttendanceV3(gid, monthStr);
+        if (!res.ok || !res.data) continue;
+        const ver = Number(res.data.ver) || 0;
+        if (isStaleRead(gid, monthStr, ver)) continue;
+        noteSeenVer(gid, monthStr, ver);
+        fetchedMonths.push(monthStr);
+        data = res.data;
+      }
+      if (!data) continue;
 
-      const data = res.data;
       const slots: Record<string, Record<string, 'e' | 'u'>> = (data.slots && typeof data.slots === 'object') ? data.slots : {};
       const cancelledSet = new Set<string>(Array.isArray(data.cancelled) ? data.cancelled : []);
 
@@ -1363,10 +1515,10 @@ export async function pullAttendanceRecordsFromV3(
       }
     }
 
-    return Array.from(recordsByLesson.values());
+    return { records: Array.from(recordsByLesson.values()), fetchedMonths };
   } catch (err) {
     console.warn('Failed to pull attendance from v3:', err);
-    return [];
+    return { records: [], fetchedMonths: [] };
   }
 }
 

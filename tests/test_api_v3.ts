@@ -7,12 +7,14 @@
 import worker, {
   blindId,
   sha256Hex,
-  createTelegramInitData,
   pbkdf2,
   encryptChatId,
   decryptChatId,
-  checkUserGroupAccess
+  checkUserGroupAccess,
+  __resetRateLimiters
 } from '../cloudflare-worker.js';
+// AUD-038: the initData FORGERY helper moved out of the production worker.
+import { createTelegramInitData } from './worker_test_helpers';
 
 let passed = 0;
 let total = 0;
@@ -190,6 +192,7 @@ const victimNotBlocked = await callWorker('/v3/staff/claim', 'POST', elderInitDa
 assert(victimNotBlocked.status === 401, 'Distinct client IP is NOT blocked by attacker brute force (Anti-DoS confirmed)');
 
 // Reset rate limit key to test successful claim
+__resetRateLimiters();
 await mockAppData.delete(`rl:claim:${testGid}:unknown`);
 await mockAppData.delete(`rl:claim:${testGid}:${victimIp}`);
 await mockAppData.delete(`rl:claim:${testGid}:${attackerIp}`);

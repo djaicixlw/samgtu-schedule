@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { Lesson, DaySchedule, WeekData } from '../types';
 import { SEED_SUBJECT_TEACHERS_BY_GROUP, SEED_SUBJECT_TEACHERS } from '../defaultData';
+import { officialWeeksForCycle } from '../utils/officialWeeks';
+import { getSemesterConfig, samaraISO } from '../utils/samaraDate';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -332,13 +334,17 @@ export async function verifyAndSync() {
     const groupWeeks: Record<number, DaySchedule[]> = {};
     const prefix = GROUP_ID_PREFIXES[groupId] || groupId;
 
-    // Скачиваем данные 4 недель: ранние (1..4) и стабилизированный семестровый цикл (5..8)
+    // Скачиваем данные 4 недель: актуальные недели портала (текущая и три следующие, по одной на позицию цикла)
+    // и предыдущий цикл как запасной вариант. Раньше здесь были фиксированные недели 1..4 и 5..8.
     const rawWeeksDataEarly: Record<number, any> = {};
     const rawWeeksDataLate: Record<number, any> = {};
+    const windowWeeks = officialWeeksForCycle(samaraISO(new Date()), getSemesterConfig().semesterStart);
     for (let w = 1; w <= 4; w++) {
-      const urlEarly = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w}`;
-      const urlLate = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w + 4}`;
-      rawWeeksDataEarly[w] = await fetchJson(urlEarly);
+      const lateWeek = windowWeeks[w as 1 | 2 | 3 | 4];
+      const earlyWeek = lateWeek - 4;
+      const urlEarly = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${earlyWeek}`;
+      const urlLate = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${lateWeek}`;
+      rawWeeksDataEarly[w] = earlyWeek >= 1 ? await fetchJson(urlEarly) : null;
       await new Promise(r => setTimeout(r, 80));
       rawWeeksDataLate[w] = await fetchJson(urlLate);
       await new Promise(r => setTimeout(r, 80));

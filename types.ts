@@ -95,6 +95,8 @@ export interface HomeworkItem {
   attachments?: HomeworkAttachment[];
   createdAt: string;
   createdBy?: string;
+  /** AUD-012: per-item sync arbitration stamp (ms epoch). Set on every edit. */
+  updatedAt?: number;
 }
 
 export interface UsefulLink {

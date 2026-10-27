@@ -651,10 +651,11 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
                               const isExcused = (record.excusedStudentIds || []).includes(student.id);
                               const isAbsent = !isExcused && record.absentStudentIds.includes(student.id);
 
+                              const lessonHours = lesson.hours || record.hours || 2;
                               if (isExcused) {
-                                studentWeekExcHours += 2;
+                                studentWeekExcHours += lessonHours;
                               } else if (isAbsent) {
-                                studentWeekAbsHours += 2;
+                                studentWeekAbsHours += lessonHours;
                               }
 
                               return (

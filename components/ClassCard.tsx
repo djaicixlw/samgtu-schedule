@@ -197,4 +197,5 @@ const ClassCard: React.FC<ClassCardProps> = ({
   );
 };
 
-export default ClassCard;
+// AUD-031: ClassCard is a pure presentational component
+export default React.memo(ClassCard);

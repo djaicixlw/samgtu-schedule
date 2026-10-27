@@ -25,20 +25,39 @@ export function extractFileId(fileIdOrUrl?: string): string | null {
 }
 
 /**
- * Upload a document or image to Telegram private storage via Cloudflare Worker.
+ * AUD-040: THE single upload pipeline to the Telegram-backed storage via the
+ * Cloudflare Worker. It used to exist as three diverging copies
+ * (utils/upload.ts:uploadAttachmentFile, HomeworkTracker.uploadFile,
+ * UsefulTracker.uploadFile). All three now delegate here; the UX layer (size
+ * limits as user-facing toasts, captions, toast texts, result shaping) stays at
+ * the call sites so the visible behavior is unchanged.
  */
-export async function uploadAttachmentFile(
+export interface TelegramUploadCoreResult {
+  fileName: string;
+  fileId: string | null;
+  /** json.direct_url from the worker, when it provides one. */
+  directUrl: string;
+  /** Signed-link parameters returned by the worker (optional). */
+  sig?: string;
+  exp?: string;
+}
+
+export async function uploadToTelegramStorage(
   file: File,
-  caption?: string
-): Promise<HomeworkAttachment> {
-  if (file.size > 20 * 1024 * 1024) {
-    throw new Error('Файл слишком большой (>20 МБ). Прикрепите ссылку на Яндекс.Диск или Облако');
+  opts: { caption?: string; maxSizeBytes?: number } = {}
+): Promise<TelegramUploadCoreResult> {
+  const maxBytes = opts.maxSizeBytes ?? 20 * 1024 * 1024;
+  const maxMbRaw = maxBytes / (1024 * 1024);
+  const maxMb = Number.isInteger(maxMbRaw) ? String(maxMbRaw) : String(Math.round(maxMbRaw * 10) / 10);
+  if (file.size > maxBytes) {
+    throw new Error(`Файл слишком большой (>${maxMb} МБ). Прикрепите ссылку на Яндекс.Диск или Облако`);
   }
 
+  const fileName = file.name || `file_${Date.now()}`;
   const formData = new FormData();
-  formData.append('document', file, file.name);
-  if (caption) {
-    formData.append('caption', caption);
+  formData.append('document', file, fileName);
+  if (opts.caption) {
+    formData.append('caption', opts.caption);
   }
 
   const tg = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp) || null;
@@ -64,15 +83,43 @@ export async function uploadAttachmentFile(
   const doc = json.result.document || (json.result.photo ? json.result.photo[json.result.photo.length - 1] : null);
   const fileId = doc?.file_id;
 
-  const directUrl = json.direct_url || (fileId ? `${WORKER_BASE}/file?file_id=${fileId}&download=1` : '');
+  return {
+    fileName,
+    fileId: fileId || null,
+    directUrl: json.direct_url || '',
+    sig: json.sig,
+    exp: json.exp
+  };
+}
+
+/**
+ * Formats a byte size the way the homework/useful upload UI always did
+ * (КБ without decimals below 1 МБ, one decimal above).
+ */
+export function formatUploadedSize(bytes: number): string {
+  return bytes > 1024 * 1024
+    ? (bytes / (1024 * 1024)).toFixed(1) + ' МБ'
+    : (bytes / 1024).toFixed(0) + ' КБ';
+}
+
+/**
+ * Upload a document or image to Telegram private storage via Cloudflare Worker.
+ */
+export async function uploadAttachmentFile(
+  file: File,
+  caption?: string
+): Promise<HomeworkAttachment> {
+  const core = await uploadToTelegramStorage(file, { caption, maxSizeBytes: 20 * 1024 * 1024 });
+
+  const directUrl = core.directUrl || (core.fileId ? `${WORKER_BASE}/file?file_id=${core.fileId}&download=1` : '');
   const isImage = file.type.startsWith('image/');
 
   return {
     id: 'att_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
-    name: file.name,
+    name: core.fileName,
     url: directUrl,
     tgUrl: directUrl,
-    fileId: fileId,
+    fileId: core.fileId ?? undefined,
     type: isImage ? 'image' : 'file',
     size: formatFileSize(file.size)
   };

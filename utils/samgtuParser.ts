@@ -1,4 +1,7 @@
 import { Lesson, DaySchedule, WeekData } from '../types';
+import { generateDefaultSemesterConfig, getSemesterConfig } from './samaraDate';
+// AUD-027: the single canonicalizer of group ids (this module delegates to it).
+import { makeGroupId } from './groupId';
 
 export interface ParsedStudentMeta {
   studentName?: string;
@@ -35,7 +38,13 @@ export interface ParseOptions {
   groupNameOverride?: string;
 }
 
-const DEFAULT_SEMESTER_START = '2026-08-31';
+// AUD-006: never fall back to a hardcoded year — prefer the active semester config
+// (semester.json) and generate from the current date as the last resort.
+function getDefaultSemesterStart(): string {
+  const active = getSemesterConfig();
+  if (active && active.semesterStart) return active.semesterStart;
+  return generateDefaultSemesterConfig().semesterStart;
+}
 
 const DAY_NAMES = [
   'Воскресенье',
@@ -88,6 +97,12 @@ const ID_TO_FACULTY_MAP: Record<string, string> = {
 /**
  * Normalizes SamGTU long group names like "3-ИНГТ-24ИНГТ-110" or "Группа 24ИНГТ–110" into "3-ИНГТ-110"
  * and generates clean internal group ID "ingt-310".
+ *
+ * AUD-027: the ID is produced by the single canonicalizer makeGroupId
+ * (utils/groupId.ts); this function keeps owning the DISPLAY name derivation.
+ * The result is identical to the old in-function parsing for every structured
+ * input, and the fallback slug is now transliterated ([a-z0-9-]) instead of
+ * keeping Cyrillic.
  */
 export function normalizeSamgtuGroupName(rawName: string): { name: string; id: string } {
   const cleaned = rawName
@@ -96,54 +111,43 @@ export function normalizeSamgtuGroupName(rawName: string): { name: string; id: s
     .replace(/\s*[\(\[].*?[\)\]]/g, '')
     .trim();
 
-  // Match patterns like "3-ИНГТ-24ИНГТ-110" -> "3-ИНГТ-110"
+  // Display name: same patterns as before.
   const complexMatch = cleaned.match(/^(\d+)-([А-ЯЁA-Z]+)-\d+[А-ЯЁA-Z]+-(\d+)$/i);
   if (complexMatch) {
     const course = complexMatch[1];
     const faculty = complexMatch[2].toUpperCase();
     const groupNum = complexMatch[3];
-    const shortName = `${course}-${faculty}-${groupNum}`;
-    const facId = FACULTY_TO_ID_MAP[faculty] || faculty.toLowerCase();
-    const id = `${facId}-${course}${groupNum.slice(-2)}`;
-    return { name: shortName, id };
+    return { name: `${course}-${faculty}-${groupNum}`, id: makeGroupId(rawName) };
   }
 
-  // Match standard pattern like "3-ИНГТ-110"
   const stdMatch = cleaned.match(/^(\d+)-([А-ЯЁA-Z]+)-(\d+)$/i);
   if (stdMatch) {
     const course = stdMatch[1];
     const faculty = stdMatch[2].toUpperCase();
     const groupNum = stdMatch[3];
-    const facId = FACULTY_TO_ID_MAP[faculty] || faculty.toLowerCase();
-    const id = `${facId}-${course}${groupNum.slice(-2)}`;
-    return { name: `${course}-${faculty}-${groupNum}`, id };
+    return { name: `${course}-${faculty}-${groupNum}`, id: makeGroupId(rawName) };
   }
 
-  // Match official SamGTU portal patterns like "24ИНГТ-113" or "25ИНГТ-109"
   const portalMatch = cleaned.match(/^(\d{2})([А-ЯЁA-Z]+)-(\d+)$/i);
   if (portalMatch) {
     const yearCode = parseInt(portalMatch[1], 10);
-    // 24 -> 3 курс, 25 -> 2 курс, 26 -> 1 курс
     const course = yearCode === 24 ? 3 : yearCode === 25 ? 2 : yearCode === 26 ? 1 : yearCode === 23 ? 4 : 3;
     const faculty = portalMatch[2].toUpperCase();
     const groupNum = portalMatch[3];
-    const facId = FACULTY_TO_ID_MAP[faculty] || faculty.toLowerCase();
-    const id = `${facId}-${course}${groupNum.slice(-2)}`;
-    return { name: `${course}-${faculty}-${groupNum}`, id };
+    return { name: `${course}-${faculty}-${groupNum}`, id: makeGroupId(rawName) };
   }
 
-  // Match built-in id format like "ingt-311" or "faid-310"
   const builtinMatch = cleaned.match(/^([a-z]+)-([1-6])(\d{2})$/i);
   if (builtinMatch) {
     const facId = builtinMatch[1].toLowerCase();
     const course = builtinMatch[2];
     const num = builtinMatch[3];
     const facName = ID_TO_FACULTY_MAP[facId] || facId.toUpperCase();
-    return { name: `${course}-${facName}-1${num}`, id: `${facId}-${course}${num}` };
+    return { name: `${course}-${facName}-1${num}`, id: makeGroupId(rawName) };
   }
 
-  const id = cleaned.toLowerCase().replace(/[^a-z0-9а-яё]/gi, '-');
-  return { name: cleaned, id: id || 'custom-group' };
+  const id = makeGroupId(rawName) || cleaned.toLowerCase().replace(/[^a-z0-9а-яё]/gi, '-') || 'custom-group';
+  return { name: cleaned, id };
 }
 
 /**
@@ -182,7 +186,7 @@ export function getCanonicalGroupKey(input: { id?: string; name?: string } | str
  * Calculates which week of the 4-week cycle a given date falls into.
  * Week cycle: 1, 2, 3, 4.
  */
-export function calculateWeekAndDay(dateStr: string, semesterStartStr: string = DEFAULT_SEMESTER_START): {
+export function calculateWeekAndDay(dateStr: string, semesterStartStr: string = getDefaultSemesterStart()): {
   weekNumber: number;
   dayName: string;
   dayCode: string;
@@ -219,7 +223,7 @@ export function calculateWeekAndDay(dateStr: string, semesterStartStr: string = 
  * Parses raw text or HTML copied from SamGTU LK (lk.samgtu.ru)
  */
 export function parseSamgtuSchedule(rawContent: string, options: ParseOptions = {}): ParsedScheduleResult {
-  const semesterStart = options.semesterStartDate || DEFAULT_SEMESTER_START;
+  const semesterStart = options.semesterStartDate || getDefaultSemesterStart();
   const meta: ParsedStudentMeta = {};
   const rawLessons: RawParsedLesson[] = [];
 
@@ -491,7 +495,7 @@ export function parseSamgtuSchedule(rawContent: string, options: ParseOptions = 
       'консультация': 'Консультация'
     };
 
-    const year = parseInt(semesterStart.split('-')[0], 10) || 2026;
+    const year = parseInt(semesterStart.split('-')[0], 10) || parseInt(generateDefaultSemesterConfig().semesterStart.split('-')[0], 10);
     const dayHeaderRegex = /📅\s*([А-Яа-яёЁ]+)[,\s]+(\d{1,2})\s+([А-Яа-яёЁ]+)/g;
     const dayIndices: { index: number; dayName: string; day: string; monthName: string }[] = [];
     let dm: RegExpExecArray | null;
@@ -779,64 +783,104 @@ export function parseOfficialCell(cellName: string): { subject: string; type: st
   return { subject: subject || clean, type, location };
 }
 
+const officialDayHasCells = (d: any): boolean =>
+  Boolean(d?.at && Object.values(d.at as Record<string, any>).some((slot: any) => slot?.Cells && slot.Cells.length > 0));
+
+function lookupOfficialTeacher(
+  known: Record<string, string>,
+  subject: string,
+  type: string,
+  existing: DaySchedule[] | undefined
+): string {
+  const wantedType = `${subject}::${type}`.toLowerCase();
+  const wantedSubject = subject.toLowerCase();
+  let flat = '';
+  for (const [key, val] of Object.entries(known)) {
+    const k = key.toLowerCase();
+    if (k === wantedType && val) return val;
+    if (k === wantedSubject && val) flat = val;
+  }
+  if (flat) return flat;
+  for (const day of existing || []) {
+    for (const l of day.lessons || []) {
+      if (l.teacher && l.subject.toLowerCase() === wantedSubject && l.type === type) return l.teacher;
+    }
+  }
+  if (wantedSubject.includes('физическ')) return 'Кафедра физического воспитания';
+  return '';
+}
+
+/**
+ * Lesson ids of a group share a prefix ("310" for ingt-310). Applying an official schedule must keep it,
+ * otherwise notes, rooms, attachments and attendance, all keyed by lesson id, would be orphaned.
+ */
+export function deriveLessonIdPrefix(existing: WeekData | undefined, fallback: string): string {
+  for (const w of [1, 2, 3, 4] as const) {
+    for (const day of existing?.[w] || []) {
+      for (const lesson of day.lessons || []) {
+        const m = typeof lesson?.id === 'string' ? lesson.id.match(/^(.*)-w[1-4]-[a-z]{2}-\d+$/) : null;
+        if (m) return m[1];
+      }
+    }
+  }
+  return fallback;
+}
+
+/**
+ * Builds the app's 4-week cycle from the official portal weeks. Same rules as the nightly sync:
+ * for every cycle week W the official week W+4 (later in the semester) wins over week W when that
+ * day has lessons, so the template reflects the current block of the semester and not September.
+ * `rawWeeksData` is keyed by the official week number (1..8). Slots outside the bell schedule are ignored.
+ */
 export function convertOfficialSamgtuToWeekData(
   canonicalId: string,
   rawWeeksData: Record<number, any>,
-  knownTeachers: Record<string, string> = {}
+  knownTeachers: Record<string, string> = {},
+  existing?: WeekData
 ): { weekData: WeekData; totalLessons: number } {
   const result: WeekData = { 1: [], 2: [], 3: [], 4: [] };
   let totalLessons = 0;
+  const idPrefix = deriveLessonIdPrefix(existing, canonicalId);
 
   for (let weekNum = 1; weekNum <= 4; weekNum++) {
-    const weekObj = rawWeeksData[weekNum];
     const weekDays: DaySchedule[] = [];
 
     for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
       const dayName = OFFICIAL_DAY_NAMES[dayIdx - 1];
       const dayCode = OFFICIAL_DAY_CODES[dayIdx - 1];
-      let offDay = weekObj?.wd?.[String(dayIdx)];
+      const late = rawWeeksData[weekNum + 4]?.wd?.[String(dayIdx)];
+      const early = rawWeeksData[weekNum]?.wd?.[String(dayIdx)];
+      let offDay = officialDayHasCells(late) ? late : early;
 
-      // Fallback for Monday Week 1 (pre-semester 31 August on portal) from Monday Week 3 (odd week cycle)
-      if (weekNum === 1 && dayIdx === 1) {
-        const w1HasCells = offDay?.at && Object.values(offDay.at as Record<string, any>).some((s: any) => s.Cells && s.Cells.length > 0);
-        const w3Monday = rawWeeksData[3]?.wd?.['1'];
-        if (!w1HasCells && w3Monday) {
-          offDay = w3Monday;
-        }
+      // Monday of week 1 (31 August) is empty on the portal: take the Monday of week 3 of the cycle.
+      if (weekNum === 1 && dayIdx === 1 && !officialDayHasCells(offDay)) {
+        const w3Late = rawWeeksData[7]?.wd?.['1'];
+        const w3Early = rawWeeksData[3]?.wd?.['1'];
+        offDay = officialDayHasCells(w3Late) ? w3Late : w3Early;
       }
 
       const lessons: Lesson[] = [];
       if (offDay && offDay.at) {
         const sortedSlots = Object.entries(offDay.at as Record<string, any>)
           .map(([slotKey, slotData]) => ({ slotKey: Number(slotKey), slotData }))
-          .sort((a, b) => a.slotKey - b.slotKey);
+          .sort((x, y) => x.slotKey - y.slotKey);
 
         let lessonIdx = 1;
         for (const { slotKey, slotData } of sortedSlots) {
-          if (slotData.Cells && Array.isArray(slotData.Cells) && slotData.Cells.length > 0) {
+          const times = OFFICIAL_TIME_SLOTS[String(slotKey)];
+          if (!times) continue; // only the bell schedule 1..6; never guess a time for an unknown slot
+          if (slotData?.Cells && Array.isArray(slotData.Cells) && slotData.Cells.length > 0) {
             for (const cell of slotData.Cells) {
               const parsed = parseOfficialCell(cell.CellName || '');
-              const times = OFFICIAL_TIME_SLOTS[String(slotKey)] || { timeStart: '08:00', timeEnd: '09:35' };
-
-              let teacher = '';
-              for (const [key, val] of Object.entries(knownTeachers)) {
-                if (key.toLowerCase() === parsed.subject.toLowerCase()) {
-                  teacher = val;
-                  break;
-                }
-              }
-              if (!teacher && parsed.subject.toLowerCase().includes('физическ')) {
-                teacher = 'Кафедра физического воспитания';
-              }
 
               lessons.push({
-                id: `${canonicalId}-w${weekNum}-${dayCode}-${lessonIdx}`,
+                id: `${idPrefix}-w${weekNum}-${dayCode}-${lessonIdx}`,
                 timeStart: times.timeStart,
                 timeEnd: times.timeEnd,
                 subject: parsed.subject,
                 type: parsed.type,
                 location: parsed.location,
-                teacher
+                teacher: lookupOfficialTeacher(knownTeachers, parsed.subject, parsed.type, existing?.[weekNum as 1 | 2 | 3 | 4])
               });
               lessonIdx++;
               totalLessons++;
@@ -845,11 +889,10 @@ export function convertOfficialSamgtuToWeekData(
         }
       }
 
-
       weekDays.push({ dayName, lessons });
     }
 
-    result[weekNum] = weekDays;
+    result[weekNum as 1 | 2 | 3 | 4] = weekDays;
   }
 
   return { weekData: result, totalLessons };

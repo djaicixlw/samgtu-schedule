@@ -255,7 +255,7 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
     try {
       const res = await unlinkStudentV3();
       if (res.ok) {
-        toast.success('Привязка и данные посещаемости успешно удалены');
+        toast.success('Вы отвязаны от списка группы. Отметки остаются в журнале старосты');
         setShowConfirmDelete(false);
         onUnlinked?.();
         onClose();

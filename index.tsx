@@ -5,9 +5,22 @@ import ErrorBoundary from './components/ErrorBoundary';
 import './index.css';
 import { initTelegram } from './utils/tma';
 import { setSemesterConfig } from './utils/samaraDate';
+import { migrateLegacyGroupKeys } from './utils/groupMigration';
 
 async function bootstrap() {
   initTelegram();
+  // AUD-005: migrate legacy group keys BEFORE anything reads my_group_id. Without this
+  // call (it existed but was never invoked from production code), changing groups
+  // (e.g. faid-110 -> faid-310) permanently orphaned the previous group's local
+  // attendance, homework and schedule data.
+  try {
+    const migration = migrateLegacyGroupKeys();
+    if (migration.migratedCount > 0) {
+      console.info(`[bootstrap] migrated ${migration.migratedCount} legacy group key(s)`);
+    }
+  } catch (e) {
+    console.warn('[bootstrap] legacy group key migration failed:', e);
+  }
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000); // 2s таймаут для оффлайна

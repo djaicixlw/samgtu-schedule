@@ -202,4 +202,5 @@ const DayColumn: React.FC<DayColumnProps> = ({
   );
 };
 
-export default DayColumn;
+// AUD-031: memoized day column
+export default React.memo(DayColumn);

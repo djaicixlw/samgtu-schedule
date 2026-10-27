@@ -2,6 +2,9 @@ import { HomeworkItem, Lesson, Student } from '../types';
 import { AttendanceRecord, STUDENTS_REGISTRY } from '../attendance';
 import { SAMGTU_GROUP_MAP } from './samgtuGroupMap';
 import { convertOfficialSamgtuToWeekData } from './samgtuParser';
+import { SCHEDULE_REGISTRY } from '../constants';
+import { officialWeeksForCycle, weekFallbackChain, officialWeekHasLessons } from './officialWeeks';
+import { getSemesterConfig, samaraISO } from './samaraDate';
 
 import { WORKER_BASE, getAttendanceApiBase } from './attendanceStorage';
 
@@ -161,9 +164,34 @@ export const getLocalBackup = (groupId = 'ingt-310'): GroupCloudData => {
   }
 };
 
-// Safe fetch with cache-busting and timeout
-const fetchJson = async (url: string, timeoutMs = 6000, signal?: AbortSignal, forceFresh = true) => {
-  if (signal?.aborted) return null;
+// Safe fetch with cache-busting, timeout and conditional-GET (ETag) support.
+// AUD-023: the engine's ETag cache needs the response META (status + ETag header),
+// so the raw implementation is exposed as fetchJsonMeta; fetchJson keeps its old
+// "json or null" contract for existing callers.
+export interface FetchMeta<T = any> {
+  status: 'ok' | 'not-modified' | 'error';
+  json?: T;
+  data?: T;
+  etag?: string;
+}
+
+/** Tolerates headerless Response mocks in tests (defensive header read). */
+const resEtagOf = (res: any, fallback?: string): string | undefined => {
+  try {
+    const get = res?.headers?.get;
+    if (typeof get === 'function') return (get.call(res.headers, 'ETag') as string) || fallback || undefined;
+  } catch { /* headerless mock */ }
+  return fallback || undefined;
+};
+
+export const fetchJsonMeta = async (
+  url: string,
+  timeoutMs = 6000,
+  signal?: AbortSignal,
+  forceFresh = true,
+  etag?: string
+): Promise<FetchMeta> => {
+  if (signal?.aborted) return { status: 'error' };
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   const onExternalAbort = () => controller.abort();
@@ -181,32 +209,94 @@ const fetchJson = async (url: string, timeoutMs = 6000, signal?: AbortSignal, fo
       cache: forceFresh ? 'no-cache' : 'default',
       headers: {
         'Accept': 'application/json',
+        ...(etag ? { 'If-None-Match': etag } : {}),
         ...(isAttendance ? { 'X-Telegram-Init-Data': initData } : {})
       }
     });
     clearTimeout(id);
-    if (!res.ok) return null;
+    if (res.status === 304) {
+      return { status: 'not-modified', etag: resEtagOf(res, etag) };
+    }
+    if (!res.ok) return { status: 'error' };
+    const resEtag = resEtagOf(res);
     const text = await res.text();
     try {
       const json = JSON.parse(text);
       if (json && json.error) {
         console.warn('Cloud API rate limit or error:', json.error);
-        return null;
+        return { status: 'error' };
       }
-      return json;
+      return { status: 'ok', json, data: json, etag: resEtag };
     } catch {
       // Non-JSON response (e.g. unrouted worker fallback)
-      return null;
+      return { status: 'error' };
     }
   } catch (e) {
     clearTimeout(id);
-    return null;
+    return { status: 'error' };
   } finally {
     clearTimeout(id);
     if (signal) {
       signal.removeEventListener('abort', onExternalAbort);
     }
   }
+};
+
+const fetchJson = async (url: string, timeoutMs = 6000, signal?: AbortSignal, forceFresh = true) => {
+  const meta = await fetchJsonMeta(url, timeoutMs, signal, forceFresh);
+  return meta.status === 'ok' ? meta.json : null;
+};
+
+/**
+ * AUD-023: homework-only cloud slice with ETag support, feeding the sync engine.
+ * Same wire contract as the homework GET inside fetchGroupCloudData
+ * (GET /sync/homework?groupId=..., no auth headers); returns RAW cloud items and
+ * tombstone ids without merging or persisting — that is the engine's job.
+ */
+export const fetchHomeworkSlice = async (
+  groupId: string,
+  etag?: string
+): Promise<FetchMeta<{ items: HomeworkItem[]; deletedIds: string[] }>> => {
+  const endpoints = getEndpoints();
+  const gq = `groupId=${encodeURIComponent(groupId)}`;
+  const meta = await fetchJsonMeta(`${endpoints.homework}?${gq}`, 4000, undefined, true, etag);
+  if (meta.status !== 'ok') return { status: meta.status, etag: meta.etag };
+  const d = parseCloudPayload(meta.json);
+  if (!d || typeof d !== 'object') return { status: 'error' };
+
+  let rawItems: any[] = [];
+  let rawDeletedIds: any[] = [];
+  if (d.byGroup && d.byGroup[groupId]) {
+    rawItems = Array.isArray(d.byGroup[groupId].items) ? d.byGroup[groupId].items : [];
+    rawDeletedIds = Array.isArray(d.byGroup[groupId].deletedIds) ? d.byGroup[groupId].deletedIds : [];
+  } else if (Array.isArray(d.items)) {
+    rawItems = d.items.filter((h: any) => (h.groupId || 'ingt-310') === groupId);
+    rawDeletedIds = Array.isArray(d.deletedIds) ? d.deletedIds : [];
+  }
+
+  const items: HomeworkItem[] = rawItems
+    .filter((h: any) => h && h.id)
+    .map((h: any) => {
+      const item: HomeworkItem = {
+        id: String(h.id),
+        groupId: String(h.groupId || groupId),
+        subject: String(h.subject || ''),
+        title: String(h.title || ''),
+        description: String(h.description || ''),
+        assignedDate: String(h.assignedDate || ''),
+        dueDate: String(h.dueDate || ''),
+        attachments: Array.isArray(h.attachments) ? h.attachments : [],
+        createdAt: String(h.createdAt || '')
+      };
+      if (h.updatedAt !== undefined) (item as any).updatedAt = Number(h.updatedAt);
+      return item;
+    });
+
+  return {
+    status: 'ok',
+    etag: meta.etag,
+    data: { items, deletedIds: rawDeletedIds.map(String).filter(Boolean) }
+  } as FetchMeta<{ items: HomeworkItem[]; deletedIds: string[] }>;
 };
 
 // Safe PUT with timeout
@@ -561,6 +651,56 @@ export const fetchOfficialSamgtuSchedule = async (samgtuGroupId: number, weekNum
 };
 
 /**
+ * Loads official weeks 1..8 (the cycle template needs both halves, see convertOfficialSamgtuToWeekData).
+ * All-or-nothing: with a missing week the result would silently fall back to older data.
+ */
+export const fetchOfficialWeeks = async (
+  samgtuGroupId: number
+): Promise<{ ok: boolean; weeks: Record<number, any>; message: string }> => {
+  const numbers = [1, 2, 3, 4, 5, 6, 7, 8];
+  const results = await Promise.all(numbers.map(w => fetchOfficialSamgtuSchedule(samgtuGroupId, w)));
+  const weeks: Record<number, any> = {};
+  for (let i = 0; i < numbers.length; i++) {
+    if (!results[i] || !results[i].wd) {
+      return { ok: false, weeks: {}, message: `Не удалось загрузить неделю ${numbers[i]} с сервера СамГТУ. Проверьте сеть и повторите.` };
+    }
+    weeks[numbers[i]] = results[i];
+  }
+  return { ok: true, weeks, message: '' };
+};
+
+/**
+ * Portal weeks that describe the schedule valid NOW (the current week and the next three), one per position of the
+ * app's 4-week cycle. Weeks 1-4 of the semester are an incomplete draft on the portal and must not be used any more.
+ * An unpublished (empty) week falls back to the same position one and two cycles earlier.
+ */
+export const fetchOfficialCycleWeeks = async (
+  samgtuGroupId: number
+): Promise<{ rawWeeks: Record<number, any>; usedWeeks: Record<number, number> }> => {
+  const targets = officialWeeksForCycle(samaraISO(new Date()), getSemesterConfig().semesterStart);
+  const rawWeeks: Record<number, any> = {};
+  const usedWeeks: Record<number, number> = {};
+  for (const cycle of [1, 2, 3, 4] as const) {
+    let emptyButValid: { data: any; week: number } | null = null;
+    for (const week of weekFallbackChain(targets[cycle])) {
+      const data = await fetchOfficialSamgtuSchedule(samgtuGroupId, week);
+      if (data && officialWeekHasLessons(data)) {
+        rawWeeks[cycle] = data;
+        usedWeeks[cycle] = week;
+        emptyButValid = null;
+        break;
+      }
+      if (data && data.wd && !emptyButValid) emptyButValid = { data, week };
+    }
+    if (!rawWeeks[cycle] && emptyButValid) {
+      rawWeeks[cycle] = emptyButValid.data;
+      usedWeeks[cycle] = emptyButValid.week;
+    }
+  }
+  return { rawWeeks, usedWeeks };
+};
+
+/**
  * Synchronizes full 4-week official schedule from SamGTU for a given group.
  * Saves to custom_schedule_${groupId} and v1 cache.
  */
@@ -572,17 +712,14 @@ export const syncOfficialGroupSchedule = async (
     return { ok: false, message: `Группа ${groupId} не найдена в реестре СамГТУ` };
   }
 
-  const rawWeeks: Record<number, any> = {};
-  for (let w = 1; w <= 4; w++) {
-    const data = await fetchOfficialSamgtuSchedule(groupConf.samgtuGroupId, w);
-    if (!data || !data.wd) {
-      return { ok: false, message: `Не удалось загрузить неделю ${w} с сервера СамГТУ. Проверьте сеть.` };
-    }
-    rawWeeks[w] = data;
+  const { rawWeeks, usedWeeks } = await fetchOfficialCycleWeeks(groupConf.samgtuGroupId);
+  const missing = [1, 2, 3, 4].filter(c => !rawWeeks[c]);
+  if (missing.length > 0) {
+    return { ok: false, message: `Не удалось загрузить недели ${missing.join(', ')} цикла с сервера СамГТУ. Проверьте сеть.` };
   }
 
   const teachers = getLocalBackup(groupId).subjectTeachers || {};
-  const { weekData, totalLessons } = convertOfficialSamgtuToWeekData(groupId, rawWeeks, teachers);
+  const { weekData, totalLessons } = convertOfficialSamgtuToWeekData(groupId, rawWeeks, teachers, (SCHEDULE_REGISTRY as any)[groupId]);
 
   if (totalLessons === 0) {
     return { ok: false, message: 'Официальный реестр СамГТУ вернул 0 занятий' };
@@ -593,6 +730,6 @@ export const syncOfficialGroupSchedule = async (
     localStorage.setItem(`sched_cache_v1:${groupId}`, JSON.stringify({ data: weekData, cachedAt: Date.now() }));
   } catch (e) {}
 
-  return { ok: true, message: `Успешно загружено ${totalLessons} пар из СамГТУ на все 4 недели`, weekData };
+  return { ok: true, message: `Успешно загружено ${totalLessons} пар из СамГТУ на все 4 недели (недели портала: ${[1, 2, 3, 4].map(c => usedWeeks[c]).sort((a, b) => a - b).join(', ')})`, weekData };
 };
 

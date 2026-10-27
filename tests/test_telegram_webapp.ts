@@ -354,10 +354,12 @@ assert(
 
 // Re-read appTsxContent to capture recent edits
 const updatedAppTsx = fs.readFileSync(appTsxPath, 'utf8');
+// AUD-031: App consumes the day-granularity ticker (same visible behavior, no
+// per-minute full-tree re-render); the samaraNow derivation is unchanged.
 assert(
-  updatedAppTsx.includes('const liveNow = useNow(60000);') &&
+  updatedAppTsx.includes('const liveNow = useSamaraDayTick(60000);') &&
   updatedAppTsx.includes('const samaraNow = useMemo(() => getSamaraDate(liveNow), [liveNow]);'),
-  'App.tsx consumes useNow and computes live samaraNow'
+  'App.tsx consumes useSamaraDayTick and computes live samaraNow'
 );
 
 const updatedSwipeableDays = fs.readFileSync(swipeableDaysPath, 'utf8');

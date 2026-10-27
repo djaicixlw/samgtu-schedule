@@ -389,4 +389,5 @@ const SwipeableDays: React.FC<SwipeableDaysProps> = ({
   );
 };
 
-export default SwipeableDays;
+// AUD-031: memo barrier
+export default React.memo(SwipeableDays);

@@ -1,4 +1,38 @@
 // Cloudflare Worker: Telegram Unlimited File Storage & CORS Cloud Sync Proxy for SamGTU 3-INGT-110
+import {
+  attStorage, readMonth, applyLegacyPatch, applyOps, normalizeOps, readChanges, readStudentMarks,
+  deleteSlotMarks, migrateCopy, migrateVerify, migrateFlip, migrateRollback, hasD1, currentRev
+} from './worker/attendance_d1.js';
+
+
+// In-memory rate limiting (per-isolate, zero KV writes for anonymous traffic).
+// Pairs with optional Cloudflare Rate Limiting binding named CLAIM_LIMITER (see wrangler.toml) - it is consulted first when present.
+const rlBuckets = new Map();
+const RL_MAX_BUCKETS = 20000;
+
+function rlCount(key, now = Date.now()) {
+  const b = rlBuckets.get(key);
+  return b && b.reset > now ? b.n : 0;
+}
+
+function rlBump(key, windowMs, now = Date.now()) {
+  if (rlBuckets.size >= RL_MAX_BUCKETS) {
+    for (const [k, v] of rlBuckets) if (v.reset <= now) rlBuckets.delete(k);
+    if (rlBuckets.size >= RL_MAX_BUCKETS) rlBuckets.delete(rlBuckets.keys().next().value);
+  }
+  const cur = rlCount(key, now);
+  const reset = (rlBuckets.get(key)?.reset > now) ? rlBuckets.get(key).reset : now + windowMs;
+  rlBuckets.set(key, { n: cur + 1, reset });
+  return cur + 1;
+}
+
+function rlClear(key) {
+  rlBuckets.delete(key);
+}
+
+export function __resetRateLimiters() {
+  rlBuckets.clear();
+}
 
 // In-memory rate limiting and deduplication storage (per isolate)
 export const recentErrorHashes = new Map();
@@ -65,6 +99,67 @@ export function sanitizeHomeworkItem(item, fallbackGroupId = '') {
     createdAt: String(item.createdAt || '').slice(0, 50),
     createdBy: item.createdBy ? String(item.createdBy).slice(0, 100) : undefined,
     updatedAt: item.updatedAt ? (typeof item.updatedAt === 'number' ? item.updatedAt : String(item.updatedAt).slice(0, 50)) : undefined
+  };
+}
+
+
+export function sanitizeUsefulItem(item, fallbackGroupId = '') {
+  if (!item || typeof item !== 'object') return null;
+  const id = String(item.id || '').slice(0, 100);
+  if (!id) return null;
+  const title = String(item.title || '').trim().slice(0, 100);
+  const text = String(item.text || '').trim().slice(0, 2000);
+  if (!title && !text) return null;
+
+  const tags = Array.isArray(item.tags)
+    ? item.tags.map(t => String(t || '').trim().toLowerCase().replace(/^#+/, '')).filter(t => t.length > 0 && t.length <= 30).slice(0, 10)
+    : [];
+  const links = Array.isArray(item.links)
+    ? item.links
+        .filter(l => l && typeof l === 'object' && typeof l.url === 'string' && l.url.startsWith('https://') && l.url.length <= 1000)
+        .slice(0, 10)
+        .map(l => ({ title: String(l.title || l.url).trim().slice(0, 100), url: String(l.url).trim() }))
+    : [];
+  // Attachment payloads (base64 `data`) are never stored on the server.
+  const attachments = Array.isArray(item.attachments)
+    ? item.attachments.slice(0, 10).map(att => {
+        if (!att || typeof att !== 'object') return null;
+        return {
+          id: att.id ? String(att.id).slice(0, 100) : undefined,
+          name: String(att.name || 'Вложение').slice(0, 200),
+          url: typeof att.url === 'string' ? att.url.slice(0, 1000) : undefined,
+          tgUrl: typeof att.tgUrl === 'string' ? att.tgUrl.slice(0, 1000) : undefined,
+          type: typeof att.type === 'string' ? att.type.slice(0, 80) : undefined,
+          size: typeof att.size === 'number' && Number.isFinite(att.size) ? att.size : (typeof att.size === 'string' ? att.size.slice(0, 30) : undefined)
+        };
+      }).filter(Boolean)
+    : [];
+
+  let submittedBy;
+  if (item.submittedBy && typeof item.submittedBy === 'object') {
+    submittedBy = {
+      id: typeof item.submittedBy.id === 'number' && Number.isFinite(item.submittedBy.id) ? item.submittedBy.id : undefined,
+      username: typeof item.submittedBy.username === 'string' ? item.submittedBy.username.slice(0, 100) : undefined,
+      name: typeof item.submittedBy.name === 'string' ? item.submittedBy.name.slice(0, 100) : undefined
+    };
+  }
+
+  return {
+    id,
+    groupId: String(item.groupId || fallbackGroupId || '').toLowerCase().slice(0, 64),
+    title,
+    text,
+    subject: typeof item.subject === 'string' && item.subject.trim() ? item.subject.trim().slice(0, 200) : undefined,
+    tags,
+    isPinned: Boolean(item.isPinned),
+    order: typeof item.order === 'number' && Number.isFinite(item.order) ? item.order : undefined,
+    links,
+    attachments,
+    createdAt: typeof item.createdAt === 'string' ? item.createdAt.slice(0, 50) : '',
+    updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt.slice(0, 50) : undefined,
+    createdBy: typeof item.createdBy === 'string' ? item.createdBy.slice(0, 100) : undefined,
+    isPending: item.isPending ? true : undefined,
+    submittedBy
   };
 }
 
@@ -166,18 +261,18 @@ export function sanitizeSyncPayload(type, rawData) {
       for (const [gid, grp] of entries) {
         if (grp && typeof grp === 'object') {
           res.byGroup[gid] = {
-            items: Array.isArray(grp.items) ? grp.items.slice(0, 200).map(it => sanitizeHomeworkItem(it, gid)).filter(Boolean) : [],
-            deletedIds: Array.isArray(grp.deletedIds) ? grp.deletedIds.map(String).slice(0, 200) : [],
+            items: Array.isArray(grp.items) ? grp.items.slice(0, 2000).map(it => sanitizeHomeworkItem(it, gid)).filter(Boolean) : [],
+            deletedIds: Array.isArray(grp.deletedIds) ? grp.deletedIds.map(String).slice(-1000) : [],
             updatedAt: Number(grp.updatedAt) || now
           };
         }
       }
     }
     if (Array.isArray(rawData.items)) {
-      res.items = rawData.items.slice(0, 200).map(it => sanitizeHomeworkItem(it)).filter(Boolean);
+      res.items = rawData.items.slice(0, 2000).map(it => sanitizeHomeworkItem(it)).filter(Boolean);
     }
     if (Array.isArray(rawData.deletedIds)) {
-      res.deletedIds = rawData.deletedIds.map(String).slice(0, 200);
+      res.deletedIds = rawData.deletedIds.map(String).slice(-1000);
     }
     return res;
   }
@@ -242,7 +337,122 @@ export function sanitizeSyncPayload(type, rawData) {
     return res;
   }
 
+  if (type === 'useful') {
+    const res = { updatedAt: Number(rawData.updatedAt) || now };
+    const cleanItems = (arr, gid) => arr.slice(0, 200).map(it => sanitizeUsefulItem(it, gid)).filter(Boolean);
+    const cleanDeleted = (arr) => arr.map(x => String(x).slice(0, 100)).slice(-1000);
+    if (typeof rawData.groupId === 'string') res.groupId = rawData.groupId.toLowerCase().slice(0, 64);
+    if (rawData.byGroup && typeof rawData.byGroup === 'object') {
+      res.byGroup = {};
+      for (const [gid, grp] of Object.entries(rawData.byGroup).slice(0, 50)) {
+        if (grp && typeof grp === 'object') {
+          res.byGroup[gid] = {
+            groupId: gid,
+            items: Array.isArray(grp.items) ? cleanItems(grp.items, gid) : [],
+            deletedIds: Array.isArray(grp.deletedIds) ? cleanDeleted(grp.deletedIds) : [],
+            updatedAt: Number(grp.updatedAt) || now
+          };
+        }
+      }
+    }
+    if (Array.isArray(rawData.items)) res.items = cleanItems(rawData.items, res.groupId || '');
+    if (Array.isArray(rawData.deletedIds)) res.deletedIds = cleanDeleted(rawData.deletedIds);
+    return res;
+  }
+
   return rawData;
+}
+
+
+// ---------------------------------------------------------------------------
+// AUD-001: field-aware union merge for /sync/* group slices.
+// ---------------------------------------------------------------------------
+
+function syncTsMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const asNum = Number(value);
+    if (Number.isFinite(asNum)) return asNum;
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function syncItemNewer(incoming, existing) {
+  return syncTsMs(incoming && (incoming.updatedAt ?? incoming.createdAt)) >
+         syncTsMs(existing && (existing.updatedAt ?? existing.createdAt));
+}
+
+function mergeSyncItemArrays(existingItems, incomingItems) {
+  const byId = new Map();
+  for (const it of (Array.isArray(incomingItems) ? incomingItems : [])) {
+    if (it && it.id !== undefined && it.id !== null) byId.set(String(it.id), it);
+  }
+  for (const it of (Array.isArray(existingItems) ? existingItems : [])) {
+    if (!it || it.id === undefined || it.id === null) continue;
+    const key = String(it.id);
+    const prev = byId.get(key);
+    if (!prev) {
+      byId.set(key, it);
+    } else if (syncItemNewer(it, prev)) {
+      byId.set(key, it);
+    }
+  }
+  return Array.from(byId.values());
+}
+
+function mergeSyncDeletedIds(existingGroup, incoming) {
+  const deleted = new Set();
+  for (const d of (Array.isArray(existingGroup && existingGroup.deletedIds) ? existingGroup.deletedIds : [])) deleted.add(String(d));
+  for (const d of (Array.isArray(incoming && incoming.deletedIds) ? incoming.deletedIds : [])) deleted.add(String(d));
+  return Array.from(deleted);
+}
+
+export function mergeHomeworkGroupSlice(existingGroup, incoming) {
+  const ex = (existingGroup && typeof existingGroup === 'object') ? existingGroup : {};
+  const inc = (incoming && typeof incoming === 'object') ? incoming : {};
+  const result = { ...ex };
+  result.items = mergeSyncItemArrays(ex.items, inc.items);
+  result.deletedIds = mergeSyncDeletedIds(ex, inc);
+  if (inc.updatedAt !== undefined) result.updatedAt = inc.updatedAt;
+  return result;
+}
+
+export function mergeUsefulGroupSlice(existingGroup, incoming) {
+  const ex = (existingGroup && typeof existingGroup === 'object') ? existingGroup : {};
+  const inc = (incoming && typeof incoming === 'object') ? incoming : {};
+  const result = { ...ex };
+  result.items = mergeSyncItemArrays(ex.items, inc.items);
+  result.deletedIds = mergeSyncDeletedIds(ex, inc);
+  if (inc.updatedAt !== undefined) result.updatedAt = inc.updatedAt;
+  return result;
+}
+
+export function mergeScheduleGroupSlice(existingGroup, incoming) {
+  const ex = (existingGroup && typeof existingGroup === 'object') ? existingGroup : {};
+  const inc = (incoming && typeof incoming === 'object') ? incoming : {};
+  const result = { ...ex };
+
+  const exOverrides = (ex.overrides && typeof ex.overrides === 'object') ? ex.overrides
+    : (ex.scheduleOverrides && typeof ex.scheduleOverrides === 'object') ? ex.scheduleOverrides : {};
+  const incOverrides = (inc.overrides && typeof inc.overrides === 'object') ? inc.overrides
+    : (inc.scheduleOverrides && typeof inc.scheduleOverrides === 'object') ? inc.scheduleOverrides : {};
+  const overrides = { ...exOverrides };
+  for (const k of Object.keys(incOverrides)) {
+    const prev = overrides[k];
+    if (!prev || syncItemNewer(incOverrides[k], prev)) overrides[k] = incOverrides[k];
+  }
+  result.overrides = overrides;
+
+  const exTeachers = (ex.teachers && typeof ex.teachers === 'object') ? ex.teachers
+    : (ex.subjectTeachers && typeof ex.subjectTeachers === 'object') ? ex.subjectTeachers : {};
+  const incTeachers = (inc.teachers && typeof inc.teachers === 'object') ? inc.teachers
+    : (inc.subjectTeachers && typeof inc.subjectTeachers === 'object') ? inc.subjectTeachers : {};
+  result.teachers = { ...exTeachers, ...incTeachers };
+
+  if (inc.updatedAt !== undefined) result.updatedAt = inc.updatedAt;
+  return result;
 }
 
 export function escapeHtml(str) {
@@ -472,6 +682,202 @@ export async function verifyStaffToken(token, pepper) {
   } catch {
     return null;
   }
+}
+
+const d1Json = (corsHeaders, status, body, extra = {}) => new Response(JSON.stringify(body), {
+  status,
+  headers: { ...corsHeaders, "Content-Type": "application/json", ...extra }
+});
+const d1Unavailable = (corsHeaders) => d1Json(corsHeaders, 503, { error: "Attendance storage temporarily unavailable, retry" }, { "Retry-After": "5" });
+const attDeviceId = (request, body, userBlindId) =>
+  String((body && body.dev) || request.headers.get("X-Device-Id") || userBlindId || "staff").replace(/[^0-9A-Za-z_-]/g, "_").slice(0, 32);
+
+/** Loads g:<gid> and checks that the caller is staff of that group. Returns {group} or {response}. */
+
+const SUGGEST_QUEUE_MAX = 30;
+const SUGGEST_PER_USER_PER_HOUR = 10;
+const SUGGEST_PER_GROUP_PER_HOUR = 20;
+const SUGGEST_TTL_SECONDS = 30 * 86400;
+
+async function bumpHourlyCounter(env, key, limit) {
+  const raw = await env.APP_DATA.get(key);
+  const n = raw ? parseInt(raw, 10) || 0 : 0;
+  if (n >= limit) return false;
+  await env.APP_DATA.put(key, String(n + 1), { expirationTtl: 3600 });
+  return true;
+}
+
+/**
+ * Suggestions in "Полезное":
+ *   POST /v3/useful/suggest   student: { gid, item: { title, text, subject, tags, links, attachments } }
+ *   GET  /v3/useful/pending   staff: ?gid=... -> { items, notify }
+ *   POST /v3/useful/resolve   staff: { gid, id, action: "approve" | "reject" }
+ *   POST /v3/useful/notify    staff: { gid, enabled }
+ */
+async function handleUsefulSuggestions(request, env, corsHeaders, ctx) {
+  const { url, userBlindId, tokenPayload, verifiedUser, botToken } = ctx;
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" }
+  });
+  const path = url.pathname;
+
+  const readBody = async () => {
+    try { return await request.json(); } catch { return null; }
+  };
+  const loadGroup = async (gidRaw) => {
+    const gid = String(gidRaw || '').trim().toLowerCase();
+    if (!ATT_GID_RE.test(gid)) return { error: json({ error: "Invalid gid" }, 400) };
+    const raw = await env.APP_DATA.get("g:" + gid);
+    if (!raw) return { error: json({ error: "У этой группы пока нет старосты в приложении", code: "NO_STAROSTA" }, 404) };
+    try { return { gid, groupData: JSON.parse(raw) }; } catch { return { error: json({ error: "Corrupted group record" }, 500) }; }
+  };
+  const pendingKey = (gid) => `useful-pending:${gid}`;
+  const readPending = async (gid) => {
+    const raw = await env.APP_DATA.get(pendingKey(gid));
+    if (!raw) return [];
+    try { const p = JSON.parse(raw); return Array.isArray(p.items) ? p.items : []; } catch { return []; }
+  };
+  const writePending = (gid, items) =>
+    env.APP_DATA.put(pendingKey(gid), JSON.stringify({ items, updatedAt: Date.now() }), { expirationTtl: SUGGEST_TTL_SECONDS });
+
+  // ---- POST /v3/useful/suggest
+  if (path === "/v3/useful/suggest" && request.method === "POST") {
+    if (!verifiedUser || !userBlindId) {
+      return json({ error: "Откройте приложение в Telegram, чтобы отправить материал", code: "NO_TELEGRAM" }, 401);
+    }
+    const body = await readBody();
+    if (!body || typeof body !== 'object') return json({ error: "Invalid JSON body" }, 400);
+    const g = await loadGroup(body.gid);
+    if (g.error) return g.error;
+
+    if (!(await bumpHourlyCounter(env, `rl:us:${userBlindId}`, SUGGEST_PER_USER_PER_HOUR))) {
+      return json({ error: "Слишком много предложений. Попробуйте через час.", code: "RATE_LIMITED" }, 429);
+    }
+    if (!(await bumpHourlyCounter(env, `rl:ug:${g.gid}`, SUGGEST_PER_GROUP_PER_HOUR))) {
+      return json({ error: "В группу сейчас пришло слишком много предложений. Попробуйте позже.", code: "RATE_LIMITED" }, 429);
+    }
+
+    const pending = await readPending(g.gid);
+    if (pending.length >= SUGGEST_QUEUE_MAX) {
+      return json({ error: "У старосты накопилась очередь предложений. Попробуйте позже.", code: "QUEUE_FULL" }, 429);
+    }
+
+    const id = `sg_${Date.now().toString(36)}_${crypto.getRandomValues(new Uint32Array(1))[0].toString(36)}`;
+    const item = sanitizeUsefulItem({
+      ...(body.item && typeof body.item === 'object' ? body.item : {}),
+      id,
+      groupId: g.gid,
+      isPending: true,
+      createdAt: new Date().toISOString(),
+      submittedBy: {
+        id: verifiedUser.id,
+        username: verifiedUser.username,
+        name: [verifiedUser.first_name, verifiedUser.last_name].filter(Boolean).join(' ') || undefined
+      }
+    }, g.gid);
+    if (!item) return json({ error: "Пустое предложение", code: "EMPTY" }, 400);
+
+    pending.unshift(item);
+    await writePending(g.gid, pending);
+
+    try {
+      if (botToken && env.ID_PEPPER && typeof env.APP_DATA.list === 'function') {
+        const listed = await env.APP_DATA.list({ prefix: `un:${g.gid}:` });
+        const author = item.submittedBy?.username ? `@${item.submittedBy.username}` : (item.submittedBy?.name || 'студент');
+        const text = `📚 Новое предложение в «Полезное» (${g.gid.toUpperCase()})\n«${item.title || item.text.slice(0, 60)}» — от ${author}\n\nОткройте приложение → ДЗ → Полезное, чтобы одобрить или отклонить.`;
+        for (const k of (listed.keys || [])) {
+          const rawEnc = await env.APP_DATA.get(k.name);
+          if (!rawEnc) continue;
+          let enc; try { enc = JSON.parse(rawEnc); } catch { continue; }
+          const chatId = await decryptChatId(enc.enc, enc.iv, env.ID_PEPPER);
+          if (!chatId) continue;
+          const tg = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true })
+          });
+          if (tg.status === 403 || tg.status === 400) await env.APP_DATA.delete(k.name);
+        }
+      }
+    } catch {}
+
+    return json({ ok: true, id });
+  }
+
+  // Everything below is staff only.
+  const body = request.method === "GET" ? null : await readBody();
+  const g = await loadGroup(request.method === "GET" ? url.searchParams.get("gid") : body?.gid);
+  if (g.error) return g.error;
+  if (!isAuthorizedStaff(g.groupData, g.gid, userBlindId, tokenPayload)) {
+    return json({ error: "Forbidden: not a group staff member" }, 403);
+  }
+
+  // ---- GET /v3/useful/pending
+  if (path === "/v3/useful/pending" && request.method === "GET") {
+    const items = await readPending(g.gid);
+    let notify = false;
+    if (userBlindId) notify = Boolean(await env.APP_DATA.get(`un:${g.gid}:${userBlindId}`));
+    return json({ ok: true, items, notify });
+  }
+
+  // ---- POST /v3/useful/resolve
+  if (path === "/v3/useful/resolve" && request.method === "POST") {
+    const id = String(body?.id || '');
+    const action = body?.action;
+    if (!id || (action !== 'approve' && action !== 'reject')) return json({ error: "Invalid id or action" }, 400);
+    const pending = await readPending(g.gid);
+    const found = pending.find(it => it.id === id);
+    if (!found) return json({ error: "Предложение не найдено", code: "NOT_FOUND" }, 404);
+
+    await writePending(g.gid, pending.filter(it => it.id !== id));
+
+    if (action === 'approve') {
+      const key = `useful:${g.gid}`;
+      let slice = {};
+      try { slice = JSON.parse((await env.APP_DATA.get(key)) || '{}') || {}; } catch {}
+      const items = Array.isArray(slice.items) ? slice.items : [];
+      const dead = new Set(Array.isArray(slice.deletedIds) ? slice.deletedIds.map(String) : []);
+      if (!dead.has(id) && !items.some(it => it && it.id === id)) {
+        const published = sanitizeUsefulItem({ ...found, isPending: false, updatedAt: new Date().toISOString() }, g.gid);
+        if (published) {
+          delete published.isPending;
+          delete published.submittedBy;
+          items.unshift(published);
+        }
+      }
+      slice = { ...slice, groupId: g.gid, items: items.slice(0, 200), updatedAt: Date.now() };
+      await env.APP_DATA.put(key, JSON.stringify(slice));
+    }
+    return json({ ok: true, action });
+  }
+
+  // ---- POST /v3/useful/notify
+  if (path === "/v3/useful/notify" && request.method === "POST") {
+    if (!verifiedUser || !userBlindId) return json({ error: "Откройте приложение в Telegram", code: "NO_TELEGRAM" }, 401);
+    const key = `un:${g.gid}:${userBlindId}`;
+    if (body?.enabled) {
+      if (!env.ID_PEPPER) return json({ error: "Server secret unconfigured", code: "NO_PEPPER" }, 500);
+      const enc = await encryptChatId(verifiedUser.id, env.ID_PEPPER);
+      await env.APP_DATA.put(key, JSON.stringify(enc), { expirationTtl: SUGGEST_TTL_SECONDS });
+    } else {
+      await env.APP_DATA.delete(key);
+    }
+    return json({ ok: true, enabled: Boolean(body?.enabled) });
+  }
+
+  return json({ error: "Not found" }, 404);
+}
+
+async function loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders) {
+  const raw = await env.APP_DATA.get("g:" + gid);
+  if (!raw) return { response: d1Json(corsHeaders, 404, { error: "Group not found" }) };
+  let group;
+  try { group = JSON.parse(raw); } catch { return { response: d1Json(corsHeaders, 500, { error: "Corrupted group record" }) }; }
+  if (!isAuthorizedStaff(group, gid, userBlindId, tokenPayload)) {
+    return { response: d1Json(corsHeaders, 403, { error: "Forbidden: not a group staff member" }) };
+  }
+  return { group };
 }
 
 export function isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload) {
@@ -746,7 +1152,6 @@ const CLAIM_GROUP_ALIASES = {
   '3-ingt-113': 'ingt-313',
   '2-ингт-109': 'ingt-209',
   '2-ingt-109': 'ingt-209',
-  'ingt-109': 'ingt-209',
 
   // IAIT (Институт автоматики и информационных технологий)
   '3-иаит-108': 'iait-308',
@@ -798,13 +1203,16 @@ async function handleStaffClaim(request, env, corsHeaders, userBlindId) {
   const rawGid = isGroupClaim ? gid.trim().toLowerCase().slice(0, 64) : '';
   const targetGid = CLAIM_GROUP_ALIASES[rawGid] || rawGid;
 
-  const readAttempts = async (key) => {
-    const raw = await env.APP_DATA.get(key);
-    const n = raw ? parseInt(raw, 10) : 0;
-    return Number.isFinite(n) ? n : 0;
-  };
-  const bump = (key, n) => env.APP_DATA.put(key, String(n + 1), { expirationTtl: 900 });
+  const readAttempts = async (key) => rlCount(key);
+  const bump = async (key) => { rlBump(key, 900000); };
   const tooMany = () => json({ error: "Too many attempts. Please try again later." }, 429);
+
+  if (env && env.CLAIM_LIMITER && typeof env.CLAIM_LIMITER.limit === 'function') {
+    try {
+      const verdict = await env.CLAIM_LIMITER.limit({ key: clientIp });
+      if (verdict && verdict.success === false) return tooMany();
+    } catch {}
+  }
 
   const ipKey = isGroupClaim ? `rl:claim:ip:${clientIp}` : `rl:claim:admin:${userBlindId || clientIp}`;
   const ipLimit = isGroupClaim ? 30 : 5;
@@ -817,7 +1225,7 @@ async function handleStaffClaim(request, env, corsHeaders, userBlindId) {
   let groupAttempts = 0;
   if (isGroupClaim) {
     if (!targetGid) {
-      await bump(ipKey, ipAttempts);
+      await bump(ipKey);
       return json({ error: "Invalid claim code or missing gid" }, 401);
     }
     groupKvKey = "g:" + targetGid;
@@ -843,15 +1251,18 @@ async function handleStaffClaim(request, env, corsHeaders, userBlindId) {
     return false;
   };
   const fail = async (status, message) => {
-    await bump(ipKey, ipAttempts);
-    if (groupRlKey) await bump(groupRlKey, groupAttempts);
+    await bump(ipKey);
+    if (groupRlKey) await bump(groupRlKey);
     return json({ error: message }, status);
   };
 
   // 1. Group code
   if (groupData && await matches(groupData)) {
     if (!env.ID_PEPPER) return json({ error: "Server configuration error: ID_PEPPER missing" }, 500);
-    if (groupRlKey) await env.APP_DATA.delete(groupRlKey);
+    if (groupRlKey) {
+      rlClear(groupRlKey);
+      try { await env.APP_DATA.delete(groupRlKey); } catch {}
+    }
     groupData.staff = Array.isArray(groupData.staff) ? groupData.staff : [];
     if (userBlindId && !groupData.staff.includes(userBlindId)) {
       groupData.staff.push(userBlindId);
@@ -875,7 +1286,7 @@ async function handleStaffClaim(request, env, corsHeaders, userBlindId) {
   }
   if (adminData && await matches(adminData)) {
     if (!env.ID_PEPPER) return json({ error: "Server configuration error: ID_PEPPER missing" }, 500);
-    await env.APP_DATA.delete(ipKey);
+    rlClear(ipKey);
     adminData.staff = Array.isArray(adminData.staff) ? adminData.staff : [];
     if (userBlindId && !adminData.staff.includes(userBlindId)) {
       adminData.staff.push(userBlindId);
@@ -1004,6 +1415,7 @@ export default {
         }
 
         let userBlindId = null;
+        let verifiedUser = null;
         if (initDataStr) {
           const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN);
           if (!verifyResult.ok) {
@@ -1015,6 +1427,7 @@ export default {
               });
             }
           } else if (verifyResult.user?.id) {
+            verifiedUser = verifyResult.user;
             userBlindId = await blindId(env, verifyResult.user.id);
           }
         }
@@ -1177,6 +1590,17 @@ export default {
           });
         }
 
+        
+        if (url.pathname.startsWith("/v3/useful/")) {
+          return await handleUsefulSuggestions(request, env, corsHeaders, {
+            url,
+            userBlindId,
+            tokenPayload,
+            verifiedUser,
+            botToken: TELEGRAM_BOT_TOKEN
+          });
+        }
+
         // 4. GET /v3/att
         if (url.pathname === "/v3/att" && request.method === "GET") {
           const gid = url.searchParams.get("gid");
@@ -1222,6 +1646,12 @@ export default {
             });
           }
 
+          let getStorage;
+          try { getStorage = await attStorage(env, gid); } catch { return d1Unavailable(corsHeaders); }
+          if (getStorage === 'd1') {
+            try { return d1Json(corsHeaders, 200, await readMonth(env, gid, month), { "Cache-Control": "private, no-store" }); } catch { return d1Unavailable(corsHeaders); }
+          }
+
           const attRaw = await env.APP_DATA.get(`a:${gid}:${month}`);
           let monthData = { ver: 0, slots: {}, cancelled: [], hours: {} };
           if (attRaw) {
@@ -1239,7 +1669,7 @@ export default {
 
           return new Response(JSON.stringify(monthData), {
             status: 200,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
+            headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
           });
         }
 
@@ -1295,6 +1725,17 @@ export default {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
             });
+          }
+
+          let putStorage;
+          try { putStorage = await attStorage(env, gid); } catch { return d1Unavailable(corsHeaders); }
+          if (putStorage === 'd1') {
+            // Cell-level ops: no read-modify-write, no version conflicts. baseVer is accepted and ignored.
+            try {
+              const res = await applyLegacyPatch(env, gid, month, patch, cancel, hours, { dev: attDeviceId(request, null, userBlindId) });
+              if (!res.ok) return d1Json(corsHeaders, 400, { error: res.error });
+              return d1Json(corsHeaders, 200, { ok: true, ver: res.rev, updatedAt: res.updatedAt });
+            } catch { return d1Unavailable(corsHeaders); }
           }
 
           const attRaw = await env.APP_DATA.get(`a:${gid}:${month}`);
@@ -1379,6 +1820,82 @@ export default {
             status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
+        }
+
+        // 5b. POST /v3/att/ops  (D1 groups only): idempotent cell-level operations
+        if (url.pathname === "/v3/att/ops" && request.method === "POST") {
+          let body;
+          try { body = await request.json(); } catch { return d1Json(corsHeaders, 400, { error: "Invalid JSON body" }); }
+          const gid = body && body.gid;
+          const paramError = typeof gid !== 'string' ? "Missing gid" : validateAttParams(gid, "2000-01");
+          if (paramError) return d1Json(corsHeaders, 400, { error: paramError });
+          const auth = await loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders);
+          if (auth.response) return auth.response;
+          let storage;
+          try { storage = await attStorage(env, gid); } catch { return d1Unavailable(corsHeaders); }
+          if (storage !== 'd1') return d1Json(corsHeaders, 409, { error: "Group is not migrated to D1", code: "NOT_D1" });
+          const norm = normalizeOps(body.ops, { month: typeof body.month === 'string' ? body.month : null });
+          if (!norm.ok) return d1Json(corsHeaders, 400, { error: norm.error });
+          try {
+            const res = await applyOps(env, gid, norm.ops, { dev: attDeviceId(request, body, userBlindId) });
+            return d1Json(corsHeaders, 200, { ok: true, rev: res.rev, applied: norm.ops.length });
+          } catch { return d1Unavailable(corsHeaders); }
+        }
+
+        // 5c. GET /v3/att/changes?gid=&since=&limit=  (D1 groups only)
+        if (url.pathname === "/v3/att/changes" && request.method === "GET") {
+          const gid = url.searchParams.get("gid") || "";
+          const paramError = validateAttParams(gid, "2000-01");
+          if (paramError) return d1Json(corsHeaders, 400, { error: paramError });
+          const auth = await loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders);
+          if (auth.response) return auth.response;
+          let storage;
+          try { storage = await attStorage(env, gid); } catch { return d1Unavailable(corsHeaders); }
+          if (storage !== 'd1') return d1Json(corsHeaders, 409, { error: "Group is not migrated to D1", code: "NOT_D1" });
+          try {
+            const out = await readChanges(env, gid, url.searchParams.get("since"), url.searchParams.get("limit"));
+            return d1Json(corsHeaders, 200, { ok: true, ...out }, { "Cache-Control": "private, no-store" });
+          } catch { return d1Unavailable(corsHeaders); }
+        }
+
+        // 5d. POST /v3/admin/att/migrate {gid, mode: status|copy|flip|rollback}  (admin only)
+        if (url.pathname === "/v3/admin/att/migrate" && request.method === "POST") {
+          const isAdminCaller = Boolean(tokenPayload && tokenPayload.role === 'admin') ||
+            Boolean(env.ADMIN_BLIND_ID && userBlindId && userBlindId === env.ADMIN_BLIND_ID);
+          if (!isAdminCaller) return d1Json(corsHeaders, 403, { error: "Forbidden: admin only" });
+          if (!hasD1(env)) return d1Json(corsHeaders, 500, { error: "D1 binding DB is not configured" });
+          let body;
+          try { body = await request.json(); } catch { return d1Json(corsHeaders, 400, { error: "Invalid JSON body" }); }
+          const gid = body && body.gid;
+          const paramError = typeof gid !== 'string' ? "Missing gid" : validateAttParams(gid, "2000-01");
+          if (paramError) return d1Json(corsHeaders, 400, { error: paramError });
+          if (!(await env.APP_DATA.get("g:" + gid))) return d1Json(corsHeaders, 404, { error: "Group not found" });
+          const mode = body.mode;
+          try {
+            const storage = await attStorage(env, gid);
+            if (mode === 'status') {
+              return d1Json(corsHeaders, 200, { ok: true, storage, rev: await currentRev(env, gid), verify: await migrateVerify(env, gid, { exact: storage !== 'd1' }) });
+            }
+            if (mode === 'copy') {
+              const copied = await migrateCopy(env, gid);
+              return d1Json(corsHeaders, 200, { ok: true, storage, copied, verify: await migrateVerify(env, gid, { exact: storage !== 'd1' }) });
+            }
+            if (mode === 'flip') {
+              if (storage === 'd1') return d1Json(corsHeaders, 200, { ok: true, storage: 'd1', already: true });
+              const verify = await migrateVerify(env, gid, { exact: true });
+              if (!verify.ok) return d1Json(corsHeaders, 409, { error: "D1 does not match KV yet, run copy first", verify });
+              await migrateFlip(env, gid);
+              return d1Json(corsHeaders, 200, { ok: true, storage: 'd1', verify });
+            }
+            if (mode === 'rollback') {
+              if (storage !== 'd1') return d1Json(corsHeaders, 200, { ok: true, storage: 'kv', already: true });
+              const out = await migrateRollback(env, gid);
+              return d1Json(corsHeaders, 200, { ok: true, storage: 'kv', exported: out.months });
+            }
+            return d1Json(corsHeaders, 400, { error: "mode must be status, copy, flip or rollback" });
+          } catch (err) {
+            return d1Json(corsHeaders, 500, { error: "Migration step failed", detail: String(err && err.message).slice(0, 200) });
+          }
         }
 
         // 6. POST /v3/student/link (and /v3/me/claim)
@@ -1476,7 +1993,7 @@ export default {
           if (!userRaw) {
             return new Response(JSON.stringify({ ok: true, linked: false }), {
               status: 200,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
+              headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
             });
           }
 
@@ -1486,14 +2003,14 @@ export default {
           } catch {
             return new Response(JSON.stringify({ ok: true, linked: false }), {
               status: 200,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
+              headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
             });
           }
 
           if (!userData || !userData.gid || !userData.slot) {
             return new Response(JSON.stringify({ ok: true, linked: false }), {
               status: 200,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
+              headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
             });
           }
 
@@ -1516,6 +2033,22 @@ export default {
                 targetMonths.push(`${y}-${String(mon).padStart(2, '0')}`);
               }
             }
+          }
+
+          let meStorage;
+          try { meStorage = await attStorage(env, userData.gid); } catch { return d1Unavailable(corsHeaders); }
+          if (meStorage === 'd1') {
+            const months = targetMonths.filter(m => /^\d{4}-(0[1-9]|1[0-2])$/.test(m)).sort();
+            try {
+              const own = months.length
+                ? await readStudentMarks(env, userData.gid, userData.slot, months[0], months[months.length - 1])
+                : { marks: {}, cancelled: [] };
+              return d1Json(corsHeaders, 200, {
+                ok: true, linked: true, gid: userData.gid, slot: userData.slot,
+                consentVer: userData.consentVer, consentAt: userData.consentAt,
+                marks: own.marks, cancelled: own.cancelled
+              }, { "Cache-Control": "private, no-store" });
+            } catch { return d1Unavailable(corsHeaders); }
           }
 
           const aggregatedMarks = {};
@@ -1547,7 +2080,7 @@ export default {
             cancelled: Array.from(aggregatedCancelled)
           }), {
             status: 200,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
+            headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
           });
         }
 
@@ -1639,6 +2172,13 @@ export default {
             await env.APP_DATA.put("g:" + gid, JSON.stringify(groupData));
           }
 
+          let delStorage;
+          try { delStorage = await attStorage(env, gid); } catch { return d1Unavailable(corsHeaders); }
+          if (delStorage === 'd1') {
+            try { await deleteSlotMarks(env, gid, slotId); } catch { return d1Unavailable(corsHeaders); }
+            return d1Json(corsHeaders, 200, { ok: true });
+          }
+
           const targetMonths = new Set();
           if (url.searchParams.get("month")) {
             targetMonths.add(url.searchParams.get("month"));
@@ -1711,7 +2251,7 @@ export default {
 
           return new Response(JSON.stringify({ ok: true, roster: rosterData }), {
             status: 200,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
+            headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
           });
         }
 
@@ -1973,7 +2513,8 @@ export default {
 
       // 0c. Telegram Bot Webhook Endpoint (POST /tg/webhook or /tg/webhook/*)
       if ((url.pathname === "/tg/webhook" || url.pathname.startsWith("/tg/webhook/")) && request.method === "POST") {
-        const expectedSecret = env && (env.TG_WEBHOOK_SECRET || env.TELEGRAM_WEBHOOK_SECRET || env.APP_SECRET);
+        // AUD-020: no fallback to APP_SECRET — the webhook secret must be its own value.
+        const expectedSecret = env && (env.TG_WEBHOOK_SECRET || env.TELEGRAM_WEBHOOK_SECRET);
         const headerSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
         const pathSecret = url.pathname.startsWith("/tg/webhook/")
           ? url.pathname.slice("/tg/webhook/".length).replace(/^\/+|\/+$/g, "")
@@ -1989,8 +2530,9 @@ export default {
             });
           }
         } else {
-          return new Response(JSON.stringify({ error: "Unauthorized: Webhook secret not configured" }), {
-            status: 401,
+          // Fail closed; the message must not disclose which secret is missing.
+          return new Response(JSON.stringify({ error: "Service unavailable" }), {
+            status: 503,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
@@ -2007,6 +2549,43 @@ export default {
 
         const msg = update?.message;
         const DEV_CHAT_ID = env && (env.DEV_CHAT_ID || env.TELEGRAM_DEV_CHAT_ID || env.CHANNEL_ID || CHANNEL_ID);
+
+                // /start and /help in a private chat
+        if (msg && msg.chat && msg.chat.type === "private" && typeof msg.text === "string" && BOT_TOKEN) {
+          const cmd = /^\/(start|help)(?:@\w+)?(?:\s|$)/i.exec(msg.text);
+          if (cmd) {
+            const isHelp = cmd[1].toLowerCase() === "help";
+            const miniAppUrl = (env && env.MINIAPP_URL) || "https://djaicixlw.github.io/samgtu-schedule/";
+            const welcome =
+              "<b>Расписание СамГТУ</b>\n\n" +
+              "📅 Пары вашей группы на 4 недели\n" +
+              "📝 Домашние задания и полезные материалы\n" +
+              "✅ Посещаемость: староста отмечает, вы видите свои пропуски\n\n" +
+              "Нажмите кнопку ниже и выберите свою группу." +
+              (isHelp
+                ? "\n\n<b>Староста:</b> откройте вкладку «Админ» и введите код доступа группы.\n" +
+                  "<b>Нашли ошибку?</b> Нажмите значок жука в шапке приложения."
+                : "") +
+              "\n\n<i>Неофициальный студенческий проект, не связан с администрацией СамГТУ.</i>";
+            try {
+              await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  chat_id: msg.chat.id,
+                  text: welcome,
+                  parse_mode: "HTML",
+                  disable_web_page_preview: true,
+                  reply_markup: { inline_keyboard: [[{ text: "📅 Открыть расписание", web_app: { url: miniAppUrl } }]] }
+                })
+              });
+            } catch (e) {}
+            return new Response(JSON.stringify({ ok: true }), {
+              status: 200,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+        }
 
         if (msg && msg.from && String(msg.from.id) === String(DEV_CHAT_ID) && msg.reply_to_message) {
           const replyMsgId = msg.reply_to_message.message_id;
@@ -2144,7 +2723,7 @@ export default {
               headers: {
                 ...corsHeaders,
                 "ETag": etag,
-                "Cache-Control": "public, max-age=60, stale-while-revalidate=300"
+                "Cache-Control": "private, no-store"
               }
             });
           }
@@ -2155,7 +2734,7 @@ export default {
               ...corsHeaders,
               "Content-Type": "application/json",
               "ETag": etag,
-              "Cache-Control": "public, max-age=60, stale-while-revalidate=300"
+              "Cache-Control": "private, no-store"
             }
           });
         }
@@ -2195,6 +2774,12 @@ export default {
           }
 
           const rawText = await request.text();
+          if (rawText.length > 1000000) {
+            return new Response(JSON.stringify({ error: "Payload too large" }), {
+              status: 413,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
           let parsed;
           try {
             parsed = JSON.parse(rawText);
@@ -2271,11 +2856,30 @@ export default {
             try { existingGroup = JSON.parse(rawExisting); } catch {}
           }
           const incomingSlice = (targetData && targetData.byGroup && targetData.byGroup[groupId]) || targetData || {};
-          const groupSlice = {
-            ...existingGroup,
-            ...incomingSlice,
-            updatedAt: Date.now()
-          };
+          let groupSlice;
+          if (type === "homework") {
+            groupSlice = mergeHomeworkGroupSlice(existingGroup, incomingSlice);
+          } else if (type === "useful") {
+            groupSlice = mergeUsefulGroupSlice(existingGroup, incomingSlice);
+          } else if (type === "schedule") {
+            groupSlice = mergeScheduleGroupSlice(existingGroup, incomingSlice);
+          } else {
+            groupSlice = { ...existingGroup, ...incomingSlice };
+          }
+          groupSlice.updatedAt = Date.now();
+
+          if (type === 'homework' || type === 'useful') {
+            const asIds = (v) => (Array.isArray(v) ? v.map(String) : []);
+            const tombstones = Array.from(new Set([...asIds(existingGroup.deletedIds), ...asIds(incomingSlice.deletedIds)])).slice(-1000);
+            groupSlice.deletedIds = tombstones;
+            if (Array.isArray(groupSlice.items) && tombstones.length > 0) {
+              const dead = new Set(tombstones);
+              groupSlice.items = groupSlice.items.filter(it => it && !dead.has(String(it.id)));
+            }
+            if (type === 'useful' && Array.isArray(groupSlice.items)) {
+              groupSlice.items = groupSlice.items.slice(0, 200);
+            }
+          }
 
           await env.APP_DATA.put(kvKey, JSON.stringify(groupSlice));
           return new Response(JSON.stringify({ ok: true, updatedAt: groupSlice.updatedAt }), {
@@ -2720,19 +3324,15 @@ export default {
           });
         }
 
-        // IP Rate Limiting for schedule proxy (max 60 req/min)
+        // IP rate limiting for the schedule proxy (max 60 req/min), in memory: no KV writes for anonymous traffic.
         const clientIp = request.headers.get("CF-Connecting-IP") || "unknown";
-        if (env?.APP_DATA) {
-          const rlKey = `rl:samgtu:${clientIp}`;
-          const reqCount = Number(await env.APP_DATA.get(rlKey)) || 0;
-          if (reqCount > 60) {
-            return new Response(JSON.stringify({ error: "Too many schedule proxy requests. Please wait." }), {
-              status: 429,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-          await env.APP_DATA.put(rlKey, String(reqCount + 1), { expirationTtl: 60 });
+        if (rlCount(`rl:samgtu:${clientIp}`) > 60) {
+          return new Response(JSON.stringify({ error: "Too many schedule proxy requests. Please wait." }), {
+            status: 429,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
         }
+        rlBump(`rl:samgtu:${clientIp}`, 60000);
 
         const targetUrl = `https://samgtu.ru/students/getschedule?GroupID=${encodeURIComponent(samgtuGroupId)}&WeekNumber=${encodeURIComponent(weekNumber)}`;
         
@@ -2742,6 +3342,8 @@ export default {
 
           const samgtuRes = await fetch(targetUrl, {
             signal: controller.signal,
+            // Upstream answers are identical for everyone: let Cloudflare cache them for an hour.
+            cf: { cacheTtl: 3600, cacheEverything: true },
             headers: {
               "Accept": "application/json, text/plain, */*",
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

@@ -9,6 +9,9 @@ interface SubjectTeachersModalProps {
   currentGroupId: string;
   subjectTeachers: Record<string, string>;
   onSave: (updated: Record<string, string>) => void;
+  /** "subject::type" -> number of pairs whose teacher was set by hand for that pair and therefore ignores this dialog */
+  pinned?: Record<string, number>;
+  onUnpin?: (key: string) => void;
 }
 
 interface SubjectTypeInfo {
@@ -26,7 +29,9 @@ const SubjectTeachersModal: React.FC<SubjectTeachersModalProps> = ({
   onClose,
   currentGroupId,
   subjectTeachers,
-  onSave
+  onSave,
+  pinned,
+  onUnpin
 }) => {
   // Extract all subjects and their existing lesson types for this group
   const subjectGroups: SubjectGroup[] = useMemo(() => {
@@ -237,7 +242,7 @@ const SubjectTeachersModal: React.FC<SubjectTeachersModalProps> = ({
                   return (
                     <div 
                       key={t.type} 
-                      className="bg-white dark:bg-slate-800/90 p-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700/60 flex flex-col sm:flex-row sm:items-center gap-2"
+                      className="bg-white dark:bg-slate-800/90 p-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700/60 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2"
                     >
                       <div className="sm:w-36 shrink-0 flex items-center justify-between">
                         {getTypeBadge(t.type)}
@@ -280,6 +285,19 @@ const SubjectTeachersModal: React.FC<SubjectTeachersModalProps> = ({
                           <Copy className="w-3 h-3" /> Ко всем видам
                         </button>
                       </div>
+
+                      {pinned && onUnpin && pinned[key] > 0 && (
+                        <div className="sm:basis-full flex items-center justify-between gap-2 text-[11px] text-amber-600 dark:text-amber-400">
+                          <span>У {pinned[key]} {pinned[key] === 1 ? 'пары' : 'пар'} преподаватель задан вручную, эта настройка на них не действует</span>
+                          <button
+                            type="button"
+                            onClick={() => onUnpin(key)}
+                            className="shrink-0 font-semibold underline underline-offset-2"
+                          >
+                            Снять
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

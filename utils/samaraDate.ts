@@ -19,36 +19,44 @@ export interface SemesterConfig {
   blocks: SemesterBlock[];
 }
 
-export const DEFAULT_SEMESTER_CONFIG: SemesterConfig = {
-  semesterStart: '2026-08-31',
-  cycleWeeks: 4,
-  blocks: [
-    {
-      id: 1,
-      name: 'Блок 1 (31.08 - 26.09)',
-      start: '2026-08-31',
-      end: '2026-09-26'
-    },
-    {
-      id: 2,
-      name: 'Блок 2 (28.09 - 24.10)',
-      start: '2026-09-28',
-      end: '2026-10-24'
-    },
-    {
-      id: 3,
-      name: 'Блок 3 (26.10 - 21.11)',
-      start: '2026-10-26',
-      end: '2026-11-21'
-    },
-    {
-      id: 4,
-      name: 'Блок 4 (23.11 - 31.12)',
-      start: '2026-11-23',
-      end: '2026-12-31'
-    }
-  ]
-};
+/**
+ * AUD-006: generates a fallback semester config from the current date instead of
+ * carrying a hardcoded year. The academic year rolls over on August 1st (Jul -> the
+ * still-running previous academic year, Aug -> the new one). Block structure mirrors
+ * the released 2026/27 autumn layout shifted by whole years — it is a FALLBACK only;
+ * public/semester.json remains the source of truth (see setSemesterConfig).
+ */
+export function generateDefaultSemesterConfig(now: Date = new Date()): SemesterConfig {
+  const samara = new Date(now.getTime() + 4 * 60 * 60 * 1000);
+  const y = samara.getUTCFullYear();
+  const m = samara.getUTCMonth() + 1; // 1..12
+  const academicYear = (m >= 8) ? y : y - 1;
+  const delta = academicYear - 2026;
+
+  const shift = (dateStr: string): string => {
+    const [yy, mm, dd] = dateStr.split('-').map(Number);
+    return `${yy + delta}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+  };
+  const mkBlock = (id: number, s: string, e: string): SemesterBlock => {
+    const ss = shift(s);
+    const ee = shift(e);
+    const fmt = (iso: string) => { const [, mm2, dd2] = iso.split('-'); return `${dd2}.${mm2}`; };
+    return { id, name: `Блок ${id} (${fmt(ss)} - ${fmt(ee)})`, start: ss, end: ee };
+  };
+
+  return {
+    semesterStart: `${academicYear}-08-31`,
+    cycleWeeks: 4,
+    blocks: [
+      mkBlock(1, '2026-08-31', '2026-09-26'),
+      mkBlock(2, '2026-09-28', '2026-10-24'),
+      mkBlock(3, '2026-10-26', '2026-11-21'),
+      mkBlock(4, '2026-11-23', '2026-12-31')
+    ]
+  };
+}
+
+export const DEFAULT_SEMESTER_CONFIG: SemesterConfig = generateDefaultSemesterConfig();
 
 let activeSemesterConfig: SemesterConfig = DEFAULT_SEMESTER_CONFIG;
 
@@ -141,7 +149,7 @@ export function samaraISO(d: Date | number | string = new Date()): string {
 export function cycleWeek(iso: string, startISO?: string): number {
   if (!iso) return 1;
   const config = getSemesterConfig();
-  const effectiveStart = startISO || config.semesterStart || '2026-08-31';
+  const effectiveStart = startISO || config.semesterStart || generateDefaultSemesterConfig().semesterStart;
 
   const [y1, m1, d1] = iso.split('-').map(Number);
   const [y0, m0, d0] = effectiveStart.split('-').map(Number);

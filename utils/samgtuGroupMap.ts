@@ -2,6 +2,8 @@ export interface SamgtuGroupMeta {
   name: string;
   samgtuName: string;
   samgtuGroupId: number;
+  /** The schedule is verified against the personal cabinet (ЛК); the public portal may lag behind it. */
+  lkVerified?: boolean;
 }
 
 export const SAMGTU_GROUP_MAP: Record<string, SamgtuGroupMeta> = {
@@ -15,7 +17,7 @@ export const SAMGTU_GROUP_MAP: Record<string, SamgtuGroupMeta> = {
   'ingt-307': { name: '3-ИНГТ-107', samgtuName: 'Группа 24ИНГТ-107', samgtuGroupId: 31601 },
   'ingt-308': { name: '3-ИНГТ-108', samgtuName: 'Группа 24ИНГТ-108', samgtuGroupId: 31646 },
   'ingt-309': { name: '3-ИНГТ-109', samgtuName: 'Группа 24ИНГТ-109', samgtuGroupId: 31584 },
-  'ingt-310': { name: '3-ИНГТ-110', samgtuName: 'Группа 24ИНГТ-110', samgtuGroupId: 31647 },
+  'ingt-310': { name: '3-ИНГТ-110', samgtuName: 'Группа 24ИНГТ-110', samgtuGroupId: 31647, lkVerified: true },
   'ingt-311': { name: '3-ИНГТ-111', samgtuName: 'Группа 24ИНГТ-111', samgtuGroupId: 31663 },
   'ingt-312': { name: '3-ИНГТ-112', samgtuName: 'Группа 24ИНГТ-112', samgtuGroupId: 31648 },
   'ingt-313': { name: '3-ИНГТ-113', samgtuName: 'Группа 24ИНГТ-113', samgtuGroupId: 31765 },

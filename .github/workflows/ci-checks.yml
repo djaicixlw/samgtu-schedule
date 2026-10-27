@@ -1,5 +1,14 @@
 name: CI checks
 
+# AUD-029: every PR and push to main runs the honest test runner + typecheck.
+# Notes:
+#   - tests/run_all.ts exits non-zero when any suite throws or prints a failure
+#     marker; the known xfail (test_schedule_sync / AUD-043) is accounted for
+#     inside the runner itself.
+#   - --strict-orphans is intentionally NOT used: the orphan list is a known,
+#     documented backlog, not a failure.
+#   - The suite set is network-free: outbound endpoints in test helpers are
+#     intercepted by local mocks (tests/setup_mock_auth.ts).
 on:
   push:
     branches: [main, master]
@@ -13,11 +22,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Node 20+ (LTS floor); the toolchain (tsx 4 / vite 6) supports 20+.
+          node-version: 20
           cache: npm
-      - run: npm ci --ignore-scripts
+      # Reproducible install when the lockfile is committed, plain install otherwise.
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --ignore-scripts
+          else
+            npm install --ignore-scripts
+          fi
       # Type errors are real runtime errors here (an undeclared identifier throws at render time).
-      - run: npm run lint
-      # tests/run_all.ts exits non-zero when any suite prints a failure marker.
-      - run: npm test
-      - run: npm run build
+      - name: Typecheck
+        run: npx tsc --noEmit
+      # Honest sequential runner: try/catch per suite, failure-marker vocabulary, exit code.
+      - name: Tests
+        run: npm test
+      - name: Build
+        run: npm run build

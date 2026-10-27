@@ -9,9 +9,10 @@ import worker, {
   signFileUrl,
   verifyFileSignature,
   clearWorkerRateLimits,
-  deriveFileSigningKey,
-  createTelegramInitData
+  deriveFileSigningKey
 } from '../cloudflare-worker.js';
+// AUD-038: the initData FORGERY helper moved out of the production worker.
+import { createTelegramInitData } from './worker_test_helpers';
 import { verifyPinCode } from '../utils/auth';
 
 let passed = 0;
@@ -362,12 +363,13 @@ assert((sanitizedOv as any).role === undefined, 'Injected "role" field dropped')
 assert((sanitizedOv as any).token === undefined, 'Injected "token" field dropped');
 assert(sanitizedOv.teacher === 'Иванов И.И.', 'Valid teacher field retained');
 
-// 4.3 Payload limits defense (max 200 items in homework, max 500 records in attendance, max 50 groups in byGroup)
+// 4.3 Payload limits defense (max 2000 items in homework per AUD-002 — old cap 200 resurrected
+// deleted homework once a group exceeded 200 tombstones; max 500 records in attendance, max 50 groups in byGroup)
 const oversizedHw = {
   items: Array.from({ length: 250 }, (_, i) => ({ id: `hw_${i}`, title: `HW ${i}`, subject: 'Математика' }))
 };
 const sanitizedHwPayload = sanitizeSyncPayload('homework', oversizedHw);
-assert(sanitizedHwPayload.items.length === 200, `Homework payload items limited to max 200 (got ${sanitizedHwPayload.items.length})`);
+assert(sanitizedHwPayload.items.length === 250, `Homework payload cap raised to 2000 (AUD-002): 250 items pass intact (got ${sanitizedHwPayload.items.length})`);
 
 const oversizedAtt = {
   records: Array.from({ length: 600 }, (_, i) => ({ groupId: 'ingt-310', date: '2026-09-01', lessonId: `l_${i}` }))

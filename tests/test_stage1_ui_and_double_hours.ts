@@ -20,8 +20,13 @@ const appSrc = fs.readFileSync(path.resolve(root, 'App.tsx'), 'utf8');
 
 assert(appSrc.includes('w-2 h-2 rounded-full'), 'App.tsx must define w-2 h-2 rounded-full network dot');
 assert(appSrc.includes('bg-emerald-500') && appSrc.includes('bg-rose-500'), 'App.tsx must use emerald for online and rose for offline');
-assert(appSrc.includes('navigator.onLine'), 'App.tsx must inspect navigator.onLine');
-assert(appSrc.includes("'online'") && appSrc.includes("'offline'"), "App.tsx must listen to 'online' and 'offline' window events");
+// AUD-041: the source of truth moved from bare navigator.onLine to the
+// health-ping hook; the radio events and navigator.onLine now live there.
+assert(appSrc.includes('useOnlineStatus()'), 'App.tsx consumes the useOnlineStatus health-ping hook');
+const onlineStatusSrc = fs.readFileSync(path.resolve(root, 'utils/useOnlineStatus.ts'), 'utf8');
+assert(onlineStatusSrc.includes('navigator.onLine'), 'useOnlineStatus must inspect navigator.onLine');
+assert(onlineStatusSrc.includes("'online'") && onlineStatusSrc.includes("'offline'"), "useOnlineStatus must listen to 'online' and 'offline' window events");
+assert(onlineStatusSrc.includes('/status'), 'useOnlineStatus must health-ping GET /status');
 assert(appSrc.includes('В сети') && appSrc.includes('Офлайн (сохраненная копия)'), 'App.tsx must include exact network tooltip');
 console.log('  ✓ [PASS] Network indicator in header is minimalist and accurate.');
 

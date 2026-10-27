@@ -77,7 +77,10 @@ async function runAuthTests() {
   console.log('========================================');
 }
 
-runAuthTests().catch(err => {
+try {
+  await runAuthTests();
+  console.log('✓ [PASS] auth hash suite completed');
+} catch (err) {
   console.error('Auth test failed:', err);
   process.exit(1);
-});
+}

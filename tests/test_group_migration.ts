@@ -76,7 +76,9 @@ const testCases: Array<[string, string]> = [
   ['3-фаид-110', 'faid-310'],
   ['24фаид-110', 'faid-310'],
   ['24фад-110', 'faid-310'],
-  ['ingt-109', 'ingt-209'],
+  // AUD-028: the colliding 'ingt-109' -> 'ingt-209' migration is REMOVED —
+  // 1-ИНГТ-109 is a real group; 'ingt-109' resolves to itself now.
+  ['ingt-109', 'ingt-109'],
   ['2-ingt-109', 'ingt-209'],
   ['2-ингт-109', 'ingt-209'],
   ['htf-115', 'htf-215'],

@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { toast } from 'sonner';
 import { Student, Registry } from './types';
 import { syncAttendanceRecordsToV3, pullAttendanceRecordsFromV3, getSavedStaffToken, rebaseAttendanceBase } from './utils/attendanceStorage';
 import { merge3, snapshotBase, BaseMap } from './utils/attendanceMerge3';
+import { pullMergePush, markSnapshotPushed } from './utils/attendanceCloudSync';
+import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
 import { getSamaraISODate } from './utils/samaraDate';
 import { SEED_ATTENDANCE } from './defaultData';
 import { isPhysicalEducationLesson, isPhysicalEducationLessonId } from './utils/scheduleLoader';
@@ -129,39 +130,132 @@ export function mergeAttendance(
   return Array.from(map.values());
 }
 
-// Cloud pushes are coalesced per group: taps made while a push is running or waiting collapse into
-// one push of the latest snapshot (each push only sends changed cells anyway).
-const SYNC_DEBOUNCE_MS = 400;
+/**
+ * AUD-004: one attendance sync cycle (pull -> merge -> conditional push), extracted
+ * from the hook so the timing defect is unit-testable.
+ */
+export async function syncAttendanceWithCloud(params: {
+  groupId: string;
+  getLocalRecords: () => AttendanceRecord[];
+  pull: (gid: string, o?: { recentOnly?: boolean }) => Promise<AttendanceRecord[]>;
+  push: (gid: string, records: AttendanceRecord[]) => Promise<{ ok: boolean; error?: string; status?: number }>;
+  isDirty: () => boolean;
+  onMerged: (merged: AttendanceRecord[]) => void;
+  onPushedOk: () => void;
+  recentOnly?: boolean;
+}): Promise<{ merged: AttendanceRecord[]; pushed: boolean }> {
+  const local = params.getLocalRecords();
+
+  // 1. PULL latest attendance from Cloudflare Worker API v3
+  const remote = await params.pull(params.groupId, { recentOnly: Boolean(params.recentOnly) });
+
+  // AUD-004: re-read the local state AFTER the network wait - the user may have
+  // marked absences while the pull was in flight.
+  const freshLocal = params.getLocalRecords();
+  const dirty = params.isDirty();
+
+  let merged = freshLocal;
+  if (remote && remote.length > 0) {
+    let baseMap: any = null;
+    try {
+      const raw = safeGetItem(`attendance_base_map_${params.groupId}`);
+      if (raw) baseMap = JSON.parse(raw);
+    } catch {}
+
+    const fetchedMonths = new Set<string>();
+    remote.forEach(r => { if (r && r.date) fetchedMonths.add(r.date.slice(0, 7)); });
+
+    const res3 = merge3(freshLocal, baseMap, remote, fetchedMonths);
+    merged = res3.merged;
+    params.onMerged(merged);
+    safeSetItem(`attendance_${params.groupId}`, JSON.stringify(merged), { component: 'attendance' });
+    try {
+      safeSetItem(`attendance_base_map_${params.groupId}`, JSON.stringify(res3.base), { component: 'attendanceBase' });
+    } catch {}
+    if (!dirty) rebaseAttendanceBase(params.groupId, merged);
+  }
+
+  // 2. PUSH any local marks that may have been created or are marked dirty
+  let pushed = false;
+  if (dirty || (freshLocal.length > 0 && (!remote || remote.length === 0))) {
+    const pushRes = await params.push(params.groupId, merged);
+    if (pushRes && pushRes.ok) {
+      params.onPushedOk();
+      pushed = true;
+    }
+  }
+
+  return { merged, pushed };
+}
+
+// Cloud pushes are debounced with an honest 2500ms trailing timer after the last tap:
+// taps made while waiting collapse into one push of the latest snapshot.
+const SYNC_DEBOUNCE_MS = 2500;
 const pendingSyncByGroup = new Map<string, AttendanceRecord[]>();
 const runningSyncGroups = new Set<string>();
+const syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const runCoalescedSync = async (groupId: string): Promise<void> => {
-  if (runningSyncGroups.has(groupId)) return; // the running loop will pick up the newest snapshot
+  if (runningSyncGroups.has(groupId)) return;
   runningSyncGroups.add(groupId);
   try {
     while (pendingSyncByGroup.has(groupId)) {
-      await new Promise(resolve => setTimeout(resolve, SYNC_DEBOUNCE_MS));
       const snapshot = pendingSyncByGroup.get(groupId)!;
       pendingSyncByGroup.delete(groupId);
       try {
         const res = await syncAttendanceRecordsToV3(groupId, snapshot);
         if (res && res.ok) {
-          // A newer snapshot may have been queued while this push was running: keep the dirty flag then.
-          if (!pendingSyncByGroup.has(groupId)) localStorage.removeItem(`attendance_dirty_${groupId}`);
+          markSnapshotPushed(groupId, snapshot);
+          if (!pendingSyncByGroup.has(groupId)) safeRemoveItem(`attendance_dirty_${groupId}`);
         } else {
-          localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
+          safeSetItem(`attendance_dirty_${groupId}`, 'true', { component: 'attendance' });
           if ((res as any)?.status === 401 && typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('samgtu:auth-expired'));
           }
         }
       } catch (e) {
-        localStorage.setItem(`attendance_dirty_${groupId}`, 'true');
+        safeSetItem(`attendance_dirty_${groupId}`, 'true', { component: 'attendance' });
       }
     }
   } finally {
     runningSyncGroups.delete(groupId);
   }
 };
+
+export function scheduleSync(groupId: string): void {
+  const existing = syncTimers.get(groupId);
+  if (existing) clearTimeout(existing);
+  syncTimers.set(groupId, setTimeout(() => {
+    syncTimers.delete(groupId);
+    void runCoalescedSync(groupId);
+  }, SYNC_DEBOUNCE_MS));
+}
+
+export async function flushSyncNow(groupId?: string): Promise<void> {
+  const targetGroups = groupId
+    ? [groupId]
+    : Array.from(new Set([...pendingSyncByGroup.keys(), ...syncTimers.keys(), ...runningSyncGroups]));
+  for (const gid of targetGroups) {
+    const timer = syncTimers.get(gid);
+    if (timer) {
+      clearTimeout(timer);
+      syncTimers.delete(gid);
+    }
+  }
+  for (const gid of targetGroups) {
+    await runCoalescedSync(gid);
+  }
+}
+
+if (typeof window !== 'undefined') {
+  const flushAll = () => { void flushSyncNow(); };
+  window.addEventListener('pagehide', flushAll);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      void flushSyncNow();
+    }
+  });
+}
 
 export const useAttendance = (isAuthenticated: boolean, currentGroupId: string | null, refreshTrigger: number = 0) => {
   const sanitizeGroupRecords = (recs: AttendanceRecord[], gid: string): AttendanceRecord[] => {
@@ -184,11 +278,11 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
     const defaultList = currentGroupId === 'ingt-310' ? SEED_ATTENDANCE : [];
     if (!currentGroupId) return defaultList;
     try {
-      const saved = localStorage.getItem(`attendance_${currentGroupId}`);
+      const saved = safeGetItem(`attendance_${currentGroupId}`);
       const parsed: AttendanceRecord[] = saved ? JSON.parse(saved) : [];
       const sanitized = sanitizeGroupRecords(parsed, currentGroupId);
       if (sanitized.length !== parsed.length) {
-        localStorage.setItem(`attendance_${currentGroupId}`, JSON.stringify(sanitized));
+        safeSetItem(`attendance_${currentGroupId}`, JSON.stringify(sanitized), { component: 'attendance' });
       }
       const map = new Map<string, AttendanceRecord>();
       defaultList.forEach(r => map.set(r.docId || `${r.groupId}_${r.date}_${r.lessonId}`, r));
@@ -208,13 +302,13 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
   useEffect(() => {
     if (!currentGroupId) return;
     try {
-      const saved = localStorage.getItem(`attendance_${currentGroupId}`);
+      const saved = safeGetItem(`attendance_${currentGroupId}`);
       if (saved) {
         const parsed = JSON.parse(saved);
         const sanitized = sanitizeGroupRecords(parsed, currentGroupId);
         setRecords(sanitized);
         if (sanitized.length !== parsed.length) {
-          localStorage.setItem(`attendance_${currentGroupId}`, JSON.stringify(sanitized));
+          safeSetItem(`attendance_${currentGroupId}`, JSON.stringify(sanitized), { component: 'attendance' });
         }
       } else {
         setRecords([]);
@@ -233,7 +327,7 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
     const getLocalRecords = (): AttendanceRecord[] => {
       let fromStorage: AttendanceRecord[] = [];
       try {
-        const saved = localStorage.getItem(`attendance_${currentGroupId}`);
+        const saved = safeGetItem(`attendance_${currentGroupId}`);
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed)) fromStorage = sanitizeGroupRecords(parsed, currentGroupId);
@@ -257,43 +351,16 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
       }
 
       try {
-        // 1. PULL latest attendance from Cloudflare Worker API v3
-        const remote = await pullAttendanceRecordsFromV3(currentGroupId);
+        // PULL -> three-way MERGE -> PUSH (utils/attendanceCloudSync.ts)
+        const out = await pullMergePush(currentGroupId, local);
         if (!isMounted) return;
 
-        const dirty = typeof localStorage !== 'undefined' && localStorage.getItem(`attendance_dirty_${currentGroupId}`) === 'true';
-        let merged = local;
-        if (remote && remote.length > 0) {
-          let baseMap: BaseMap | null = null;
-          try {
-            const rawBase = typeof localStorage !== 'undefined' ? localStorage.getItem(`attendance_base_map_${currentGroupId}`) : null;
-            if (rawBase) baseMap = JSON.parse(rawBase);
-          } catch {}
-
-          const fetchedMonths = new Set<string>();
-          remote.forEach(r => { if (r && r.date) fetchedMonths.add(r.date.slice(0, 7)); });
-
-          const res3 = merge3(local, baseMap, remote, fetchedMonths);
-          merged = res3.merged;
-          setRecords(merged);
-          recordsRef.current = merged;
-          try {
-            localStorage.setItem(`attendance_${currentGroupId}`, JSON.stringify(merged));
-            localStorage.setItem(`attendance_base_map_${currentGroupId}`, JSON.stringify(res3.base));
-          } catch {}
-          // Nothing pending locally: the merged state equals the server state, so it becomes the new sync base.
-          if (!dirty) rebaseAttendanceBase(currentGroupId, merged);
+        if (out.mergedWithRemote) {
+          setRecords(out.merged);
+          recordsRef.current = out.merged;
         }
-
-        // 2. PUSH any local marks that may have been created or are marked dirty
-        if (dirty || (local.length > 0 && (!remote || remote.length === 0))) {
-          const pushRes = await syncAttendanceRecordsToV3(currentGroupId, merged);
-          if (isMounted && pushRes && pushRes.ok) {
-            localStorage.removeItem(`attendance_dirty_${currentGroupId}`);
-            try {
-              localStorage.setItem(`attendance_base_map_${currentGroupId}`, JSON.stringify(snapshotBase(merged)));
-            } catch {}
-          }
+        if (out.authExpired && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('samgtu:auth-expired'));
         }
       } catch (e) {
         console.warn('Attendance cloud sync error:', e);
@@ -347,7 +414,7 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
     let baseList = recordsRef.current && recordsRef.current.length > 0 ? recordsRef.current : records;
     if (baseList.length === 0) {
       try {
-        const saved = localStorage.getItem(`attendance_${groupId}`);
+        const saved = safeGetItem(`attendance_${groupId}`);
         if (saved) baseList = JSON.parse(saved);
       } catch (e) {}
     }
@@ -379,17 +446,15 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
 
     const updatedRecords = Array.from(map.values());
 
-    // 3. Immediately update ref, React state, and LocalStorage
+    // 3. Immediately update ref, React state, and SafeStorage
     recordsRef.current = updatedRecords;
     setRecords(updatedRecords);
-    try {
-      localStorage.setItem(`attendance_${groupId}`, JSON.stringify(updatedRecords));
-    } catch (e) {}
+    safeSetItem(`attendance_${groupId}`, JSON.stringify(updatedRecords), { component: 'attendance' });
 
-    // 4. Mark dirty immediately (a pull must not overwrite unsent marks), then push coalesced snapshots.
-    try { localStorage.setItem(`attendance_dirty_${groupId}`, 'true'); } catch {}
+    // 4. Mark dirty immediately (a pull must not overwrite unsent marks), then push debounced snapshots.
+    safeSetItem(`attendance_dirty_${groupId}`, 'true', { component: 'attendance' });
     pendingSyncByGroup.set(groupId, updatedRecords);
-    void runCoalescedSync(groupId);
+    scheduleSync(groupId);
   };
 
   const markAttendance = async (
@@ -398,7 +463,8 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
     absentStudentIds: number[], 
     excusedStudentIds: number[] = [], 
     isCancelled: boolean = false,
-    hours?: number
+    hours?: number,
+    showToast?: boolean
   ) => {
     await markBatchAttendance([{
       date,
@@ -409,7 +475,8 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
       hours: hours || 2
     }]);
 
-    toast.success(isCancelled ? 'Пара отмечена как отмененная' : 'Посещаемость сохранена');
+    // No toast here on purpose: this is also called for background bookkeeping (cancelling a pair in the schedule,
+    // editing a pair) and used to show "Посещаемость сохранена" there. Screens show their own message when needed.
   };
 
   const getAttendance = (date: string, lessonId: string): AttendanceRecord => {

@@ -12,7 +12,10 @@ export const LEGACY_GROUP_ALIASES: Record<string, string> = {
   '24фаид-110': 'faid-310',
   '3-фаид-110': 'faid-310',
   '3-faid-110': 'faid-310',
-  'ingt-109': 'ingt-209',
+  // AUD-028: the colliding 'ingt-109' -> 'ingt-209' migration is REMOVED.
+  // 1-ИНГТ-109 is a real group; migrating a user bound to 'ingt-109' onto 209
+  // silently rewired them to ANOTHER group's journal. 'ingt-109' now resolves
+  // to itself via the canonicalizer.
   '2-ingt-109': 'ingt-209',
   '2-ингт-109': 'ingt-209',
   'htf-115': 'htf-215',

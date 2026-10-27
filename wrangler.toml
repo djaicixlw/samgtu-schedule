@@ -6,3 +6,17 @@ compatibility_date = "2024-09-23"
 [[kv_namespaces]]
 binding = "APP_DATA"
 id = "8de01c510e674c11bbb95acb3a74aa9d"
+
+# Cloudflare D1 (attendance). Create once: wrangler d1 create samgtu-att
+# then paste the printed database_id here and apply the schema: wrangler d1 migrations apply samgtu-att --remote
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "samgtu-att"
+# database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+# migrations_dir = "migrations"
+
+# Cloudflare Rate Limiter for staff claim protection
+# [[ratelimits]]
+# name = "CLAIM_LIMITER"
+# namespace_id = "1001"
+# simple = { limit = 10, period = 60 }

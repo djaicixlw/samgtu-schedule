@@ -8,16 +8,23 @@ import { UsefulItem, UsefulLink, HomeworkAttachment } from '../types';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, getGroupTag } from '../constants';
 import { toast } from 'sonner';
 import { WORKER_BASE } from '../utils/cloudSync';
-import { openAttachmentSafe } from '../utils/upload';
+import { openAttachmentSafe, uploadToTelegramStorage, formatUploadedSize } from '../utils/upload';
 import {
   getLocalUsefulItems,
   saveLocalUsefulItems,
   recordDeletedUsefulItem,
-  fetchGroupUsefulData,
+  fetchUsefulState,
+  mergeUsefulState,
   pushGroupUsefulData,
   checkUsefulSpamLimit,
-  recordUsefulSubmission
+  recordUsefulSubmission,
+  submitUsefulSuggestion,
+  fetchPendingSuggestions,
+  resolveSuggestion,
+  setSuggestionNotifications,
+  fetchGroupUsefulData
 } from '../utils/usefulStorage';
+import { useCloudSync } from '../utils/useCloudSync';
 
 export interface UsefulTrackerProps {
   currentGroupId: string;
@@ -60,6 +67,9 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   const [items, setItems] = useState<UsefulItem[]>(() => {
     return getLocalUsefulItems(currentGroupId);
   });
+  const itemsRef = useRef<UsefulItem[]>(items);
+  const [serverPending, setServerPending] = useState<UsefulItem[]>([]);
+  const [notifyEnabled, setNotifyEnabled] = useState(false);
 
   // Filter and search states
   const [activeTagFilter, setActiveTagFilter] = useState<string>('#все');
@@ -82,38 +92,56 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   // Reset subject filter when switching group
   useEffect(() => {
     setSubjectFilter('all');
-    setItems(getLocalUsefulItems(currentGroupId));
+    itemsRef.current = getLocalUsefulItems(currentGroupId);
+    setItems(itemsRef.current);
   }, [currentGroupId]);
 
-  // Cloud sync & focus/visibility listeners
+  const usefulSync = useCloudSync<{ rawItems: any[]; serverDeletedIds: string[] }, UsefulItem[]>({
+    scope: `useful:${currentGroupId.toLowerCase()}`,
+    refreshKey: `${currentGroupId}:${refreshTrigger}`,
+    fetchState: ({ etag }) => fetchUsefulState(currentGroupId, etag),
+    mergeFn: (local, remote) => ({ state: mergeUsefulState(currentGroupId, local, remote).merged }),
+    getState: () => itemsRef.current,
+    setState: (next) => {
+      itemsRef.current = next;
+      setItems(next);
+      saveLocalUsefulItems(currentGroupId, next);
+    },
+    pushState: (state) => pushGroupUsefulData(currentGroupId, state)
+  });
+
   useEffect(() => {
     let isMounted = true;
-
-    const loadData = async () => {
-      const result = await fetchGroupUsefulData(currentGroupId);
-      if (!isMounted) return;
-      if (result.items) {
-        setItems(result.items);
-      }
-    };
-
-    loadData();
+    if (canEdit) {
+      fetchPendingSuggestions(currentGroupId).then(pending => {
+        if (!isMounted) return;
+        if (pending.ok) {
+          setServerPending(pending.items);
+          setNotifyEnabled(pending.notify);
+        }
+      });
+    } else {
+      setServerPending([]);
+    }
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        loadData();
+      if (document.visibilityState === 'visible' && canEdit) {
+        fetchPendingSuggestions(currentGroupId).then(pending => {
+          if (!isMounted) return;
+          if (pending.ok) {
+            setServerPending(pending.items);
+            setNotifyEnabled(pending.notify);
+          }
+        });
       }
     };
 
     window.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleVisibilityChange);
-
     return () => {
       isMounted = false;
       window.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleVisibilityChange);
     };
-  }, [currentGroupId, refreshTrigger]);
+  }, [currentGroupId, refreshTrigger, canEdit]);
 
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -278,9 +306,10 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       order: index
     }));
 
+    itemsRef.current = orderedItems;
     setItems(orderedItems);
     saveLocalUsefulItems(currentGroupId, orderedItems);
-    await pushGroupUsefulData(currentGroupId, orderedItems);
+    void usefulSync.flushPush();
   };
 
   // File upload helper
@@ -300,53 +329,28 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     const toastId = toast.loading(`Загрузка «${fileName}»...`);
 
     try {
-      const formData = new FormData();
-      formData.append('document', file, fileName);
-      formData.append('caption', `[${groupName}] 📌 Полезное: ${fileName} #${groupTag}`);
-
-      const tg = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp) || null;
-      const initData = tg?.initData || '';
-
-      const res = await fetch(`${WORKER_BASE}/upload`, {
-        method: 'POST',
-        headers: {
-          ...(initData ? { 'X-Telegram-Init-Data': initData } : {})
-        },
-        body: formData
+      const core = await uploadToTelegramStorage(file, {
+        caption: `[${groupName}] 📌 Полезное: ${fileName} #${groupTag}`,
+        maxSizeBytes: 20 * 1024 * 1024
       });
 
-      if (!res.ok) {
-        throw new Error(`Ошибка загрузки: статус ${res.status}`);
-      }
-
-      const json = await res.json();
-      if (!json.ok || !json.result) {
-        throw new Error(json.description || 'Сервер отклонил файл');
-      }
-
-      const doc = json.result.document || (json.result.photo ? json.result.photo[json.result.photo.length - 1] : null);
-      const fileId = doc?.file_id;
-
-      const streamUrl = json.direct_url || (json.sig && json.exp
-        ? `${WORKER_BASE}/file?file_id=${fileId}&exp=${json.exp}&sig=${json.sig}&download=1`
-        : `${WORKER_BASE}/file?file_id=${fileId}`);
-      const sizeFormatted = file.size > 1024 * 1024
-        ? (file.size / (1024 * 1024)).toFixed(1) + ' МБ'
-        : (file.size / 1024).toFixed(0) + ' КБ';
+      const streamUrl = core.directUrl || (core.sig && core.exp
+        ? `${WORKER_BASE}/file?file_id=${core.fileId}&exp=${core.exp}&sig=${core.sig}&download=1`
+        : `${WORKER_BASE}/file?file_id=${core.fileId}`);
 
       setFormAttachments(prev => [
         ...prev,
         {
-          name: fileName,
+          name: core.fileName,
           url: streamUrl,
           tgUrl: streamUrl,
           type: file.type.startsWith('image/') ? 'image' : 'file',
-          size: sizeFormatted
+          size: formatUploadedSize(file.size)
         }
       ]);
 
       toast.dismiss(toastId);
-      toast.success(`Файл «${fileName}» загружен`);
+      toast.success(`Файл «${core.fileName}» загружен`);
     } catch (err: any) {
       console.error('File upload error:', err);
       toast.dismiss(toastId);
@@ -401,11 +405,11 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
 
     const isStudentSuggest = !canEdit;
 
-    // Spam limit: max 3 suggestions per hour for students
+    // Spam limit: max 10 suggestions per hour for students
     if (isStudentSuggest) {
       const { allowed } = checkUsefulSpamLimit();
       if (!allowed) {
-        toast.error('Лимит: не более 3 предложений в час. Пожалуйста, подождите.');
+        toast.error('Лимит: не более 10 предложений в час. Пожалуйста, подождите.');
         return;
       }
     }
@@ -457,13 +461,24 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     setIsModalOpen(false);
 
     if (isStudentSuggest) {
+      const sent = await submitUsefulSuggestion(currentGroupId, noteToSave);
+      if (!sent.ok) {
+        toast.error(sent.error || 'Не удалось отправить предложение');
+        return;
+      }
       recordUsefulSubmission();
-      toast.success('Материал предложен! Староста проверит и опубликует его.');
-    } else {
-      toast.success(editingItem ? 'Заметка обновлена' : 'Заметка сохранена');
+      toast.success('Предложение отправлено старосте');
+      setIsModalOpen(false);
+      return;
     }
 
-    pushGroupUsefulData(currentGroupId, sorted).then(ok => {
+    itemsRef.current = sorted;
+    setItems(sorted);
+    saveLocalUsefulItems(currentGroupId, sorted);
+    setIsModalOpen(false);
+    toast.success(editingItem ? 'Заметка обновлена' : 'Заметка сохранена');
+
+    usefulSync.flushPush().then(ok => {
       if (!ok) {
         console.warn('Failed to push useful items to cloud');
       }
@@ -473,6 +488,21 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   // Moderation: Approve pending student suggestion
   const handleApprovePending = async (id: string) => {
     if (!canEdit) return;
+    if (serverPending.some(it => it.id === id)) {
+      const ok = await resolveSuggestion(currentGroupId, id, 'approve');
+      if (!ok) {
+        toast.error('Не удалось опубликовать материал. Проверьте соединение и повторите.');
+        return;
+      }
+      setServerPending(prev => prev.filter(it => it.id !== id));
+      const fresh = await fetchGroupUsefulData(currentGroupId);
+      if (fresh.items) {
+        itemsRef.current = fresh.items;
+        setItems(fresh.items);
+      }
+      toast.success('Материал опубликован для группы');
+      return;
+    }
     const updated = items.map(it => {
       if (it.id === id) {
         const { isPending, ...rest } = it;
@@ -481,20 +511,32 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       return it;
     });
     setItems(updated);
+    itemsRef.current = updated;
     saveLocalUsefulItems(currentGroupId, updated);
-    toast.success('Материал одобрен и опубликован для группы!');
-    pushGroupUsefulData(currentGroupId, updated);
+    toast.success('Материал опубликован для группы');
+    void usefulSync.flushPush();
   };
 
   // Moderation: Reject pending student suggestion
   const handleRejectPending = async (id: string) => {
     if (!canEdit) return;
+    if (serverPending.some(it => it.id === id)) {
+      const ok = await resolveSuggestion(currentGroupId, id, 'reject');
+      if (!ok) {
+        toast.error('Не удалось отклонить предложение. Проверьте соединение и повторите.');
+        return;
+      }
+      setServerPending(prev => prev.filter(it => it.id !== id));
+      toast.info('Предложение отклонено');
+      return;
+    }
     recordDeletedUsefulItem(currentGroupId, id);
     const updated = items.filter(it => it.id !== id);
     setItems(updated);
     saveLocalUsefulItems(currentGroupId, updated);
     toast.info('Предложение отклонено');
-    pushGroupUsefulData(currentGroupId, updated);
+    itemsRef.current = updated;
+    void usefulSync.flushPush();
   };
 
   // Delete note
@@ -508,8 +550,8 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     setItems(updated);
     saveLocalUsefulItems(currentGroupId, updated);
     toast.success('Заметка удалена');
-
-    pushGroupUsefulData(currentGroupId, updated).then(ok => {
+    itemsRef.current = updated;
+    usefulSync.flushPush().then(ok => {
       if (!ok) {
         console.warn('Failed to sync deletion to cloud');
       }
@@ -556,7 +598,24 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   const tgUser = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp?.initDataUnsafe?.user) || null;
   const currentUserId = tgUser?.id;
 
-  const pendingItems = useMemo(() => items.filter(it => it.isPending), [items]);
+  const pendingItems = useMemo(() => {
+    const local = items.filter(it => it.isPending);
+    const known = new Set(local.map(it => it.id));
+    return [...serverPending.filter(it => !known.has(it.id)), ...local];
+  }, [items, serverPending]);
+
+  const handleToggleNotify = async () => {
+    const next = !notifyEnabled;
+    const res = await setSuggestionNotifications(currentGroupId, next);
+    if (!res.ok) {
+      toast.error(res.error || 'Не удалось изменить настройку');
+      return;
+    }
+    setNotifyEnabled(next);
+    toast.success(next
+      ? 'Уведомления включены. Если сообщений нет, откройте чат с ботом и нажмите Start'
+      : 'Уведомления о предложениях выключены');
+  };
 
   // Filtered and sorted items
   const filteredItems = useMemo(() => {
@@ -634,6 +693,24 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
           </button>
         )}
       </div>
+
+      {canEdit && (
+        <div className="flex items-center justify-between gap-3 px-1">
+          <span className="text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+            Предложения студентов приходят в эту вкладку{notifyEnabled ? ' и в Telegram' : ''}
+          </span>
+          <button
+            onClick={handleToggleNotify}
+            className={`shrink-0 px-3 py-1.5 rounded-xl text-[11px] font-bold border transition-colors ${
+              notifyEnabled
+                ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            {notifyEnabled ? 'Telegram: вкл' : 'Telegram: выкл'}
+          </button>
+        </div>
+      )}
 
       {/* Filter and Search Bar */}
       <div className="space-y-3">

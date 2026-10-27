@@ -67,7 +67,10 @@ async function runResilienceTests() {
   console.log('================================================================\n');
 }
 
-runResilienceTests().catch(err => {
+try {
+  await runResilienceTests();
+  console.log('✓ [PASS] tma resilience suite completed');
+} catch (err) {
   console.error('Resilience tests failed:', err);
   process.exit(1);
-});
+}

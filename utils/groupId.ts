@@ -1,7 +1,29 @@
 /**
- * Utility for normalizing, transliterating and validating group identifiers.
- * Guarantees group IDs strictly match the format /^[a-z0-9-]+$/ to avoid server/URL issues.
+ * AUD-027: THE single canonicalizer of group identifiers.
+ *
+ * Historically three normalizers coexisted with DIFFERENT results on the same
+ * input (makeGroupId = raw transliteration, normalizeGroupId = lowercase + exact
+ * alias table, normalizeSamgtuGroupName = course/number structural parsing).
+ * That produced divergent storage keys, dedup keys and schedule chunk ids.
+ *
+ * Now every normalization path delegates here. makeGroupId implements the
+ * SUPERSET of the old behaviors, in priority order:
+ *
+ *   0. clean:    strip "Группа " prefix, dash-lookalikes, "(...)/[...]" tail,
+ *                unify separators (spaces/underscores/slashes/dots) to hyphens,
+ *                collapse and trim hyphens, lowercase;
+ *   1. aliases:  exact legacy alias table (history beats structure: 'фаид-110'
+ *                -> 'faid-310', 'ингт-1' -> 'ingt-301', ...);
+ *   2. structure: the SamGTU course/number scheme — the app's canonical id space
+ *                ('3-ИНГТ-110' -> 'ingt-310', '24ИНГТ-110' -> 'ingt-310',
+ *                '2-ХТФ-115' -> 'htf-215', 'ingt-310' -> 'ingt-310');
+ *   3. fallback: the historical transliteration slug for everything else
+ *                (custom/master groups: '25ингт-104м' -> '25ingt-104m').
+ *
+ * The result is always strictly [a-z0-9-] (or '' for empty input).
  */
+
+import { CANONICAL_GROUP_ALIASES } from './groupAliases';
 
 export const FACULTY_TRANSLIT_MAP: Record<string, string> = {
   'ингт': 'ingt',
@@ -53,6 +75,21 @@ export const CYRILLIC_CHAR_MAP: Record<string, string> = {
   'я': 'ya'
 };
 
+/** Faculty code by (lowercased) Cyrillic/Latin faculty name of the SamGTU scheme. */
+const FACULTY_TO_ID: Record<string, string> = {
+  'ингт': 'ingt',
+  'аса': 'asa',
+  'иаит': 'iait',
+  'итф': 'itf',
+  'этф': 'etf',
+  'хтф': 'htf',
+  'тэф': 'tef',
+  'фммт': 'fmmt',
+  'фпп': 'fpp',
+  'ииэго': 'iiego',
+  'фаид': 'faid'
+};
+
 /**
  * Transliterates Russian characters to Latin alphabet, prioritizing standard SamGTU faculty abbreviations.
  */
@@ -78,27 +115,80 @@ export function transliterateCyrillic(text: string): string {
   return result;
 }
 
+/** Pre-cleaning shared by the structural and fallback stages (idempotent on ids). */
+function cleanGroupInput(name: string): string {
+  return name
+    .replace(/^группа\s+/i, '')
+    .replace(/[\u2010\u2011\u2012\u2013\u2014]/g, '-')
+    .replace(/\s*[\(\[].*?[\)\]]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_\\\/.,;]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 /**
- * Normalizes any group name or input into a strict URL-safe canonical format:
- * - Lowercases all text
- * - Transliterates Cyrillic letters (e.g. "ингт" -> "ingt", "фаид" -> "faid", "хтф" -> "htf", "м" -> "m")
- * - Converts spaces, slashes and special characters to hyphens
- * - Removes duplicate hyphens and trims leading/trailing hyphens
- * - Returns strictly [a-z0-9-]
+ * Resolves the structural SamGTU patterns into the app-canonical id
+ * (`<fac>-<course><num2>`). Returns null when nothing matches or the faculty is
+ * unknown (the caller falls back to transliteration — a Cyrillic faculty must
+ * never leak into the id).
+ */
+function structuralGroupId(cleaned: string): string | null {
+  // Portal year-code names carry the ADMISSION year, not the course:
+  // 23 -> 4 курс, 24 -> 3 курс, 25 -> 2 курс, 26 -> 1 курс.
+  const yearCodeToCourse = (code: number): number =>
+    code === 23 ? 4 : code === 24 ? 3 : code === 25 ? 2 : code === 26 ? 1 : 3;
+
+  // 1. Portal names: 24ИНГТ-110 (no dashes between year code and faculty).
+  const portal = cleaned.match(/^(\d{2})([а-яёa-z]+)-(\d+)$/);
+  if (portal) {
+    const facId = FACULTY_TO_ID[portal[2]] || (/^[a-z]+$/.test(portal[2]) ? portal[2] : null);
+    if (facId) {
+      return `${facId}-${yearCodeToCourse(parseInt(portal[1], 10))}${portal[3].slice(-2)}`;
+    }
+  }
+
+  // 2. Dashed names: 3-ИНГТ-24ИНГТ-110 and plain 3-ИНГТ-110.
+  const patterns: RegExp[] = [
+    /^(\d+)-([а-яёa-z]+)-\d+[а-яёa-z]+-(\d+)$/,  // 3-ИНГТ-24ИНГТ-110
+    /^(\d+)-([а-яёa-z]+)-(\d+)$/                 // 3-ИНГТ-110
+  ];
+  for (const re of patterns) {
+    const m = cleaned.match(re);
+    if (!m) continue;
+    const facId = FACULTY_TO_ID[m[2]] || (/^[a-z]+$/.test(m[2]) ? m[2] : null);
+    if (!facId) continue;
+    return `${facId}-${m[1]}${m[3].slice(-2)}`;
+  }
+  // 3. Built-in id form (idempotency): ingt-310 / faid-310 / htf-215 ...
+  const builtin = cleaned.match(/^([a-z]+)-([1-6])(\d{2})$/);
+  if (builtin) return `${builtin[1]}-${builtin[2]}${builtin[3]}`;
+  return null;
+}
+
+/**
+ * Normalizes ANY group name or id into the single canonical form
+ * (see the module header for the pipeline). This is the ONLY entry point the
+ * rest of the codebase should use for group-id normalization.
  */
 export function makeGroupId(name: string): string {
   if (!name || typeof name !== 'string') return '';
 
-  // 1. Transliterate and lowercase
-  const transliterated = transliterateCyrillic(name);
+  const cleaned = cleanGroupInput(name);
+  if (!cleaned) return '';
 
-  // 2. Replace all non [a-z0-9-] characters with hyphens
-  const withHyphens = transliterated.replace(/[^a-z0-9-]+/g, '-');
+  // 1. Legacy exact aliases (highest priority: they encode history, not structure).
+  const aliased = CANONICAL_GROUP_ALIASES[cleaned];
+  if (aliased) return aliased;
 
-  // 3. Deduplicate hyphens and trim boundary hyphens
-  const clean = withHyphens.replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  // 2. Structural SamGTU course/number scheme -> the app-canonical id.
+  const structural = structuralGroupId(cleaned);
+  if (structural) return structural;
 
-  return clean;
+  // 3. Historical transliteration fallback (custom/master groups).
+  const withHyphens = transliterateCyrillic(cleaned).replace(/[^a-z0-9-]+/g, '-');
+  return withHyphens.replace(/-+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 /**

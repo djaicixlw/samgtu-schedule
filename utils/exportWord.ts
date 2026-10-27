@@ -9,7 +9,10 @@ export interface ExportWordResult {
   success: boolean;
   sentToTelegramChat: boolean;
   downloadUrl?: string;
-  method: 'tma_download_file' | 'tma_open_link' | 'web_share' | 'browser_blob';
+  method: 'tma_download_file' | 'tma_open_link' | 'web_share' | 'browser_blob' | 'tma_refused';
+  error?: string;
+  errorCode?: string;
+  warning?: string;
 }
 
 /**
@@ -252,6 +255,7 @@ export const exportAttendanceToWord = async (
 
       let directUrl: string | null = null;
       let sentToPm = false;
+      let refusal: { message: string; code?: string; status: number } | null = null;
 
       const headers: Record<string, string> = {
         ...(tg?.initData ? { 'X-Telegram-Init-Data': tg.initData } : {})
@@ -276,6 +280,17 @@ export const exportAttendanceToWord = async (
               sentToPm = Boolean(data.sent_to_pm);
             }
           }
+        } else {
+          try {
+            const errBody = await uploadRes.json();
+            if (errBody && typeof errBody.error === 'string' && errBody.error) {
+              refusal = {
+                message: errBody.error,
+                code: typeof errBody.code === 'string' ? errBody.code : undefined,
+                status: uploadRes.status
+              };
+            }
+          } catch {}
         }
       } catch (docErr) {
         console.warn('/export-doc probe failed, trying live upload fallback:', docErr);
@@ -298,6 +313,20 @@ export const exportAttendanceToWord = async (
         if (typeof tg.openLink === 'function') {
           tg.openLink(directUrl);
           return { success: true, sentToTelegramChat: sentToPm, downloadUrl: directUrl, method: 'tma_open_link' };
+        }
+      }
+
+      if (refusal) {
+        const platform = String(tg?.platform || '').toLowerCase();
+        const isPhone = platform === 'ios' || platform.startsWith('android');
+        if (isPhone || [401, 403, 429].includes(refusal.status)) {
+          return {
+            success: false,
+            sentToTelegramChat: false,
+            method: 'tma_refused',
+            error: refusal.message,
+            errorCode: refusal.code
+          };
         }
       }
     } catch (tmaError) {

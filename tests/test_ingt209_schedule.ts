@@ -1,4 +1,6 @@
 import './setup_mock_auth';
+import { preloadAllSchedulesSync } from '../utils/scheduleNodeLoader';
+preloadAllSchedulesSync();
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { verifyPinCode } from '../utils/auth';
 import { STUDENTS_REGISTRY } from '../attendance';
@@ -48,8 +50,10 @@ assert(!!schedule, "SCHEDULE_REGISTRY['ingt-209'] exists");
 assert(!!schedule[1] && !!schedule[2] && !!schedule[3] && !!schedule[4], "All 4 weeks exist");
 
 // Aliases
-assert(SCHEDULE_REGISTRY['2-ingt-109'] === schedule, "Alias '2-ingt-109' points to ingt-209");
-assert(SCHEDULE_REGISTRY['ingt-109'] === schedule, "Alias 'ingt-109' points to ingt-209");
+assert(SCHEDULE_REGISTRY['2-ингт-109'] === schedule, "Alias '2-ингт-109' points to ingt-209");
+// AUD-028: the colliding alias is removed — 'ingt-109' belongs to the REAL 1-ИНГТ-109
+assert(SCHEDULE_REGISTRY['ingt-109'] !== schedule, "AUD-028: 'ingt-109' is no longer aliased to ingt-209");
+assert(SCHEDULE_REGISTRY['ingt-109'] !== undefined, "'ingt-109' holds the real 1-ИНГТ-109 chunk data");
 
 // Check Week 1 (Numerator / 14-19 Sept)
 console.log("\n--- Week 1 Details (Numerator) ---");

@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url';
 import { SAMGTU_GROUP_MAP } from '../utils/samgtuGroupMap';
 import { SCHEDULE_REGISTRY } from '../constants';
 import { Lesson, DaySchedule } from '../types';
+import { officialWeeksForCycle } from '../utils/officialWeeks';
+import { getSemesterConfig, samaraISO } from '../utils/samaraDate';
 import { TIME_SLOTS, DAY_NAMES, DAY_CODES, GROUP_ID_PREFIXES, parseCellName, findExistingTeacher, serializeGroupSchedule, serializeIngt310InsideRegistry } from './sync_official_schedule';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -120,9 +122,17 @@ export async function runNightlySync() {
 
   const allDiffs: Record<string, GroupDiff> = {};
   const updatedSchedules: Record<string, Record<number, DaySchedule[]>> = {};
+  const weekDecisionsByGroup: Record<string, Record<number, WeekWriteDecision>> = {};
   let totalParsedLessonsAcrossAll = 0;
 
   for (const [groupId, conf] of Object.entries(SAMGTU_GROUP_MAP)) {
+    // AUD-034: entries from the AUTO-GENERATED map section carry
+    // samgtuGroupId: 0 (portal numeric id unknown until a human fills it in).
+    // Polling the official API with 0 would be nonsense — skip explicitly.
+    if (!conf.samgtuGroupId) {
+      console.log(`Пропуск ${conf.name} [${groupId}]: samgtuGroupId не задан (AUTO-GENERATED, заполните карту вручную).`);
+      continue;
+    }
     console.log(`Проверка: ${conf.name} [${groupId}]...`);
     const prefix = GROUP_ID_PREFIXES[groupId] || groupId;
     const groupDiff: GroupDiff = {
@@ -133,16 +143,21 @@ export async function runNightlySync() {
       changed: []
     };
 
-    const groupWeeks: Record<number, DaySchedule[]> = {};
     const rawOfficialWeeksEarly: Record<number, any> = {};
     const rawOfficialWeeksLate: Record<number, any> = {};
     let fetchErrorOccurred = false;
 
+    // "Late" = the portal weeks valid NOW (current week + next three, one per cycle position), "Early" = the same
+    // positions one cycle earlier (fallback). This used to be the fixed weeks 5..8 / 1..4, which stop describing the
+    // current schedule as soon as the semester moves on.
+    const windowWeeks = officialWeeksForCycle(samaraISO(new Date()), getSemesterConfig().semesterStart);
     for (let w = 1; w <= 4; w++) {
-      const urlEarly = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w}`;
-      const urlLate = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${w + 4}`;
+      const lateWeek = windowWeeks[w as 1 | 2 | 3 | 4];
+      const earlyWeek = lateWeek - 4;
+      const urlEarly = earlyWeek >= 1 ? `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${earlyWeek}` : null;
+      const urlLate = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${lateWeek}`;
       try {
-        const resEarly = await fetchJson(urlEarly);
+        const resEarly = urlEarly ? await fetchJson(urlEarly) : null;
         await new Promise(r => setTimeout(r, 80));
         const resLate = await fetchJson(urlLate);
         await new Promise(r => setTimeout(r, 80));
@@ -185,64 +200,26 @@ export async function runNightlySync() {
       existingTotalLessons += existingWeek.reduce((acc, d) => acc + (d.lessons?.length || 0), 0);
     }
 
-    let groupParsedLessons = 0;
+    // AUD-033: week building extracted into buildOfficialWeeks() so the
+    // mock-source test can exercise the exact production path.
+    const built = buildOfficialWeeks({
+      rawEarly: rawOfficialWeeksEarly,
+      rawLate: rawOfficialWeeksLate,
+      prefix,
+      groupId,
+      existingGroupSchedule
+    });
+    const groupParsedLessons = built.parsedLessons;
+    let groupWeeks = built.weeks;
 
-    for (let w = 1; w <= 4; w++) {
-      const weekDays: DaySchedule[] = [];
-
-      for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
-        const dayName = DAY_NAMES[dayIdx - 1];
-        const dayCode = DAY_CODES[dayIdx - 1];
-
-        const hasCells = (d: any) => d?.at && Object.values(d.at as Record<string, any>).some((s: any) => s.Cells && s.Cells.length > 0);
-        const dayLate = rawOfficialWeeksLate[w]?.wd?.[String(dayIdx)];
-        const dayEarly = rawOfficialWeeksEarly[w]?.wd?.[String(dayIdx)];
-        let offDay = hasCells(dayLate) ? dayLate : dayEarly;
-
-        // Fallback for Monday Week 1 (31 August has 0 pairs on portal)
-        if (w === 1 && dayIdx === 1 && !hasCells(offDay)) {
-          const w3Late = rawOfficialWeeksLate[3]?.wd?.['1'];
-          const w3Early = rawOfficialWeeksEarly[3]?.wd?.['1'];
-          offDay = hasCells(w3Late) ? w3Late : w3Early;
-        }
-
-        const offLessons: Lesson[] = [];
-
-        if (offDay && offDay.at) {
-          const sortedSlots = Object.entries(offDay.at as Record<string, any>)
-            .map(([slotKey, slotData]) => ({ slotKey: Number(slotKey), slotData }))
-            .sort((a, b) => a.slotKey - b.slotKey);
-
-          let lessonCounter = 1;
-          for (const { slotKey, slotData } of sortedSlots) {
-            if (!TIME_SLOTS[String(slotKey)]) continue; // строго звонки 1..6 (без 7-й пары)
-            if (slotData.Cells && slotData.Cells.length > 0) {
-              for (const cell of slotData.Cells) {
-                const parsed = parseCellName(cell.CellName);
-                const times = TIME_SLOTS[String(slotKey)];
-                const existingWeek = existingGroupSchedule[w] || [];
-                const teacher = findExistingTeacher(groupId, parsed.subject, parsed.type, existingWeek);
-
-                offLessons.push({
-                  id: `${prefix}-w${w}-${dayCode}-${lessonCounter}`,
-                  timeStart: times.timeStart,
-                  timeEnd: times.timeEnd,
-                  subject: parsed.subject,
-                  type: parsed.type,
-                  location: parsed.location,
-                  teacher
-                });
-                lessonCounter++;
-              }
-            }
-          }
-        }
-
-        groupParsedLessons += offLessons.length;
-        weekDays.push({ dayName, lessons: offLessons });
-      }
-
-      groupWeeks[w] = weekDays;
+    // AUD-033: per-week guard — a PARTIAL API failure (one week empty/lost
+    // while others parsed fine) used to be written as an empty week over the
+    // existing non-empty week. Now every week is decided individually.
+    const guarded = applyPerWeekGuards(groupWeeks, existingGroupSchedule);
+    groupWeeks = guarded.weeks;
+    const weekDecisions = guarded.decisions;
+    for (const warning of guarded.warnings) {
+      console.warn(warning);
     }
 
     // Safety guard: if official API returned 0 lessons while existing schedule has lessons, do not wipe
@@ -289,6 +266,7 @@ export async function runNightlySync() {
     }
 
     updatedSchedules[groupId] = groupWeeks;
+    weekDecisionsByGroup[groupId] = weekDecisions;
 
     const totalGroupDiffs = groupDiff.added.length + groupDiff.removed.length + groupDiff.changed.length;
     if (totalGroupDiffs > 0) {
@@ -361,7 +339,7 @@ export async function runNightlySync() {
     // Update other groups (faid-310, ingt-311, ingt-301, ingt-303, ingt-209, htf-215)
     const otherGroups = ['faid-310', 'ingt-311', 'ingt-301', 'ingt-303', 'ingt-209', 'htf-215'];
     for (const gid of otherGroups) {
-      if (updatedSchedules[gid]) {
+      if (updatedSchedules[gid] && groupHasChangedWeek(gid, weekDecisionsByGroup)) {
         const serialized = serializeGroupSchedule(gid, updatedSchedules[gid]);
         const regex = new RegExp(`SCHEDULE_REGISTRY\\['${gid}'\\]\\s*=\\s*\\{[\\s\\S]*?\\n\\};`, 'm');
         if (regex.test(fileContent)) {
@@ -378,7 +356,13 @@ export async function runNightlySync() {
     if (!fs.existsSync(schedulesDir)) {
       fs.mkdirSync(schedulesDir, { recursive: true });
     }
+    let writtenChunks = 0;
     for (const [gid, sched] of Object.entries(updatedSchedules)) {
+      // AUD-033: full chunk write only when at least one week REALLY changed.
+      if (!groupHasChangedWeek(gid, weekDecisionsByGroup)) {
+        console.log(`  ↷ ${gid}.json: недели без изменений, файл не перезаписывался.`);
+        continue;
+      }
       const hasAnyLessons = Object.values(sched).some(w => Array.isArray(w) && w.some(d => Array.isArray(d.lessons) && d.lessons.length > 0));
       if (!hasAnyLessons) {
         console.warn(`  🛡️ [Защита] Пропуск записи ${gid}.json: пустое расписание!`);
@@ -386,8 +370,9 @@ export async function runNightlySync() {
       }
       const jsonPath = path.join(schedulesDir, `${gid}.json`);
       fs.writeFileSync(jsonPath, JSON.stringify(sched, null, 2), 'utf-8');
+      writtenChunks++;
     }
-    console.log(`✅ public/schedules/*.json (${Object.keys(updatedSchedules).length} файлов) успешно обновлены!`);
+    console.log(`✅ public/schedules/*.json (${writtenChunks} из ${Object.keys(updatedSchedules).length} файлов обновлены — только реально изменившиеся).`);
 
     msg += `✅ <b>Расписание в приложении успешно обновлено.</b>`;
   } else {
@@ -398,6 +383,194 @@ export async function runNightlySync() {
 
   // Send the Telegram alert
   await sendTelegramNotification(msg);
+}
+
+// ---------------------------------------------------------------------------
+// AUD-033: per-week write guards (exported for the mock-source test suite).
+// ---------------------------------------------------------------------------
+
+/** Total parsed lessons in one week (array of DaySchedule). */
+export function countWeekLessons(week?: DaySchedule[]): number {
+  if (!Array.isArray(week)) return 0;
+  return week.reduce((acc, d) => acc + (Array.isArray(d?.lessons) ? d.lessons.length : 0), 0);
+}
+
+/** Canonical form used for equality: schedule content without cosmetic field order. */
+function canonicalWeek(week?: DaySchedule[]): string {
+  const days = Array.isArray(week) ? week : [];
+  return JSON.stringify(days.map(d => ({
+    dayName: d?.dayName,
+    lessons: (Array.isArray(d?.lessons) ? d.lessons : []).map(l => ({
+      id: l.id,
+      timeStart: l.timeStart,
+      timeEnd: l.timeEnd,
+      subject: l.subject,
+      type: l.type,
+      location: l.location,
+      teacher: l.teacher || ''
+    }))
+  })));
+}
+
+export function weeksEqual(a?: DaySchedule[], b?: DaySchedule[]): boolean {
+  return canonicalWeek(a) === canonicalWeek(b);
+}
+
+export interface WeekWriteDecision {
+  /** true = the parsed week must be written (week really changed). */
+  write: boolean;
+  /** ok = changed; empty-api-guard = API week empty over non-empty existing; unchanged = identical content. */
+  reason: 'ok' | 'empty-api-guard' | 'unchanged';
+  apiLessons: number;
+  existingLessons: number;
+}
+
+/**
+ * AUD-033 core decision for ONE week:
+ *   - API week is empty AND existing week has lessons -> DO NOT write (guard);
+ *   - API week content identical to existing -> no write needed (nothing changed);
+ *   - otherwise -> write the freshly parsed week.
+ */
+export function resolveWeekWrite(apiWeek?: DaySchedule[], existingWeek?: DaySchedule[]): WeekWriteDecision {
+  const apiLessons = countWeekLessons(apiWeek);
+  const existingLessons = countWeekLessons(existingWeek);
+
+  if (apiLessons === 0 && existingLessons > 0) {
+    return { write: false, reason: 'empty-api-guard', apiLessons, existingLessons };
+  }
+  if (weeksEqual(apiWeek, existingWeek)) {
+    return { write: false, reason: 'unchanged', apiLessons, existingLessons };
+  }
+  return { write: true, reason: 'ok', apiLessons, existingLessons };
+}
+
+export interface PerWeekGuardResult {
+  /** Weeks safe to persist: parsed week when writing, existing week otherwise. */
+  weeks: Record<number, DaySchedule[]>;
+  decisions: Record<number, WeekWriteDecision>;
+  /** Human-readable warnings, one per guarded (kept-old) week. */
+  warnings: string[];
+}
+
+/**
+ * Applies resolveWeekWrite to all 4 weeks. A guarded week keeps the EXISTING
+ * schedule in the output (so downstream diff/serialization never sees an empty
+ * week) and produces a warning.
+ */
+export function applyPerWeekGuards(
+  apiWeeks: Record<number, DaySchedule[]>,
+  existingWeeks: Record<number, DaySchedule[]>
+): PerWeekGuardResult {
+  const weeks: Record<number, DaySchedule[]> = {};
+  const decisions: Record<number, WeekWriteDecision> = {};
+  const warnings: string[] = [];
+
+  for (let w = 1; w <= 4; w++) {
+    const apiWeek = apiWeeks[w] || [];
+    const existingWeek = existingWeeks[w] || [];
+    const decision = resolveWeekWrite(apiWeek, existingWeek);
+    decisions[w] = decision;
+
+    if (decision.reason === 'empty-api-guard') {
+      warnings.push(
+        `  🛡️ [Защита AUD-033] Неделя ${w}: API вернул 0 пар, но в существующем расписании ${decision.existingLessons} пар. Существующая неделя сохранена, запись пустой недели отклонена.`
+      );
+      weeks[w] = existingWeek;
+    } else if (decision.reason === 'unchanged') {
+      weeks[w] = existingWeek;
+    } else {
+      weeks[w] = apiWeek;
+    }
+  }
+
+  return { weeks, decisions, warnings };
+}
+
+/** True when at least one week of the group has decision.write (really changed). */
+export function groupHasChangedWeek(
+  gid: string,
+  decisionsByGroup: Record<string, Record<number, WeekWriteDecision>>
+): boolean {
+  const decisions = decisionsByGroup[gid];
+  if (!decisions) return true; // no guard info (e.g. legacy caller) — behave as before
+  return Object.values(decisions).some(d => d.write);
+}
+
+/**
+ * AUD-033: the week-building loop of runNightlySync, extracted verbatim so the
+ * mock-source test exercises the production path (official JSON shape in,
+ * DaySchedule weeks out).
+ */
+export function buildOfficialWeeks(params: {
+  rawEarly: Record<number, any>;
+  rawLate: Record<number, any>;
+  prefix: string;
+  groupId: string;
+  existingGroupSchedule: Record<number, DaySchedule[]>;
+}): { weeks: Record<number, DaySchedule[]>; parsedLessons: number } {
+  const { rawEarly, rawLate, prefix, groupId, existingGroupSchedule } = params;
+  const weeks: Record<number, DaySchedule[]> = {};
+  let parsedLessons = 0;
+
+  for (let w = 1; w <= 4; w++) {
+    const weekDays: DaySchedule[] = [];
+
+    for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
+      const dayName = DAY_NAMES[dayIdx - 1];
+      const dayCode = DAY_CODES[dayIdx - 1];
+
+      const hasCells = (d: any) => d?.at && Object.values(d.at as Record<string, any>).some((s: any) => s.Cells && s.Cells.length > 0);
+      const dayLate = rawLate[w]?.wd?.[String(dayIdx)];
+      const dayEarly = rawEarly[w]?.wd?.[String(dayIdx)];
+      let offDay = hasCells(dayLate) ? dayLate : dayEarly;
+
+      // Fallback for Monday Week 1 (31 August has 0 pairs on portal)
+      if (w === 1 && dayIdx === 1 && !hasCells(offDay)) {
+        const w3Late = rawLate[3]?.wd?.['1'];
+        const w3Early = rawEarly[3]?.wd?.['1'];
+        offDay = hasCells(w3Late) ? w3Late : w3Early;
+      }
+
+      const offLessons: Lesson[] = [];
+
+      if (offDay && offDay.at) {
+        const sortedSlots = Object.entries(offDay.at as Record<string, any>)
+          .map(([slotKey, slotData]) => ({ slotKey: Number(slotKey), slotData }))
+          .sort((a, b) => a.slotKey - b.slotKey);
+
+        let lessonCounter = 1;
+        for (const { slotKey, slotData } of sortedSlots) {
+          if (!TIME_SLOTS[String(slotKey)]) continue; // строго звонки 1..6 (без 7-й пары)
+          if (slotData.Cells && slotData.Cells.length > 0) {
+            for (const cell of slotData.Cells) {
+              const parsed = parseCellName(cell.CellName);
+              const times = TIME_SLOTS[String(slotKey)];
+              const existingWeek = existingGroupSchedule[w] || [];
+              const teacher = findExistingTeacher(groupId, parsed.subject, parsed.type, existingWeek);
+
+              offLessons.push({
+                id: `${prefix}-w${w}-${dayCode}-${lessonCounter}`,
+                timeStart: times.timeStart,
+                timeEnd: times.timeEnd,
+                subject: parsed.subject,
+                type: parsed.type,
+                location: parsed.location,
+                teacher
+              });
+              lessonCounter++;
+            }
+          }
+        }
+      }
+
+      parsedLessons += offLessons.length;
+      weekDays.push({ dayName, lessons: offLessons });
+    }
+
+    weeks[w] = weekDays;
+  }
+
+  return { weeks, parsedLessons };
 }
 
 if (process.argv[1] && process.argv[1].endsWith('nightly_sync.ts')) {

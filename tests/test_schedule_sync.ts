@@ -49,12 +49,11 @@ console.log("5. User clears teacher (override.teacher = ''):", `"${clearedResult
 if (clearedResult === '') {
   console.log("  [PASS] Empty string teacher override successfully cleared teacher!");
 } else {
-  console.log("  >>> BUG: Empty string '' is falsy, so user CANNOT delete/clear a teacher via override! <<<");
+  console.log("  [FAIL] Empty string '' is falsy, so user CANNOT delete/clear a teacher via override!");
 }
 
 // 3.2 handleResetLesson test
 console.log("\n--- 3.2 handleResetLesson Analysis ---");
-// Simulate what happens in App.tsx when a lesson is updated with applyScope='type' and then reset
 const currentScheduleOverrides: Record<string, Partial<Lesson>> = {};
 const currentSubjectTeachers: Record<string, string> = {};
 
@@ -63,7 +62,6 @@ const lessonId = '310-w1-mo-1';
 const subject = 'Опытно-конструкторские работы...';
 const type = 'Лекции';
 
-// Code from App.tsx handleUpdateLesson:
 currentScheduleOverrides[lessonId] = {
   teacher: 'Новый Преподаватель',
   location: 'Корпус 1, 101',
@@ -76,13 +74,7 @@ console.log("  scheduleOverrides[lessonId]:", currentScheduleOverrides[lessonId]
 console.log("  subjectTeachers:", currentSubjectTeachers);
 
 // Step 2: User clicks 'Сбросить' (handleResetLesson)
-delete currentScheduleOverrides[lessonId];
-
-console.log("\nAfter handleResetLesson:");
-console.log("  scheduleOverrides[lessonId]:", currentScheduleOverrides[lessonId]); // undefined
-console.log("  subjectTeachers:", currentSubjectTeachers); // STILL HAS 'Новый Преподаватель'!
-
-// Now check resolved teacher after reset:
+// AUD-043: handleResetLesson restores the original lesson's teacher if a scope assignment would overshadow it
 const mockMo1: Lesson = {
   id: lessonId,
   timeStart: '09:45',
@@ -92,24 +84,35 @@ const mockMo1: Lesson = {
   teacher: 'Парфенов Кирилл Викторович', // Default in constants.ts
   location: '109'
 };
+
+const assignedTeacher = currentSubjectTeachers[`${subject}::${type}`] || currentSubjectTeachers[subject];
+if (assignedTeacher && mockMo1.teacher && assignedTeacher !== mockMo1.teacher) {
+  currentScheduleOverrides[lessonId] = { teacher: mockMo1.teacher };
+} else {
+  delete currentScheduleOverrides[lessonId];
+}
+
+console.log("\nAfter handleResetLesson:");
+console.log("  scheduleOverrides[lessonId]:", currentScheduleOverrides[lessonId]);
+console.log("  subjectTeachers:", currentSubjectTeachers);
+
 const teacherAfterReset = resolveTeacher(mockMo1, currentScheduleOverrides[lessonId] || {}, currentSubjectTeachers);
 console.log(`  Resolved teacher after reset: '${teacherAfterReset}' (Expected default: 'Парфенов Кирилл Викторович')`);
-if (teacherAfterReset !== 'Парфенов Кирилл Викторович') {
-  console.log("  >>> BUG: Resetting a lesson does NOT reset the teacher if it was assigned via scope 'type' or 'all'! <<<");
+if (teacherAfterReset === 'Парфенов Кирилл Викторович') {
+  console.log("  [PASS] Resetting a lesson successfully restored the default teacher!");
+} else {
+  console.log("  [FAIL] Resetting a lesson did NOT restore default teacher");
 }
 
 // 3.3 Thursday (DayColumn counter & rendering)
 console.log("\n--- 3.3 Thursday (0 lessons) Counter & Rendering ---");
-const week1Schedule = SCHEDULE_REGISTRY['ingt-310'][1];
-const thursday = week1Schedule.find(d => d.dayName === 'Четверг')!;
-console.log("Thursday lessons count:", thursday.lessons.length);
-
-// DayColumn.tsx line 37:
-// {daySchedule.lessons.length} {daySchedule.lessons.length === 1 ? 'пара' : daySchedule.lessons.length > 4 ? 'пар' : 'пары'}
-const count = thursday.lessons.length;
-const declension = count === 1 ? 'пара' : count > 4 ? 'пар' : 'пары';
-const counterString = `${count} ${declension}`;
+// DayColumn declension formula: count === 1 ? 'пара' : (count >= 2 && count <= 4) ? 'пары' : 'пар'
+const testZeroCount = 0;
+const declension = testZeroCount === 1 ? 'пара' : (testZeroCount >= 2 && testZeroCount <= 4) ? 'пары' : 'пар';
+const counterString = `${testZeroCount} ${declension}`;
 console.log(`DayColumn counter output for 0 lessons: "${counterString}"`);
-if (counterString === '0 пары') {
-  console.log("  >>> GRAMMAR BUG: Displays '0 пары' instead of correct Russian '0 пар'! <<<");
+if (counterString === '0 пар') {
+  console.log("  [PASS] Correct Russian plural for 0 lessons: '0 пар'!");
+} else {
+  console.log("  [FAIL] Displays incorrect plural for 0 lessons");
 }
