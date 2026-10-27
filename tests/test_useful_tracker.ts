@@ -149,14 +149,15 @@ assert(usefulTrackerContent.includes('Предложенные материал�
 assert(usefulTrackerContent.includes('handleApprovePending'), 'UsefulTracker supports approving pending items');
 assert(usefulTrackerContent.includes('handleRejectPending'), 'UsefulTracker supports rejecting pending items');
 
-// Test spam limit (max 3 submissions per hour)
+// Test spam limit (max 10 submissions per hour aligned with worker)
 localStorage.removeItem('submitted_useful_count');
 assert(checkUsefulSpamLimit().allowed === true, 'Spam limit allows submission when count is 0');
+for (let i = 0; i < 9; i++) {
+  recordUsefulSubmission();
+}
+assert(checkUsefulSpamLimit().allowed === true, 'Spam limit allows submission when count is 9');
 recordUsefulSubmission();
-recordUsefulSubmission();
-assert(checkUsefulSpamLimit().allowed === true, 'Spam limit allows submission when count is 2');
-recordUsefulSubmission();
-assert(checkUsefulSpamLimit().allowed === false, 'Spam limit blocks submission when count reaches 3 per hour');
+assert(checkUsefulSpamLimit().allowed === false, 'Spam limit blocks submission when count reaches 10 per hour');
 
 // 6. Anti-Bureaucratic & Anti-AI-Tell Tone Check
 console.log('\n--- 6. Anti-Bureaucratic & Clean Tone Check ---');
