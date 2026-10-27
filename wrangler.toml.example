@@ -1,17 +1,17 @@
-name = "floral-union-26d1"
+name = "samgtu-schedule-worker"
 main = "cloudflare-worker.js"
 compatibility_date = "2024-09-23"
 
 # Cloudflare KV binding for v3 Blind Server architecture
 [[kv_namespaces]]
 binding = "APP_DATA"
-id = "8de01c510e674c11bbb95acb3a74aa9d"
+id = "<YOUR_KV_NAMESPACE_ID>"
 
 # Cloudflare D1 (attendance)
 [[d1_databases]]
 binding = "DB"
 database_name = "samgtu-att"
-database_id = "e471611a-f061-4bd6-808a-6442cdb5f287"
+database_id = "<YOUR_D1_DATABASE_ID>"
 migrations_dir = "migrations"
 
 # Cloudflare Rate Limiter for staff claim protection
