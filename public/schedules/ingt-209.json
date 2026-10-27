@@ -359,20 +359,29 @@
       "lessons": [
         {
           "id": "ingt209-w2-sa-1",
+          "timeStart": "08:00",
+          "timeEnd": "09:35",
+          "subject": "Математика",
+          "type": "Практические занятия",
+          "location": "Корпус № 11, 460",
+          "teacher": ""
+        },
+        {
+          "id": "ingt209-w2-sa-2",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Математика",
+          "type": "Практические занятия",
+          "location": "Корпус № 11, 460",
+          "teacher": ""
+        },
+        {
+          "id": "ingt209-w2-sa-3",
           "timeStart": "11:50",
           "timeEnd": "13:25",
           "subject": "Философия",
           "type": "Практические занятия",
           "location": "Корпус № 11, 471",
-          "teacher": ""
-        },
-        {
-          "id": "ingt209-w2-sa-2",
-          "timeStart": "13:35",
-          "timeEnd": "15:10",
-          "subject": "Математика",
-          "type": "Практические занятия",
-          "location": "Корпус № 11, 460",
           "teacher": ""
         }
       ]
