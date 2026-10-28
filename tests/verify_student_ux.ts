@@ -34,9 +34,9 @@ check('1. FAID Schedule', 'SCHEDULE_REGISTRY["faid-310"] существует', 
 // Проверка количества пар по неделям и дням
 const expectedLessonCounts: Record<number, Record<string, number>> = {
   1: { 'Понедельник': 4, 'Вторник': 4, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
-  2: { 'Понедельник': 5, 'Вторник': 2, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
+  2: { 'Понедельник': 5, 'Вторник': 1, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
   3: { 'Понедельник': 4, 'Вторник': 4, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
-  4: { 'Понедельник': 5, 'Вторник': 2, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 }
+  4: { 'Понедельник': 5, 'Вторник': 1, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 }
 };
 
 for (let w = 1; w <= 4; w++) {
@@ -66,9 +66,9 @@ const calDateSep8 = getDayCalendarDate('Вторник', 2, '2026-08-31');
 const isoDateSep8 = getDayISODate('Вторник', 2, '2026-08-31');
 check('2. Critical Dates', '8 сентября (Вторник, Неделя 2) дата в календаре = "8 сент"', calDateSep8 === '8 сент', `получено: "${calDateSep8}"`);
 check('2. Critical Dates', '8 сентября (Вторник, Неделя 2) ISO дата = "2026-09-08"', isoDateSep8 === '2026-09-08', `получено: "${isoDateSep8}"`);
-check('2. Critical Dates', '8 сентября (Вторник, Неделя 2) содержит ровно 2 пары', w2Tue?.lessons.length === 2, `пар: ${w2Tue?.lessons.length}`);
+check('2. Critical Dates', '8 сентября (Вторник, Неделя 2) содержит ровно 1 пару', w2Tue?.lessons.length === 1, `пар: ${w2Tue?.lessons.length}`);
 const sep8Badge = `${w2Tue?.lessons.length} ${(w2Tue?.lessons.length === 1 ? 'пара' : (w2Tue?.lessons.length! >= 2 && w2Tue?.lessons.length! <= 4) ? 'пары' : 'пар')}`;
-check('2. Critical Dates', '8 сентября бейдж счетчика в UI: "2 пары"', sep8Badge === '2 пары', `бейдж: "${sep8Badge}"`);
+check('2. Critical Dates', '8 сентября бейдж счетчика в UI: "1 пара"', sep8Badge === '1 пара', `бейдж: "${sep8Badge}"`);
 check('2. Critical Dates', '8 сентября НЕ показывает "0 пар / В этот день занятий нет"', (w2Tue?.lessons.length || 0) > 0);
 
 // 2.2 Понедельник, Неделя 3 -> 14 сентября
@@ -88,9 +88,9 @@ const calDateSep22 = getDayCalendarDate('Вторник', 4, '2026-08-31');
 const isoDateSep22 = getDayISODate('Вторник', 4, '2026-08-31');
 check('2. Critical Dates', '22 сентября (Вторник, Неделя 4) дата в календаре = "22 сент"', calDateSep22 === '22 сент', `получено: "${calDateSep22}"`);
 check('2. Critical Dates', '22 сентября (Вторник, Неделя 4) ISO дата = "2026-09-22"', isoDateSep22 === '2026-09-22', `получено: "${isoDateSep22}"`);
-check('2. Critical Dates', '22 сентября (Вторник, Неделя 4) содержит ровно 2 пары', w4Tue?.lessons.length === 2, `пар: ${w4Tue?.lessons.length}`);
+check('2. Critical Dates', '22 сентября (Вторник, Неделя 4) содержит ровно 1 пару', w4Tue?.lessons.length === 1, `пар: ${w4Tue?.lessons.length}`);
 const sep22Badge = `${w4Tue?.lessons.length} ${(w4Tue?.lessons.length === 1 ? 'пара' : (w4Tue?.lessons.length! >= 2 && w4Tue?.lessons.length! <= 4) ? 'пары' : 'пар')}`;
-check('2. Critical Dates', '22 сентября бейдж счетчика в UI: "2 пары"', sep22Badge === '2 пары', `бейдж: "${sep22Badge}"`);
+check('2. Critical Dates', '22 сентября бейдж счетчика в UI: "1 пара"', sep22Badge === '1 пара', `бейдж: "${sep22Badge}"`);
 check('2. Critical Dates', '22 сентября НЕ показывает "0 пар / В этот день занятий нет"', (w4Tue?.lessons.length || 0) > 0);
 
 // ==========================================

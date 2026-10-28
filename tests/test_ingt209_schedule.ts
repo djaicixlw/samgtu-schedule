@@ -100,7 +100,7 @@ assert(w1Sat?.lessons[1].subject === 'Иностранный язык' && w1Sat?
 console.log("\n--- Week 2 Details (Denominator) ---");
 const w2 = schedule[2];
 const w2Total = w2.reduce((acc, d) => acc + d.lessons.length, 0);
-assert(w2Total === 18, `Week 2 total lessons is 18 (got ${w2Total})`);
+assert(w2Total === 19, `Week 2 total lessons is 19 (got ${w2Total})`);
 
 const w2Mon = w2.find(d => d.dayName === 'Понедельник');
 assert(w2Mon?.lessons.length === 4, `W2 Monday has 4 lessons (got ${w2Mon?.lessons.length})`);
@@ -134,9 +134,10 @@ assert(w2Fri?.lessons[1].subject === 'Социология и право' && w2F
 assert(w2Fri?.lessons[2].subject === 'Основы нефтегазопромыслового дела' && w2Fri?.lessons[2].timeStart === '13:35', "W2 Fr L3: Oil&Gas lec (13:35-15:10)");
 
 const w2Sat = w2.find(d => d.dayName === 'Суббота');
-assert(w2Sat?.lessons.length === 2, `W2 Saturday has 2 lessons (got ${w2Sat?.lessons.length})`);
-assert(w2Sat?.lessons[0].subject === 'Философия' && w2Sat?.lessons[0].timeStart === '11:50', "W2 Sa L1: Philosophy prac (11:50-13:25)");
-assert(w2Sat?.lessons[1].subject === 'Математика' && w2Sat?.lessons[1].timeStart === '13:35', "W2 Sa L2: Math prac (13:35-15:10)");
+assert(w2Sat?.lessons.length === 3, `W2 Saturday has 3 lessons (got ${w2Sat?.lessons.length})`);
+assert(w2Sat?.lessons[0].subject === 'Математика' && w2Sat?.lessons[0].timeStart === '08:00', "W2 Sa L1: Math prac (08:00-09:35)");
+assert(w2Sat?.lessons[1].subject === 'Математика' && w2Sat?.lessons[1].timeStart === '09:45', "W2 Sa L2: Math prac (09:45-11:20)");
+assert(w2Sat?.lessons[2].subject === 'Философия' && w2Sat?.lessons[2].timeStart === '11:50', "W2 Sa L3: Philosophy prac (11:50-13:25)");
 
 // Check Week 3 (16 lessons) and Week 4 (18 lessons)
 console.log("\n--- Week 3 & 4 Verification ---");

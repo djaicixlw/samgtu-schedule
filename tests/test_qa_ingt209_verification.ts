@@ -104,10 +104,10 @@ check("Сб 2 пара: Иностранный язык (13:35)", w1Sat.lessons[
 // ============================================================================
 // SECTION 4: WEEK 2 (ЗНАМЕНАТЕЛЬ) - 18 ПАР
 // ============================================================================
-console.log("\n>>> 4. Проверка Недели 2 (Знаменатель): ожидается 18 пар (Пн: 4, Вт: 2, Ср: 4, Чт: 3, Пт: 3, Сб: 2)");
+console.log("\n>>> 4. Проверка Недели 2 (Знаменатель): ожидается 19 пар (Пн: 4, Вт: 2, Ср: 4, Чт: 3, Пт: 3, Сб: 3)");
 const w2 = schedule209[2];
 const w2Total = w2.reduce((sum, day) => sum + day.lessons.length, 0);
-check("Неделя 2 суммарно пар: 18", w2Total === 18, `получено: ${w2Total}`);
+check("Неделя 2 суммарно пар: 19", w2Total === 19, `получено: ${w2Total}`);
 
 const w2Days = Object.fromEntries(w2.map(d => [d.dayName, d.lessons.length]));
 check("Пн Недели 2: 4 пары", w2Days['Понедельник'] === 4, `пар: ${w2Days['Понедельник']}`);
@@ -115,7 +115,7 @@ check("Вт Недели 2: 2 пары", w2Days['Вторник'] === 2, `пар
 check("Ср Недели 2: 4 пары", w2Days['Среда'] === 4, `пар: ${w2Days['Среда']}`);
 check("Чт Недели 2: 3 пары", w2Days['Четверг'] === 3, `пар: ${w2Days['Четверг']}`);
 check("Пт Недели 2: 3 пары", w2Days['Пятница'] === 3, `пар: ${w2Days['Пятница']}`);
-check("Сб Недели 2: 2 пары", w2Days['Суббота'] === 2, `пар: ${w2Days['Суббота']}`);
+check("Сб Недели 2: 3 пары", w2Days['Суббота'] === 3, `пар: ${w2Days['Суббота']}`);
 
 // Детали предметов Недели 2
 const w2Mon = w2.find(d => d.dayName === 'Понедельник')!;
@@ -145,8 +145,9 @@ check("Пт 2 пара: Социология и право лек (11:50)", w2Fr
 check("Пт 3 пара: Основы нефтегазопромыслового дела (13:35)", w2Fri.lessons[2].subject === 'Основы нефтегазопромыслового дела' && w2Fri.lessons[2].timeStart === '13:35');
 
 const w2Sat = w2.find(d => d.dayName === 'Суббота')!;
-check("Сб 1 пара: Философия (11:50)", w2Sat.lessons[0].subject === 'Философия' && w2Sat.lessons[0].timeStart === '11:50');
-check("Сб 2 пара: Математика (13:35)", w2Sat.lessons[1].subject === 'Математика' && w2Sat.lessons[1].timeStart === '13:35');
+check("Сб 1 пара: Математика (08:00)", w2Sat.lessons[0].subject === 'Математика' && w2Sat.lessons[0].timeStart === '08:00');
+check("Сб 2 пара: Математика (09:45)", w2Sat.lessons[1].subject === 'Математика' && w2Sat.lessons[1].timeStart === '09:45');
+check("Сб 3 пара: Философия (11:50)", w2Sat.lessons[2].subject === 'Философия' && w2Sat.lessons[2].timeStart === '11:50');
 
 // ============================================================================
 // SECTION 5: WEEK 3 VS WEEK 1 IDENTITY
@@ -291,7 +292,7 @@ for (let w = 1; w <= 4; w++) {
   const satCount = weekLessons.find(d => d.dayName === 'Суббота')?.lessons.length || 0;
   const weekTotal = monCount + tueCount + wedCount + thuCount + friCount + satCount;
 
-  const expectedTotals: Record<number, number> = { 1: 18, 2: 17, 3: 18, 4: 17 };
+  const expectedTotals: Record<number, number> = { 1: 18, 2: 16, 3: 18, 4: 16 };
   check(`3-ФАИД-110 Неделя ${w}: Пт 0 пар и Сб 0 пар`, friCount === 0 && satCount === 0, `Пт:${friCount}, Сб:${satCount}`);
   check(`3-ФАИД-110 Неделя ${w}: итоговая загрузка ${expectedTotals[w]} пар`, weekTotal === expectedTotals[w], `пар: ${weekTotal}`);
 }

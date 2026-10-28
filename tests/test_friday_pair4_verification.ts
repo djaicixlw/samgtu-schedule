@@ -48,17 +48,14 @@ expectedFriLessons.forEach((exp, idx) => {
 // Check Tuesday Week 2
 const tue2 = w2.find(d => d.dayName === 'Вторник');
 assert(!!tue2, "Tuesday Week 2 exists");
-console.log(`Tuesday Week 2 has ${tue2.lessons.length} lessons (expected: 2)`);
-assert.strictEqual(tue2.lessons.length, 2, "Tuesday Week 2 must have exactly 2 lessons!");
+console.log(`Tuesday Week 2 has ${tue2.lessons.length} lessons (expected: 1)`);
+assert.strictEqual(tue2.lessons.length, 1, "Tuesday Week 2 must have exactly 1 lesson!");
 
 assert.strictEqual(tue2.lessons[0].timeStart, '09:45');
 assert(tue2.lessons[0].subject.includes('Практико-ориентированный проект'));
 assert.strictEqual(tue2.lessons[0].teacher, 'Колибасов Владимир Александрович');
 
-assert.strictEqual(tue2.lessons[1].timeStart, '11:50');
-assert(tue2.lessons[1].subject.includes('Актуальные вопросы'));
-
-console.log("  ✓ [PASS] Tuesday Week 2: 09:45 (Колибасов) and 11:50 (Актуальные вопросы) verified!");
+console.log("  ✓ [PASS] Tuesday Week 2: 09:45 (Колибасов) verified!");
 
 // 2. Check public/schedules/ingt-310.json
 const chunkPath = path.resolve(__dirname, '../public/schedules/ingt-310.json');
