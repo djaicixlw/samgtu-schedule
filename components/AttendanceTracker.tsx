@@ -355,7 +355,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
         <div>
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">Журнал посещаемости</h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Группа: <span className="font-semibold text-indigo-600 dark:text-indigo-400">{AVAILABLE_GROUPS.find(g => g.id === currentGroupId)?.name || currentGroupId}</span> • Режим: <span className="font-bold uppercase text-indigo-600 dark:text-indigo-400">{userRole}</span>
+            Учет занятий и формирование ведомостей
           </p>
         </div>
 
@@ -411,27 +411,27 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       <div className="flex bg-slate-200/70 dark:bg-slate-800 p-1 rounded-2xl border border-slate-200/60 dark:border-transparent">
         <button
           onClick={() => setActiveTab('mark')}
-          className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+          className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${
             activeTab === 'mark'
               ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
           }`}
         >
-          Отметить н-ки
+          Отметка пар
         </button>
         <button
           onClick={() => setActiveTab('report')}
-          className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+          className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${
             activeTab === 'report'
               ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
           }`}
         >
-          Отчет (часы пропусков)
+          Отчет по часам
         </button>
         <button
           onClick={() => setActiveTab('details')}
-          className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+          className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${
             activeTab === 'details'
               ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'

@@ -512,7 +512,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
           </div>
           <div className="flex flex-wrap items-center gap-2 mt-1">
             <p className="text-xs text-slate-400">
-              Группа <span className="font-semibold text-slate-700 dark:text-slate-300">{groupName}</span>
+              Актуальные задания и подготовка к занятиям
             </p>
           </div>
         </div>

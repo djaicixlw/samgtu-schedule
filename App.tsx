@@ -1498,7 +1498,7 @@ const App: React.FC = () => {
               >
                 <div className="flex items-center gap-2">
                   <h1 className="text-base font-bold text-slate-900 dark:text-white leading-tight">
-                    Расписание {currentGroupConfig.name}
+                    Расписание СамГТУ
                   </h1>
                   {effectiveRole !== 'student' && (
                     <button
@@ -1506,15 +1506,15 @@ const App: React.FC = () => {
                         e.stopPropagation();
                         handleLogout();
                       }}
-                      className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/40 transition-colors"
+                      className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 transition-colors"
                       title="Нажмите, чтобы выйти в гостевой режим"
                     >
-                      {effectiveRole === 'admin' ? 'Админ (выйти)' : 'Староста (выйти)'}
+                      Выйти
                     </button>
                   )}
                 </div>
                 <p className="text-xs text-slate-400 font-medium">
-                  {currentFaculty.shortName} • СамГТУ
+                  {currentFaculty.shortName} • {currentGroupConfig.course} курс
                 </p>
               </div>
             </div>
@@ -1712,10 +1712,7 @@ const App: React.FC = () => {
                     </button>
                   ))}
                 </div>
-                <div className="text-center text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                  Даты недели: <span className="text-indigo-600 dark:text-indigo-400 font-bold">{getWeekDateRange(selectedWeek, samaraNow)}</span>
-                  {selectedWeek === currentWeek && <span className="text-amber-600 dark:text-amber-400 font-semibold ml-1.5">(Текущая)</span>}
-                </div>
+
               </div>
             )}
           </div>

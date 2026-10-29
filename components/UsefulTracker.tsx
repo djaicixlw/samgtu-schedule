@@ -673,7 +673,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
             <h2 className="text-base font-bold text-slate-900 dark:text-white">Полезное</h2>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Материалы группы <span className="font-semibold text-slate-700 dark:text-slate-300">{groupName}</span>
+            Полезные материалы, ссылки и учебные файлы
           </p>
         </div>
 

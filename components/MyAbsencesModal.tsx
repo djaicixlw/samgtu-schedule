@@ -6,7 +6,6 @@ import {
   AlertTriangle,
   GraduationCap,
   Calendar,
-  Clock,
   CheckCircle2,
   AlertCircle
 } from 'lucide-react';
@@ -383,10 +382,7 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
-                <Clock className="w-3.5 h-3.5" />
-                <span>Официальный подсчет (без физкультуры, 2 ч или 4 ч за пару)</span>
-              </div>
+
 
               {/* Absences List Grouped by Date */}
               <div className="space-y-3 pt-1">

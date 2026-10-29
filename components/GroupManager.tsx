@@ -364,7 +364,7 @@ const GroupManager: React.FC<GroupManagerProps> = ({ currentGroupId, userRole })
           <div>
             <h2 className="text-xl font-bold text-slate-900 dark:text-white">Состав группы</h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Группа: <span className="font-semibold text-indigo-600 dark:text-indigo-400">{groupConfig?.name || currentGroupId}</span> • Студентов: {activeStudents.length}{archivedStudents.length > 0 ? ` (в архиве: ${archivedStudents.length})` : ''}
+              Студентов в списке: <span className="font-semibold text-indigo-600 dark:text-indigo-400">{activeStudents.length}</span>{archivedStudents.length > 0 ? ` (в архиве: ${archivedStudents.length})` : ''}
             </p>
           </div>
         </div>
