@@ -115,12 +115,12 @@ console.log('\n--- 6. --rename mode on a TEMP copy seeded with mojibake fixtures
 // The real dir is canonical (AUD-034 rename applied), so the temp copy is
 // seeded by DE-canonicalizing two files back into their mojibake names.
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aud034-rename-'));
-for (const f of fs.readdirSync(DEFAULT_SCHEDULES_DIR)) {
+for (const f of fs.readdirSync(DEFAULT_SCHEDULES_DIR).filter(f => f.endsWith('.json'))) {
   fs.copyFileSync(path.join(DEFAULT_SCHEDULES_DIR, f), path.join(tmpDir, f));
 }
 fs.renameSync(path.join(tmpDir, '25ингт-101м.json'), path.join(tmpDir, '25РёРЅРіС‚-101Рј.json'));
 fs.renameSync(path.join(tmpDir, '26ингт-104м.json'), path.join(tmpDir, '26РёРЅРіС‚-104Рј.json'));
-const realListingBefore = fs.readdirSync(DEFAULT_SCHEDULES_DIR).sort();
+const realListingBefore = fs.readdirSync(DEFAULT_SCHEDULES_DIR).filter(f => f.endsWith('.json')).sort();
 check(fs.readdirSync(tmpDir).includes('25РёРЅРіС‚-101Рј.json'), 'temp dir contains the seeded mojibake file');
 
 const { execFileSync } = await import('node:child_process');
@@ -128,11 +128,11 @@ const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 execFileSync(npxCmd, ['tsx', 'scripts/generate_group_chunks.ts', '--dir', tmpDir, '--rename', '--report', path.join(tmpDir, '..', 'report.txt')], {
   cwd: W, stdio: 'pipe', shell: process.platform === 'win32'
 });
-const afterRename = fs.readdirSync(tmpDir).sort();
+const afterRename = fs.readdirSync(tmpDir).filter(f => f.endsWith('.json')).sort();
 check(!afterRename.includes('25РёРЅРіС‚-101Рј.json') && !afterRename.includes('26РёРЅРіС‚-104Рј.json'), 'mojibake files renamed in temp dir');
 check(afterRename.includes('25ингт-101м.json') && afterRename.includes('26ингт-104м.json'), 'decoded names present in temp dir');
 check(afterRename.length === 64, 'file count unchanged by rename (got ' + afterRename.length + ')');
-const realListingAfter = fs.readdirSync(DEFAULT_SCHEDULES_DIR).sort();
+const realListingAfter = fs.readdirSync(DEFAULT_SCHEDULES_DIR).filter(f => f.endsWith('.json')).sort();
 check(JSON.stringify(realListingBefore) === JSON.stringify(realListingAfter), 'REAL work_src dir untouched by the test');
 fs.rmSync(tmpDir, { recursive: true, force: true });
 

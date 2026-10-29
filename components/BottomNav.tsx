@@ -7,13 +7,16 @@ interface BottomNavProps {
   onTabChange: (tab: 'schedule' | 'homework' | 'attendance' | 'group' | 'admin' | 'profile') => void;
   userRole: UserRole;
   isLoggedIn: boolean;
+  /** number of student suggestions waiting for the starosta (shown on the ДЗ tab) */
+  homeworkBadge?: number;
 }
 
 const BottomNav: React.FC<BottomNavProps> = ({
   currentTab,
   onTabChange,
   userRole,
-  isLoggedIn
+  isLoggedIn,
+  homeworkBadge = 0
 }) => {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-300/80 dark:border-slate-800 px-1 pt-1.5 pb-safe shadow-lg sm:hidden">
@@ -38,7 +41,14 @@ const BottomNav: React.FC<BottomNavProps> = ({
               : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 font-medium'
           }`}
         >
-          <BookOpen className="w-5 h-5 mb-0.5" />
+          <span className="relative">
+            <BookOpen className="w-5 h-5 mb-0.5" />
+            {homeworkBadge > 0 && (
+              <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold leading-4 text-center">
+                {homeworkBadge > 9 ? '9+' : homeworkBadge}
+              </span>
+            )}
+          </span>
           <span className="text-[10px] leading-none">ДЗ</span>
         </button>
 

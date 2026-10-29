@@ -1,0 +1,5 @@
+{
+  "windowStart": 5,
+  "blockId": 2,
+  "updatedAt": "2026-10-25"
+}

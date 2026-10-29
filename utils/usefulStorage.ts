@@ -364,16 +364,16 @@ export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]):
     const base = WORKER_BASE;
     const url = `${base}/sync/useful?groupId=${encodeURIComponent(groupId.toLowerCase())}`;
     
-    // Light payload without base64 to avoid HTTP 413
-    const sanitizedItems = items.map(item => ({
+    // Pending suggestions live in the server queue; the public list must never carry them or the author's identity.
+    const sanitizedItems = items.filter(item => !item.isPending).map(({ submittedBy: _author, ...item }) => ({
       ...item,
       attachments: (item.attachments || []).map(att => ({
         id: att.id,
         name: att.name,
-        url: att.url,
-        tgUrl: att.tgUrl,
+        size: att.size,
         type: att.type,
-        size: att.size
+        url: att.url,
+        tgUrl: att.tgUrl
       }))
     }));
 
@@ -409,84 +409,3 @@ export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]):
   }
 }
 
-
-// ---------------------------------------------------------------------------
-// Student suggestions: delivery to the starosta, moderation, optional Telegram ping
-// ---------------------------------------------------------------------------
-
-function buildAuthHeaders(groupId: string): Record<string, string> {
-  const tgInitData = (typeof window !== 'undefined' ? (window as any).Telegram?.WebApp?.initData : '') || '';
-  const staffToken = typeof localStorage !== 'undefined'
-    ? (localStorage.getItem(`staff_token_${groupId.toLowerCase()}`) || localStorage.getItem('staff_token') || '')
-    : '';
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (tgInitData) headers['X-Telegram-Init-Data'] = tgInitData;
-  if (staffToken) headers['X-Staff-Token'] = staffToken;
-  return headers;
-}
-
-async function suggestionRequest(path: string, groupId: string, init: { method: string; body?: unknown }): Promise<{ ok: boolean; status: number; data: any }> {
-  try {
-    const res = await fetch(`${WORKER_BASE}${path}`, {
-      method: init.method,
-      headers: buildAuthHeaders(groupId),
-      body: init.body === undefined ? undefined : JSON.stringify(init.body)
-    });
-    let data: any = null;
-    try { data = await res.json(); } catch {}
-    return { ok: res.ok, status: res.status, data };
-  } catch {
-    return { ok: false, status: 0, data: null };
-  }
-}
-
-/** A student sends a material to the group's starosta. Resolves with the server-assigned id. */
-export async function submitUsefulSuggestion(
-  groupId: string,
-  item: Partial<UsefulItem>
-): Promise<{ ok: boolean; id?: string; error?: string; code?: string }> {
-  const gid = groupId.toLowerCase();
-  const res = await suggestionRequest('/v3/useful/suggest', gid, {
-    method: 'POST',
-    body: {
-      gid,
-      item: {
-        title: item.title,
-        text: item.text,
-        subject: item.subject,
-        tags: item.tags,
-        links: item.links,
-        attachments: (item.attachments || []).map(a => ({ id: a.id, name: a.name, url: a.url, tgUrl: a.tgUrl, type: a.type, size: a.size }))
-      }
-    }
-  });
-  if (res.ok && res.data?.id) return { ok: true, id: String(res.data.id) };
-  if (res.status === 0) return { ok: false, error: 'Нет связи с сервером. Проверьте интернет и повторите.', code: 'NETWORK' };
-  return { ok: false, error: res.data?.error || 'Не удалось отправить предложение', code: res.data?.code };
-}
-
-/** Staff: suggestions waiting for a decision, and whether this staff member gets Telegram pings. */
-export async function fetchPendingSuggestions(groupId: string): Promise<{ ok: boolean; items: UsefulItem[]; notify: boolean }> {
-  const gid = groupId.toLowerCase();
-  const res = await suggestionRequest(`/v3/useful/pending?gid=${encodeURIComponent(gid)}`, gid, { method: 'GET' });
-  if (!res.ok || !Array.isArray(res.data?.items)) return { ok: false, items: [], notify: false };
-  const items = (res.data.items as UsefulItem[])
-    .map(it => sanitizeUsefulItem(it, gid))
-    .filter((it): it is UsefulItem => Boolean(it))
-    .map(it => ({ ...it, isPending: true }));
-  return { ok: true, items, notify: Boolean(res.data.notify) };
-}
-
-/** Staff: approve (publishes the item for the group) or reject a pending suggestion. */
-export async function resolveSuggestion(groupId: string, id: string, action: 'approve' | 'reject'): Promise<boolean> {
-  const gid = groupId.toLowerCase();
-  const res = await suggestionRequest('/v3/useful/resolve', gid, { method: 'POST', body: { gid, id, action } });
-  return res.ok;
-}
-
-/** Staff: opt in or out of Telegram messages about new suggestions. */
-export async function setSuggestionNotifications(groupId: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> {
-  const gid = groupId.toLowerCase();
-  const res = await suggestionRequest('/v3/useful/notify', gid, { method: 'POST', body: { gid, enabled } });
-  return res.ok ? { ok: true } : { ok: false, error: res.data?.error || 'Не удалось изменить настройку' };
-}

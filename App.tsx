@@ -11,6 +11,7 @@ import { clearFrozenTeachers, buildLessonIndex, countPinnedTeachers, unpinTeache
 import SwipeableDays from './components/SwipeableDays';
 import BottomNav from './components/BottomNav';
 import TabErrorBoundary from './components/TabErrorBoundary';
+import { fetchPendingCount } from './utils/suggestionsClient';
 import { Toaster, toast } from 'sonner';
 import { UserRole, Lesson, GroupConfig, WeekData } from './types';
 import { TeacherAssignmentScope } from './components/EditLessonModal';
@@ -397,6 +398,32 @@ const App: React.FC = () => {
   }, [userRole, starostaGroupId, currentGroupId]);
 
   const canEdit = effectiveRole === 'admin' || effectiveRole === 'starosta';
+
+  // Student suggestions waiting for the starosta: one cheap request now and then, plus updates from the Useful tab
+  const [pendingSuggestions, setPendingSuggestions] = useState(0);
+  useEffect(() => {
+    if (!canEdit || !currentGroupId) { setPendingSuggestions(0); return; }
+    let alive = true;
+    const refresh = async () => {
+      const res = await fetchPendingCount(currentGroupId.toLowerCase());
+      if (alive && res.ok) setPendingSuggestions(res.count);
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    const onChanged = (e: Event) => {
+      const n = Number((e as CustomEvent).detail?.count);
+      if (alive && Number.isFinite(n)) setPendingSuggestions(n);
+    };
+    refresh();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('samgtu:suggestions-changed', onChanged);
+    const timer = setInterval(refresh, 10 * 60 * 1000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('samgtu:suggestions-changed', onChanged);
+    };
+  }, [canEdit, currentGroupId, refreshTrigger]);
 
   // B-08: If effectiveRole changes (e.g. guest mode or logout), redirect away from restricted tabs
   useEffect(() => {
@@ -1168,39 +1195,6 @@ const App: React.FC = () => {
     let updated = { ...scheduleOverrides };
     if (Object.keys(nextOverride).length === 0) delete updated[lessonId]; else updated[lessonId] = nextOverride;
 
-    // What the subject/type assignment will look like after this save
-    let teachersAfter: Record<string, string> = subjectTeachers;
-    if (teacherGoesToMapping && updatedLesson.teacher) {
-      teachersAfter = { ...subjectTeachers };
-      if (applyScope === 'type') {
-        teachersAfter[`${lessonSubject}::${lessonType}`] = updatedLesson.teacher;
-      } else {
-        teachersAfter[lessonSubject] = updatedLesson.teacher;
-        Object.values(weeks).forEach(days => {
-          days.forEach(day => {
-            day.lessons.forEach(l => {
-              if (l.subject === lessonSubject) teachersAfter[`${l.subject}::${l.type}`] = updatedLesson.teacher!;
-            });
-          });
-        });
-      }
-    }
-
-    // If teacher assignment changed, clear frozen copies of old teachers
-    if (teachersAfter !== subjectTeachers) {
-      const cleaned = clearFrozenTeachers(updated, buildLessonIndex(SCHEDULE_REGISTRY[currentGroupId]), subjectTeachers, teachersAfter);
-      updated = cleaned.overrides;
-      setSubjectTeachers(teachersAfter);
-      try {
-        localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(teachersAfter));
-      } catch (e) {}
-    }
-
-    setScheduleOverrides(updated);
-    try {
-      localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
-    } catch (e) {}
-
     if (cancelChanged) {
       markAttendance(
         isoDate,
@@ -1213,9 +1207,39 @@ const App: React.FC = () => {
       );
     }
 
-    if (teachersAfter !== subjectTeachers) {
-      pushGroupCloudData({ scheduleOverrides: updated, subjectTeachers: teachersAfter }, currentGroupId);
+    if (teacherGoesToMapping && updatedLesson.teacher) {
+      const updatedTeachers: Record<string, string> = { ...subjectTeachers };
+      if (applyScope === 'type') {
+        updatedTeachers[`${lessonSubject}::${lessonType}`] = updatedLesson.teacher;
+      } else {
+        updatedTeachers[lessonSubject] = updatedLesson.teacher;
+        const weeks = SCHEDULE_REGISTRY[currentGroupId] || {};
+        Object.values(weeks).forEach(days => {
+          days.forEach(day => {
+            day.lessons.forEach(l => {
+              if (l.subject === lessonSubject) updatedTeachers[`${l.subject}::${l.type}`] = updatedLesson.teacher!;
+            });
+          });
+        });
+      }
+      const { overrides: cleanedOverrides } = clearTeacherOverridesForChangedKeys(
+        updated as any,
+        (SCHEDULE_REGISTRY[currentGroupId] || {}) as any,
+        subjectTeachers,
+        updatedTeachers
+      );
+      setScheduleOverrides(cleanedOverrides as any);
+      setSubjectTeachers(updatedTeachers);
+      try {
+        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(cleanedOverrides));
+        localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updatedTeachers));
+      } catch (e) {}
+      pushGroupCloudData({ scheduleOverrides: cleanedOverrides as any, subjectTeachers: updatedTeachers }, currentGroupId);
     } else {
+      setScheduleOverrides(updated);
+      try {
+        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
+      } catch (e) {}
       pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
     }
 
@@ -2083,6 +2107,7 @@ const App: React.FC = () => {
         onTabChange={setActiveTab}
         userRole={effectiveRole}
         isLoggedIn={canEdit || !!user}
+        homeworkBadge={pendingSuggestions}
       />
 
       {/* Global Subject Teachers Modal */}

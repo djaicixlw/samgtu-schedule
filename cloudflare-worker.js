@@ -339,7 +339,6 @@ export function sanitizeSyncPayload(type, rawData) {
 
   if (type === 'useful') {
     const res = { updatedAt: Number(rawData.updatedAt) || now };
-    const cleanItems = (arr, gid) => arr.slice(0, 200).map(it => sanitizeUsefulItem(it, gid)).filter(Boolean);
     const cleanDeleted = (arr) => arr.map(x => String(x).slice(0, 100)).slice(-1000);
     if (typeof rawData.groupId === 'string') res.groupId = rawData.groupId.toLowerCase().slice(0, 64);
     if (rawData.byGroup && typeof rawData.byGroup === 'object') {
@@ -347,16 +346,19 @@ export function sanitizeSyncPayload(type, rawData) {
       for (const [gid, grp] of Object.entries(rawData.byGroup).slice(0, 50)) {
         if (grp && typeof grp === 'object') {
           res.byGroup[gid] = {
+            ...sanitizeUsefulGroup(grp, gid),
             groupId: gid,
-            items: Array.isArray(grp.items) ? cleanItems(grp.items, gid) : [],
-            deletedIds: Array.isArray(grp.deletedIds) ? cleanDeleted(grp.deletedIds) : [],
             updatedAt: Number(grp.updatedAt) || now
           };
         }
       }
     }
-    if (Array.isArray(rawData.items)) res.items = cleanItems(rawData.items, res.groupId || '');
-    if (Array.isArray(rawData.deletedIds)) res.deletedIds = cleanDeleted(rawData.deletedIds);
+    if (Array.isArray(rawData.items)) {
+      res.items = sanitizeUsefulGroup({ items: rawData.items }, res.groupId || '').items;
+    }
+    if (Array.isArray(rawData.deletedIds)) {
+      res.deletedIds = cleanDeleted(rawData.deletedIds);
+    }
     return res;
   }
 
@@ -707,166 +709,26 @@ async function bumpHourlyCounter(env, key, limit) {
   return true;
 }
 
-/**
- * Suggestions in "Полезное":
- *   POST /v3/useful/suggest   student: { gid, item: { title, text, subject, tags, links, attachments } }
- *   GET  /v3/useful/pending   staff: ?gid=... -> { items, notify }
- *   POST /v3/useful/resolve   staff: { gid, id, action: "approve" | "reject" }
- *   POST /v3/useful/notify    staff: { gid, enabled }
- */
-async function handleUsefulSuggestions(request, env, corsHeaders, ctx) {
-  const { url, userBlindId, tokenPayload, verifiedUser, botToken } = ctx;
-  const json = (obj, status = 200) => new Response(JSON.stringify(obj), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" }
-  });
-  const path = url.pathname;
+import {
+  submitSuggestion, listPending, getPendingCount, decideSuggestion, setSubscription, isSubscribed,
+  notifyStaff, sanitizeUsefulGroup
+} from './worker/useful_suggestions.js';
 
-  const readBody = async () => {
-    try { return await request.json(); } catch { return null; }
-  };
-  const loadGroup = async (gidRaw) => {
-    const gid = String(gidRaw || '').trim().toLowerCase();
-    if (!ATT_GID_RE.test(gid)) return { error: json({ error: "Invalid gid" }, 400) };
-    const raw = await env.APP_DATA.get("g:" + gid);
-    if (!raw) return { error: json({ error: "У этой группы пока нет старосты в приложении", code: "NO_STAROSTA" }, 404) };
-    try { return { gid, groupData: JSON.parse(raw) }; } catch { return { error: json({ error: "Corrupted group record" }, 500) }; }
-  };
-  const pendingKey = (gid) => `useful-pending:${gid}`;
-  const readPending = async (gid) => {
-    const raw = await env.APP_DATA.get(pendingKey(gid));
-    if (!raw) return [];
-    try { const p = JSON.parse(raw); return Array.isArray(p.items) ? p.items : []; } catch { return []; }
-  };
-  const writePending = (gid, items) =>
-    env.APP_DATA.put(pendingKey(gid), JSON.stringify({ items, updatedAt: Date.now() }), { expirationTtl: SUGGEST_TTL_SECONDS });
+const sgJson = (corsHeaders, status, body) => new Response(JSON.stringify(body), {
+  status,
+  headers: { ...corsHeaders, "Content-Type": "application/json" }
+});
 
-  // ---- POST /v3/useful/suggest
-  if (path === "/v3/useful/suggest" && request.method === "POST") {
-    if (!verifiedUser || !userBlindId) {
-      return json({ error: "Откройте приложение в Telegram, чтобы отправить материал", code: "NO_TELEGRAM" }, 401);
-    }
-    const body = await readBody();
-    if (!body || typeof body !== 'object') return json({ error: "Invalid JSON body" }, 400);
-    const g = await loadGroup(body.gid);
-    if (g.error) return g.error;
-
-    if (!(await bumpHourlyCounter(env, `rl:us:${userBlindId}`, SUGGEST_PER_USER_PER_HOUR))) {
-      return json({ error: "Слишком много предложений. Попробуйте через час.", code: "RATE_LIMITED" }, 429);
-    }
-    if (!(await bumpHourlyCounter(env, `rl:ug:${g.gid}`, SUGGEST_PER_GROUP_PER_HOUR))) {
-      return json({ error: "В группу сейчас пришло слишком много предложений. Попробуйте позже.", code: "RATE_LIMITED" }, 429);
-    }
-
-    const pending = await readPending(g.gid);
-    if (pending.length >= SUGGEST_QUEUE_MAX) {
-      return json({ error: "У старосты накопилась очередь предложений. Попробуйте позже.", code: "QUEUE_FULL" }, 429);
-    }
-
-    const id = `sg_${Date.now().toString(36)}_${crypto.getRandomValues(new Uint32Array(1))[0].toString(36)}`;
-    const item = sanitizeUsefulItem({
-      ...(body.item && typeof body.item === 'object' ? body.item : {}),
-      id,
-      groupId: g.gid,
-      isPending: true,
-      createdAt: new Date().toISOString(),
-      submittedBy: {
-        id: verifiedUser.id,
-        username: verifiedUser.username,
-        name: [verifiedUser.first_name, verifiedUser.last_name].filter(Boolean).join(' ') || undefined
-      }
-    }, g.gid);
-    if (!item) return json({ error: "Пустое предложение", code: "EMPTY" }, 400);
-
-    pending.unshift(item);
-    await writePending(g.gid, pending);
-
-    try {
-      if (botToken && env.ID_PEPPER && typeof env.APP_DATA.list === 'function') {
-        const listed = await env.APP_DATA.list({ prefix: `un:${g.gid}:` });
-        const author = item.submittedBy?.username ? `@${item.submittedBy.username}` : (item.submittedBy?.name || 'студент');
-        const text = `📚 Новое предложение в «Полезное» (${g.gid.toUpperCase()})\n«${item.title || item.text.slice(0, 60)}» — от ${author}\n\nОткройте приложение → ДЗ → Полезное, чтобы одобрить или отклонить.`;
-        for (const k of (listed.keys || [])) {
-          const rawEnc = await env.APP_DATA.get(k.name);
-          if (!rawEnc) continue;
-          let enc; try { enc = JSON.parse(rawEnc); } catch { continue; }
-          const chatId = await decryptChatId(enc.enc, enc.iv, env.ID_PEPPER);
-          if (!chatId) continue;
-          const tg = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true })
-          });
-          if (tg.status === 403 || tg.status === 400) await env.APP_DATA.delete(k.name);
-        }
-      }
-    } catch {}
-
-    return json({ ok: true, id });
+/** Group record + "is the caller staff of this group". Returns {group} or {response}. */
+async function sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders) {
+  const raw = await env.APP_DATA.get("g:" + gid);
+  if (!raw) return { response: sgJson(corsHeaders, 404, { error: "Group not found" }) };
+  let group;
+  try { group = JSON.parse(raw); } catch { return { response: sgJson(corsHeaders, 500, { error: "Corrupted group record" }) }; }
+  if (!isAuthorizedStaff(group, gid, userBlindId, tokenPayload)) {
+    return { response: sgJson(corsHeaders, 403, { error: "Forbidden: not a group staff member" }) };
   }
-
-  // Everything below is staff only.
-  const body = request.method === "GET" ? null : await readBody();
-  const g = await loadGroup(request.method === "GET" ? url.searchParams.get("gid") : body?.gid);
-  if (g.error) return g.error;
-  if (!isAuthorizedStaff(g.groupData, g.gid, userBlindId, tokenPayload)) {
-    return json({ error: "Forbidden: not a group staff member" }, 403);
-  }
-
-  // ---- GET /v3/useful/pending
-  if (path === "/v3/useful/pending" && request.method === "GET") {
-    const items = await readPending(g.gid);
-    let notify = false;
-    if (userBlindId) notify = Boolean(await env.APP_DATA.get(`un:${g.gid}:${userBlindId}`));
-    return json({ ok: true, items, notify });
-  }
-
-  // ---- POST /v3/useful/resolve
-  if (path === "/v3/useful/resolve" && request.method === "POST") {
-    const id = String(body?.id || '');
-    const action = body?.action;
-    if (!id || (action !== 'approve' && action !== 'reject')) return json({ error: "Invalid id or action" }, 400);
-    const pending = await readPending(g.gid);
-    const found = pending.find(it => it.id === id);
-    if (!found) return json({ error: "Предложение не найдено", code: "NOT_FOUND" }, 404);
-
-    await writePending(g.gid, pending.filter(it => it.id !== id));
-
-    if (action === 'approve') {
-      const key = `useful:${g.gid}`;
-      let slice = {};
-      try { slice = JSON.parse((await env.APP_DATA.get(key)) || '{}') || {}; } catch {}
-      const items = Array.isArray(slice.items) ? slice.items : [];
-      const dead = new Set(Array.isArray(slice.deletedIds) ? slice.deletedIds.map(String) : []);
-      if (!dead.has(id) && !items.some(it => it && it.id === id)) {
-        const published = sanitizeUsefulItem({ ...found, isPending: false, updatedAt: new Date().toISOString() }, g.gid);
-        if (published) {
-          delete published.isPending;
-          delete published.submittedBy;
-          items.unshift(published);
-        }
-      }
-      slice = { ...slice, groupId: g.gid, items: items.slice(0, 200), updatedAt: Date.now() };
-      await env.APP_DATA.put(key, JSON.stringify(slice));
-    }
-    return json({ ok: true, action });
-  }
-
-  // ---- POST /v3/useful/notify
-  if (path === "/v3/useful/notify" && request.method === "POST") {
-    if (!verifiedUser || !userBlindId) return json({ error: "Откройте приложение в Telegram", code: "NO_TELEGRAM" }, 401);
-    const key = `un:${g.gid}:${userBlindId}`;
-    if (body?.enabled) {
-      if (!env.ID_PEPPER) return json({ error: "Server secret unconfigured", code: "NO_PEPPER" }, 500);
-      const enc = await encryptChatId(verifiedUser.id, env.ID_PEPPER);
-      await env.APP_DATA.put(key, JSON.stringify(enc), { expirationTtl: SUGGEST_TTL_SECONDS });
-    } else {
-      await env.APP_DATA.delete(key);
-    }
-    return json({ ok: true, enabled: Boolean(body?.enabled) });
-  }
-
-  return json({ error: "Not found" }, 404);
+  return { group };
 }
 
 async function loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders) {
@@ -1358,7 +1220,7 @@ export function validateAttPatch(patch, cancel, hours) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const corsHeaders = getCorsHeaders(request, env, url.pathname);
 
@@ -1591,14 +1453,69 @@ export default {
         }
 
         
-        if (url.pathname.startsWith("/v3/useful/")) {
-          return await handleUsefulSuggestions(request, env, corsHeaders, {
-            url,
-            userBlindId,
-            tokenPayload,
-            verifiedUser,
-            botToken: TELEGRAM_BOT_TOKEN
-          });
+        // 1b. Student suggestions for "Полезное": queue, moderation, notifications
+        if (url.pathname === "/v3/useful/suggest" && request.method === "POST") {
+          if (!userBlindId || !verifiedUser) {
+            return sgJson(corsHeaders, 401, { error: "Откройте приложение из Telegram, чтобы предложить материал", code: "NO_INITDATA" });
+          }
+          let body;
+          try { body = await request.json(); } catch { return sgJson(corsHeaders, 400, { error: "Invalid JSON body" }); }
+          const gid = typeof body?.gid === "string" ? body.gid.trim().toLowerCase() : "";
+          if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
+          if (!(await env.APP_DATA.get("g:" + gid))) {
+            return sgJson(corsHeaders, 404, { error: "У этой группы пока нет старосты в приложении, предложить некому", code: "NO_STAROSTA" });
+          }
+          const res = await submitSuggestion(env, gid, userBlindId, verifiedUser, body, { origin: url.origin });
+          if (!res.ok) return sgJson(corsHeaders, res.status, { error: res.error, code: res.code });
+          const notified = notifyStaff(env, gid, res.item, res.count, { encryptChatId, decryptChatId },
+            { botToken: TELEGRAM_BOT_TOKEN, miniAppUrl: (env && env.MINIAPP_URL) || "https://djaicixlw.github.io/samgtu-schedule/" }).catch(() => {});
+          if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(notified); else await notified;
+          return sgJson(corsHeaders, 200, { ok: true, id: res.id, remaining: res.remaining });
+        }
+
+        if (url.pathname === "/v3/useful/pending" && request.method === "GET") {
+          const gid = (url.searchParams.get("gid") || "").trim().toLowerCase();
+          if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
+          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders);
+          if (gate.response) return gate.response;
+          if (url.searchParams.get("countOnly") === "1") {
+            return sgJson(corsHeaders, 200, { ok: true, count: await getPendingCount(env, gid) });
+          }
+          const items = await listPending(env, gid);
+          return sgJson(corsHeaders, 200, { ok: true, count: items.length, items });
+        }
+
+        if (url.pathname === "/v3/useful/decision" && request.method === "POST") {
+          let body;
+          try { body = await request.json(); } catch { return sgJson(corsHeaders, 400, { error: "Invalid JSON body" }); }
+          const gid = typeof body?.gid === "string" ? body.gid.trim().toLowerCase() : "";
+          if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
+          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders);
+          if (gate.response) return gate.response;
+          const res = await decideSuggestion(env, gid, body.id, body.action);
+          return sgJson(corsHeaders, res.ok ? 200 : (res.status || 400), res.ok ? res : { error: res.error });
+        }
+
+        if (url.pathname === "/v3/notify/subscribe" && request.method === "POST") {
+          if (!userBlindId || !verifiedUser) {
+            return sgJson(corsHeaders, 401, { error: "Откройте приложение из Telegram, чтобы включить уведомления", code: "NO_INITDATA" });
+          }
+          let body;
+          try { body = await request.json(); } catch { return sgJson(corsHeaders, 400, { error: "Invalid JSON body" }); }
+          const gid = typeof body?.gid === "string" ? body.gid.trim().toLowerCase() : "";
+          if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
+          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders);
+          if (gate.response) return gate.response;
+          const res = await setSubscription(env, gid, userBlindId, verifiedUser.id, body.enable !== false, { encryptChatId, decryptChatId });
+          return sgJson(corsHeaders, res.ok ? 200 : (res.status || 400), res.ok ? res : { error: res.error });
+        }
+
+        if (url.pathname === "/v3/notify/status" && request.method === "GET") {
+          const gid = (url.searchParams.get("gid") || "").trim().toLowerCase();
+          if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
+          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders);
+          if (gate.response) return gate.response;
+          return sgJson(corsHeaders, 200, { ok: true, subscribed: userBlindId ? await isSubscribed(env, gid, userBlindId) : false });
         }
 
         // 4. GET /v3/att
@@ -2713,6 +2630,7 @@ export default {
               groupData = {};
             }
           }
+          if (type === 'useful') groupData = sanitizeUsefulGroup(groupData, groupId);
           const responseBody = JSON.stringify({ byGroup: { [groupId]: groupData }, updatedAt: groupData.updatedAt || 0 });
           const etag = `"${await sha256Hex(responseBody)}"`;
           const clientEtag = request.headers.get("If-None-Match");

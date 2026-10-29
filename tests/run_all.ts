@@ -135,6 +135,11 @@ const MANIFEST: Suite[] = [
   { name: 'test_d1_client', load: () => import('./test_d1_client') },
   { name: 'test_bugfix_oct24', load: () => import('./test_bugfix_oct24') },
   { name: 'test_bot_welcome', load: () => import('./test_bot_welcome') },
+
+  // 3 новых сьюта из v4 / предложки Версии Б
+  { name: 'test_official_fixtures', load: () => import('./test_official_fixtures') },
+  { name: 'test_nightly_guards', load: () => import('./test_nightly_guards') },
+  { name: 'test_suggestions_client', load: () => import('./test_suggestions_client') },
 ];
 
 /** Files in tests/ that are not suites (helpers/fixtures/analysis scripts). */

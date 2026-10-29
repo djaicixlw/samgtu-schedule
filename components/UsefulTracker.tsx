@@ -2,8 +2,9 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Pin, Search, Plus, Trash2, Edit3, X, Check,
   ExternalLink, FileText, Paperclip, Bookmark,
-  BookOpen, Filter, Download, ArrowUpRight, Send, GripVertical
+  BookOpen, Filter, Download, ArrowUpRight, Send, GripVertical, Bell, BellOff, Ban
 } from 'lucide-react';
+import { submitSuggestion, fetchPendingSuggestions, decideSuggestion, setNotifications, getNotificationStatus } from '../utils/suggestionsClient';
 import { UsefulItem, UsefulLink, HomeworkAttachment } from '../types';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, getGroupTag } from '../constants';
 import { toast } from 'sonner';
@@ -16,12 +17,6 @@ import {
   fetchUsefulState,
   mergeUsefulState,
   pushGroupUsefulData,
-  checkUsefulSpamLimit,
-  recordUsefulSubmission,
-  submitUsefulSuggestion,
-  fetchPendingSuggestions,
-  resolveSuggestion,
-  setSuggestionNotifications,
   fetchGroupUsefulData
 } from '../utils/usefulStorage';
 import { useCloudSync } from '../utils/useCloudSync';
@@ -69,7 +64,10 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   });
   const itemsRef = useRef<UsefulItem[]>(items);
   const [serverPending, setServerPending] = useState<UsefulItem[]>([]);
-  const [notifyEnabled, setNotifyEnabled] = useState(false);
+  const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
+  const [suggestAnonymously, setSuggestAnonymously] = useState(false);
+  const [notifyOn, setNotifyOn] = useState<boolean | null>(null);
+  const [notifyBusy, setNotifyBusy] = useState(false);
 
   // Filter and search states
   const [activeTagFilter, setActiveTagFilter] = useState<string>('#все');
@@ -110,38 +108,7 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     pushState: (state) => pushGroupUsefulData(currentGroupId, state)
   });
 
-  useEffect(() => {
-    let isMounted = true;
-    if (canEdit) {
-      fetchPendingSuggestions(currentGroupId).then(pending => {
-        if (!isMounted) return;
-        if (pending.ok) {
-          setServerPending(pending.items);
-          setNotifyEnabled(pending.notify);
-        }
-      });
-    } else {
-      setServerPending([]);
-    }
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && canEdit) {
-        fetchPendingSuggestions(currentGroupId).then(pending => {
-          if (!isMounted) return;
-          if (pending.ok) {
-            setServerPending(pending.items);
-            setNotifyEnabled(pending.notify);
-          }
-        });
-      }
-    };
-
-    window.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      isMounted = false;
-      window.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [currentGroupId, refreshTrigger, canEdit]);
 
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -405,25 +372,51 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
 
     const isStudentSuggest = !canEdit;
 
-    // Spam limit: max 10 suggestions per hour for students
+    // A student's suggestion goes to the server queue. Nothing is stored or announced unless the server accepted it
+    // (it used to say "Староста проверит" while the suggestion never left the phone).
     if (isStudentSuggest) {
-      const { allowed } = checkUsefulSpamLimit();
-      if (!allowed) {
-        toast.error('Лимит: не более 10 предложений в час. Пожалуйста, подождите.');
+      if (isSubmittingSuggestion) return;
+      setIsSubmittingSuggestion(true);
+      const res = await submitSuggestion({
+        gid: currentGroupId.toLowerCase(),
+        title: titleTrimmed,
+        text: textTrimmed,
+        subject: formSubject.trim() ? formSubject.trim() : undefined,
+        tags: formTags,
+        links: formLinks,
+        attachments: formAttachments,
+        anonymous: suggestAnonymously
+      });
+      setIsSubmittingSuggestion(false);
+      if (!res.ok) {
+        toast.error(res.error || 'Не удалось отправить предложение');   // the form stays open, the text is not lost
         return;
       }
+      // a local copy lets the student see "На проверке старостой"; it is never pushed to the group list
+      const me = typeof window !== 'undefined' ? (window as any).Telegram?.WebApp?.initDataUnsafe?.user : null;
+      const mine: UsefulItem = {
+        id: res.id || `useful_${Date.now()}`,
+        groupId: currentGroupId.toLowerCase(),
+        title: titleTrimmed,
+        text: textTrimmed,
+        subject: formSubject.trim() ? formSubject.trim() : undefined,
+        tags: formTags,
+        links: formLinks,
+        attachments: formAttachments,
+        createdAt: new Date().toISOString(),
+        isPending: true,
+        submittedBy: me ? { id: typeof me.id === 'number' ? me.id : undefined, username: me.username ? String(me.username) : undefined } : undefined
+      };
+      const withMine = [mine, ...items];
+      setItems(withMine);
+      saveLocalUsefulItems(currentGroupId, withMine);
+      setIsModalOpen(false);
+      toast.success(`Предложение отправлено старосте. Сегодня можно отправить ещё ${res.remaining ?? 0}`);
+      return;
     }
 
     const id = editingItem ? editingItem.id : `useful_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const nowIso = new Date().toISOString();
-
-    const tg = typeof window !== 'undefined' ? (window as any).Telegram?.WebApp : null;
-    const tgUser = tg?.initDataUnsafe?.user;
-    const submittedBy = isStudentSuggest && tgUser ? {
-      id: typeof tgUser.id === 'number' ? tgUser.id : undefined,
-      username: tgUser.username ? String(tgUser.username) : undefined,
-      name: [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ') || undefined
-    } : (editingItem ? editingItem.submittedBy : undefined);
 
     const noteToSave: UsefulItem = {
       id,
@@ -437,8 +430,8 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       attachments: formAttachments,
       createdAt: editingItem ? editingItem.createdAt : nowIso,
       updatedAt: editingItem ? nowIso : undefined,
-      isPending: isStudentSuggest ? true : (editingItem ? editingItem.isPending : undefined),
-      submittedBy
+      isPending: editingItem ? editingItem.isPending : undefined,
+      submittedBy: editingItem ? editingItem.submittedBy : undefined
     };
 
     let updatedList: UsefulItem[];
@@ -456,22 +449,6 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
 
-    setItems(sorted);
-    saveLocalUsefulItems(currentGroupId, sorted);
-    setIsModalOpen(false);
-
-    if (isStudentSuggest) {
-      const sent = await submitUsefulSuggestion(currentGroupId, noteToSave);
-      if (!sent.ok) {
-        toast.error(sent.error || 'Не удалось отправить предложение');
-        return;
-      }
-      recordUsefulSubmission();
-      toast.success('Предложение отправлено старосте');
-      setIsModalOpen(false);
-      return;
-    }
-
     itemsRef.current = sorted;
     setItems(sorted);
     saveLocalUsefulItems(currentGroupId, sorted);
@@ -488,19 +465,26 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   // Moderation: Approve pending student suggestion
   const handleApprovePending = async (id: string) => {
     if (!canEdit) return;
-    if (serverPending.some(it => it.id === id)) {
-      const ok = await resolveSuggestion(currentGroupId, id, 'approve');
-      if (!ok) {
-        toast.error('Не удалось опубликовать материал. Проверьте соединение и повторите.');
+    const fromQueue = serverPending.find(p => p.id === id);
+    if (fromQueue) {
+      const { isPending: _p, submittedBy: _s, ...rest } = fromQueue;
+      const published: UsefulItem = { ...rest, isPending: false, updatedAt: new Date().toISOString() };
+      const updatedList = [published, ...items.filter(it => it.id !== id)].sort((a, b) => {
+        if (Boolean(a.isPinned) !== Boolean(b.isPinned)) return a.isPinned ? -1 : 1;
+        return (b.createdAt || '').localeCompare(a.createdAt || '');
+      });
+      const pushed = await pushGroupUsefulData(currentGroupId, updatedList);
+      if (!pushed) {
+        toast.error('Не удалось опубликовать для группы. Предложение осталось в очереди, попробуйте ещё раз');
         return;
       }
-      setServerPending(prev => prev.filter(it => it.id !== id));
-      const fresh = await fetchGroupUsefulData(currentGroupId);
-      if (fresh.items) {
-        itemsRef.current = fresh.items;
-        setItems(fresh.items);
-      }
-      toast.success('Материал опубликован для группы');
+      setItems(updatedList);
+      saveLocalUsefulItems(currentGroupId, updatedList);
+      await decideSuggestion(currentGroupId.toLowerCase(), id, 'approve');
+      const left = serverPending.filter(p => p.id !== id);
+      setServerPending(left);
+      announcePendingCount(left.length);
+      toast.success('Материал одобрен и опубликован для группы!');
       return;
     }
     const updated = items.map(it => {
@@ -511,23 +495,21 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
       return it;
     });
     setItems(updated);
-    itemsRef.current = updated;
     saveLocalUsefulItems(currentGroupId, updated);
-    toast.success('Материал опубликован для группы');
-    void usefulSync.flushPush();
+    toast.success('Материал одобрен и опубликован для группы!');
+    pushGroupUsefulData(currentGroupId, updated);
   };
 
   // Moderation: Reject pending student suggestion
-  const handleRejectPending = async (id: string) => {
+  const handleRejectPending = async (id: string, block = false) => {
     if (!canEdit) return;
-    if (serverPending.some(it => it.id === id)) {
-      const ok = await resolveSuggestion(currentGroupId, id, 'reject');
-      if (!ok) {
-        toast.error('Не удалось отклонить предложение. Проверьте соединение и повторите.');
-        return;
-      }
-      setServerPending(prev => prev.filter(it => it.id !== id));
-      toast.info('Предложение отклонено');
+    if (serverPendingIds.has(id)) {
+      const res = await decideSuggestion(currentGroupId.toLowerCase(), id, block ? 'block' : 'reject');
+      if (!res.ok) { toast.error(res.error || 'Не удалось выполнить'); return; }
+      const left = serverPending.filter(p => p.id !== id);
+      setServerPending(left);
+      announcePendingCount(left.length);
+      toast.info(block ? 'Предложение отклонено, автор больше не сможет предлагать в этой группе' : 'Предложение отклонено');
       return;
     }
     recordDeletedUsefulItem(currentGroupId, id);
@@ -535,8 +517,17 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     setItems(updated);
     saveLocalUsefulItems(currentGroupId, updated);
     toast.info('Предложение отклонено');
-    itemsRef.current = updated;
-    void usefulSync.flushPush();
+    pushGroupUsefulData(currentGroupId, updated);
+  };
+
+  const handleUnblockAllAuthors = async () => {
+    if (!canEdit) return;
+    const res = await decideSuggestion(currentGroupId.toLowerCase(), '', 'unblock_all');
+    if (!res.ok) {
+      toast.error(res.error || 'Не удалось разблокировать авторов');
+      return;
+    }
+    toast.success('Все заблокированные авторы в этой группе разблокированы');
   };
 
   // Delete note
@@ -598,23 +589,72 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
   const tgUser = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp?.initDataUnsafe?.user) || null;
   const currentUserId = tgUser?.id;
 
-  const pendingItems = useMemo(() => {
-    const local = items.filter(it => it.isPending);
-    const known = new Set(local.map(it => it.id));
-    return [...serverPending.filter(it => !known.has(it.id)), ...local];
-  }, [items, serverPending]);
+  itemsRef.current = items;
+  const pendingItems = useMemo(
+    () => (canEdit ? [...serverPending, ...items.filter(it => it.isPending)] : items.filter(it => it.isPending)),
+    [items, serverPending, canEdit]
+  );
+  const serverPendingIds = useMemo(() => new Set(serverPending.map(i => i.id)), [serverPending]);
+
+  const announcePendingCount = (n: number) => {
+    try { window.dispatchEvent(new CustomEvent('samgtu:suggestions-changed', { detail: { count: n } })); } catch {}
+  };
+
+  // Staff: load the queue now, and again whenever the app comes back to the foreground
+  useEffect(() => {
+    if (!canEdit || !currentGroupId) { setServerPending([]); return; }
+    let alive = true;
+    const load = async () => {
+      const res = await fetchPendingSuggestions(currentGroupId.toLowerCase());
+      if (!alive || !res.ok) return;
+      // already published (an earlier approval was interrupted before the queue was told): finish it quietly
+      const publishedIds = new Set(itemsRef.current.filter(i => !i.isPending).map(i => i.id));
+      const fresh: UsefulItem[] = [];
+      for (const it of res.items) {
+        if (publishedIds.has(it.id)) decideSuggestion(currentGroupId.toLowerCase(), it.id, 'approve');
+        else fresh.push(it);
+      }
+      setServerPending(fresh);
+      announcePendingCount(fresh.length);
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    load();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { alive = false; document.removeEventListener('visibilitychange', onVisible); };
+  }, [canEdit, currentGroupId, refreshTrigger]);
+
+  // Staff: is the Telegram notification switched on?
+  useEffect(() => {
+    if (!canEdit || !currentGroupId) { setNotifyOn(null); return; }
+    let alive = true;
+    getNotificationStatus(currentGroupId.toLowerCase()).then(r => { if (alive) setNotifyOn(r.ok ? r.subscribed : null); });
+    return () => { alive = false; };
+  }, [canEdit, currentGroupId]);
 
   const handleToggleNotify = async () => {
-    const next = !notifyEnabled;
-    const res = await setSuggestionNotifications(currentGroupId, next);
-    if (!res.ok) {
-      toast.error(res.error || 'Не удалось изменить настройку');
-      return;
+    if (notifyBusy) return;
+    setNotifyBusy(true);
+    try {
+      const want = !notifyOn;
+      if (want) {
+        // the bot may only write to a user who allowed it
+        const tgApp = typeof window !== 'undefined' ? (window as any).Telegram?.WebApp : null;
+        const supported = tgApp && typeof tgApp.requestWriteAccess === 'function' && (!tgApp.isVersionAtLeast || tgApp.isVersionAtLeast('6.9'));
+        if (supported) {
+          const allowed: boolean = await new Promise<boolean>(resolve => {
+            const t = setTimeout(() => resolve(true), 15000);
+            try { tgApp.requestWriteAccess((ok: boolean) => { clearTimeout(t); resolve(Boolean(ok)); }); } catch { clearTimeout(t); resolve(true); }
+          });
+          if (!allowed) { toast.error('Без разрешения боту писать вам, уведомления не придут'); return; }
+        }
+      }
+      const res = await setNotifications(currentGroupId.toLowerCase(), want);
+      if (!res.ok) { toast.error(res.error || 'Не удалось изменить уведомления'); return; }
+      setNotifyOn(Boolean(res.subscribed));
+      toast.success(want ? 'Буду писать вам в Telegram о новых предложениях' : 'Уведомления выключены');
+    } finally {
+      setNotifyBusy(false);
     }
-    setNotifyEnabled(next);
-    toast.success(next
-      ? 'Уведомления включены. Если сообщений нет, откройте чат с ботом и нажмите Start'
-      : 'Уведомления о предложениях выключены');
   };
 
   // Filtered and sorted items
@@ -694,20 +734,28 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
         )}
       </div>
 
-      {canEdit && (
-        <div className="flex items-center justify-between gap-3 px-1">
-          <span className="text-[11px] leading-snug text-slate-500 dark:text-slate-400">
-            Предложения студентов приходят в эту вкладку{notifyEnabled ? ' и в Telegram' : ''}
-          </span>
+      {canEdit && notifyOn !== null && (
+        <div className="flex flex-wrap items-center gap-2">
           <button
+            type="button"
             onClick={handleToggleNotify}
-            className={`shrink-0 px-3 py-1.5 rounded-xl text-[11px] font-bold border transition-colors ${
-              notifyEnabled
-                ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
-                : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-            }`}
+            disabled={notifyBusy}
+            className="flex-1 min-w-[220px] flex items-center justify-between gap-2 px-4 py-2.5 bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer"
           >
-            {notifyEnabled ? 'Telegram: вкл' : 'Telegram: выкл'}
+            <span className="flex items-center gap-2">
+              {notifyOn ? <Bell className="w-4 h-4 text-emerald-500" /> : <BellOff className="w-4 h-4 text-slate-400" />}
+              {notifyOn ? 'Уведомления о предложениях включены' : 'Уведомлять в Telegram о предложениях студентов'}
+            </span>
+            <span className="text-[11px] text-indigo-600 dark:text-indigo-400">{notifyOn ? 'Выключить' : 'Включить'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleUnblockAllAuthors}
+            className="shrink-0 flex items-center gap-1.5 px-3.5 py-2.5 bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-2xl text-xs font-semibold text-slate-600 dark:text-slate-300 cursor-pointer"
+            title="Снять блокировку со всех заблокированных авторов в группе"
+          >
+            <Ban className="w-3.5 h-3.5 text-slate-400" />
+            <span>Разблокировать авторов</span>
           </button>
         </div>
       )}
@@ -853,6 +901,15 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                   >
                     <X className="w-3.5 h-3.5" /> Отклонить
                   </button>
+                  {serverPendingIds.has(item.id) && (
+                    <button
+                      type="button"
+                      onClick={() => handleRejectPending(item.id, true)}
+                      className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+                    >
+                      <Ban className="w-3.5 h-3.5" /> Заблокировать автора
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => handleApprovePending(item.id)}
@@ -1324,6 +1381,21 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                 </div>
               )}
 
+              {!canEdit && !editingItem && (
+                <label className="flex items-start gap-2 text-[11px] leading-snug text-slate-600 dark:text-slate-400 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={!suggestAnonymously}
+                    onChange={e => setSuggestAnonymously(!e.target.checked)}
+                    className="mt-0.5 rounded"
+                  />
+                  <span>
+                    Показать старосте мой ник. Без галочки предложение придёт анонимно, но староста сможет заблокировать автора.
+                    Предложение видит только староста, пока не одобрит его.
+                  </span>
+                </label>
+              )}
+
               {/* Modal Actions */}
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
                 <button
@@ -1335,10 +1407,10 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={isUploading}
+                  disabled={isUploading || isSubmittingSuggestion}
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
                 >
-                  {editingItem ? 'Сохранить изменения' : canEdit ? 'Создать заметку' : 'Отправить на проверку'}
+                  {isSubmittingSuggestion ? 'Отправляем...' : editingItem ? 'Сохранить изменения' : canEdit ? 'Создать заметку' : 'Отправить на проверку'}
                 </button>
               </div>
             </form>

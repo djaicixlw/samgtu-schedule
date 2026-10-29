@@ -4,14 +4,28 @@ import https from 'https';
 import { fileURLToPath } from 'url';
 import { SAMGTU_GROUP_MAP } from '../utils/samgtuGroupMap';
 import { SCHEDULE_REGISTRY } from '../constants';
+import { blockWindow } from '../utils/officialSchedule';
+import { loadSemesterConfig, samaraISO } from '../utils/samaraDate';
 import { Lesson, DaySchedule } from '../types';
-import { officialWeeksForCycle } from '../utils/officialWeeks';
-import { getSemesterConfig, samaraISO } from '../utils/samaraDate';
 import { TIME_SLOTS, DAY_NAMES, DAY_CODES, GROUP_ID_PREFIXES, parseCellName, findExistingTeacher, serializeGroupSchedule, serializeIngt310InsideRegistry } from './sync_official_schedule';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const CONSTANTS_PATH = path.resolve(__dirname, '../constants.ts');
+
+// Pause between portal requests (tests set 0).
+const SYNC_DELAY_MS = Number(process.env.SYNC_REQUEST_DELAY_MS ?? 80);
+
+/** Thresholds of the write guards. A group is never rewritten from data that looks truncated. */
+export const MIN_KEPT_SHARE = 0.6;
+export const MIN_EXISTING_FOR_SHRINK_CHECK = 20;
+
+export interface SyncResult {
+  diffs: Record<string, GroupDiff>;
+  /** groupId -> why the group was left untouched (incomplete portal data, suspicious shrink, ...) */
+  skipped: Record<string, string>;
+  applied: boolean;
+}
 
 export async function fetchJson(url: string, timeoutMs = 10000, retries = 3, delayMs = 300): Promise<any> {
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -111,7 +125,7 @@ export async function sendTelegramNotification(messageText: string): Promise<boo
 /**
  * Main nightly audit & sync routine.
  */
-export async function runNightlySync() {
+export async function runNightlySync(): Promise<SyncResult> {
   const isDryRun = process.argv.includes('--dry-run');
   const isAutoApply = !isDryRun && (process.argv.includes('--apply') || process.env.AUTO_APPLY === 'true');
 
@@ -121,8 +135,21 @@ export async function runNightlySync() {
   console.log('================================================================\n');
 
   const allDiffs: Record<string, GroupDiff> = {};
+  const skipped: Record<string, string> = {};
+
+  // The portal publishes a new set of subjects every block (4 weeks); the app's 4-week cycle is built from the
+  // portal weeks of the CURRENT block (e.g. weeks 9..12 for block 3), not from fixed weeks 1..8.
+  const semester = loadSemesterConfig();
+  const todayISO = process.env.SYNC_TODAY || samaraISO();
+  const window = blockWindow(todayISO, semester);
+  const schedulesDirForMeta = path.resolve(__dirname, '../public/schedules');
+  const metaPath = path.join(schedulesDirForMeta, '_sync-state.txt'); // not *.json: loaders read every *.json in this folder as a schedule
+  let previousWindowStart: number | null = null;
+  try { previousWindowStart = JSON.parse(fs.readFileSync(metaPath, 'utf8')).windowStart ?? null; } catch {}
+  const blockChanged = previousWindowStart !== null && previousWindowStart !== window.start;
+  console.log(`📅 Сегодня ${todayISO}: блок ${window.blockId ?? '?'}, недели портала ${window.weeks.join(', ')}` +
+    (blockChanged ? ` (НОВЫЙ БЛОК: расписание было с недели ${previousWindowStart})` : ''));
   const updatedSchedules: Record<string, Record<number, DaySchedule[]>> = {};
-  const weekDecisionsByGroup: Record<string, Record<number, WeekWriteDecision>> = {};
   let totalParsedLessonsAcrossAll = 0;
 
   for (const [groupId, conf] of Object.entries(SAMGTU_GROUP_MAP)) {
@@ -143,39 +170,31 @@ export async function runNightlySync() {
       changed: []
     };
 
-    const rawOfficialWeeksEarly: Record<number, any> = {};
-    const rawOfficialWeeksLate: Record<number, any> = {};
+    const groupWeeks: Record<number, DaySchedule[]> = {};
+    const rawOfficialWeeks: Record<number, any> = {};
     let fetchErrorOccurred = false;
 
-    // "Late" = the portal weeks valid NOW (current week + next three, one per cycle position), "Early" = the same
-    // positions one cycle earlier (fallback). This used to be the fixed weeks 5..8 / 1..4, which stop describing the
-    // current schedule as soon as the semester moves on.
-    const windowWeeks = officialWeeksForCycle(samaraISO(new Date()), getSemesterConfig().semesterStart);
-    for (let w = 1; w <= 4; w++) {
-      const lateWeek = windowWeeks[w as 1 | 2 | 3 | 4];
-      const earlyWeek = lateWeek - 4;
-      const urlEarly = earlyWeek >= 1 ? `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${earlyWeek}` : null;
-      const urlLate = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${lateWeek}`;
+    for (const portalWeek of window.weeks) {
+      const url = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${portalWeek}`;
       try {
-        const resEarly = urlEarly ? await fetchJson(urlEarly) : null;
-        await new Promise(r => setTimeout(r, 80));
-        const resLate = await fetchJson(urlLate);
-        await new Promise(r => setTimeout(r, 80));
-
-        if (resEarly && typeof resEarly === 'object' && resEarly.wd) {
-          rawOfficialWeeksEarly[w] = resEarly;
-        }
-        if (resLate && typeof resLate === 'object' && resLate.wd) {
-          rawOfficialWeeksLate[w] = resLate;
+        const res = await fetchJson(url);
+        await new Promise(r => setTimeout(r, SYNC_DELAY_MS));
+        if (res && typeof res === 'object' && res.wd) {
+          rawOfficialWeeks[portalWeek] = res;
         }
       } catch (err: any) {
         fetchErrorOccurred = true;
-        console.warn(`  ⚠️ Не удалось загрузить неделю ${w} для ${conf.name}: ${err.message}`);
+        console.warn(`  ⚠️ Не удалось загрузить неделю ${portalWeek} для ${conf.name}: ${err.message}`);
       }
     }
 
-    if (fetchErrorOccurred && Object.keys(rawOfficialWeeksEarly).length === 0 && Object.keys(rawOfficialWeeksLate).length === 0) {
-      console.warn(`  🛡️ [Защита] Сетевая ошибка или неполные данные API для группы ${conf.name}. Локальное расписание защищено от затирания.`);
+    // All 4 weeks of the block must be present: with a missing week the cycle would silently be built from
+    // nothing, and the result would be committed and deployed.
+    const missingWeeks = window.weeks.filter(pw => !rawOfficialWeeks[pw]);
+    if (missingWeeks.length > 0) {
+      const reason = `нет данных портала за недели ${missingWeeks.join(', ')}${fetchErrorOccurred ? ' (сетевая ошибка)' : ''}`;
+      console.warn(`  🛡️ [Защита] ${conf.name}: ${reason}. Локальное расписание не тронуто.`);
+      skipped[groupId] = reason;
       continue;
     }
 
@@ -200,31 +219,73 @@ export async function runNightlySync() {
       existingTotalLessons += existingWeek.reduce((acc, d) => acc + (d.lessons?.length || 0), 0);
     }
 
-    // AUD-033: week building extracted into buildOfficialWeeks() so the
-    // mock-source test can exercise the exact production path.
-    const built = buildOfficialWeeks({
-      rawEarly: rawOfficialWeeksEarly,
-      rawLate: rawOfficialWeeksLate,
-      prefix,
-      groupId,
-      existingGroupSchedule
-    });
-    const groupParsedLessons = built.parsedLessons;
-    let groupWeeks = built.weeks;
+    let groupParsedLessons = 0;
 
-    // AUD-033: per-week guard — a PARTIAL API failure (one week empty/lost
-    // while others parsed fine) used to be written as an empty week over the
-    // existing non-empty week. Now every week is decided individually.
-    const guarded = applyPerWeekGuards(groupWeeks, existingGroupSchedule);
-    groupWeeks = guarded.weeks;
-    const weekDecisions = guarded.decisions;
-    for (const warning of guarded.warnings) {
-      console.warn(warning);
+    for (let w = 1; w <= 4; w++) {
+      const weekDays: DaySchedule[] = [];
+
+      for (let dayIdx = 1; dayIdx <= 6; dayIdx++) {
+        const dayName = DAY_NAMES[dayIdx - 1];
+        const dayCode = DAY_CODES[dayIdx - 1];
+
+        const hasCells = (d: any) => d?.at && Object.values(d.at as Record<string, any>).some((s: any) => s.Cells && s.Cells.length > 0);
+        let offDay = rawOfficialWeeks[window.start + w - 1]?.wd?.[String(dayIdx)];
+
+        // First block only: Monday 31 August has 0 pairs on the portal, take the Monday of cycle week 3
+        if (window.start === 1 && w === 1 && dayIdx === 1 && !hasCells(offDay)) {
+          offDay = rawOfficialWeeks[window.start + 2]?.wd?.['1'];
+        }
+
+        const offLessons: Lesson[] = [];
+
+        if (offDay && offDay.at) {
+          const sortedSlots = Object.entries(offDay.at as Record<string, any>)
+            .map(([slotKey, slotData]) => ({ slotKey: Number(slotKey), slotData }))
+            .sort((a, b) => a.slotKey - b.slotKey);
+
+          let lessonCounter = 1;
+          for (const { slotKey, slotData } of sortedSlots) {
+            if (!TIME_SLOTS[String(slotKey)]) continue; // строго звонки 1..6 (без 7-й пары)
+            if (slotData.Cells && slotData.Cells.length > 0) {
+              for (const cell of slotData.Cells) {
+                const parsed = parseCellName(cell.CellName);
+                const times = TIME_SLOTS[String(slotKey)];
+                const existingWeek = existingGroupSchedule[w] || [];
+                const teacher = findExistingTeacher(groupId, parsed.subject, parsed.type, existingWeek);
+
+                offLessons.push({
+                  id: `${prefix}-w${w}-${dayCode}-${lessonCounter}`,
+                  timeStart: times.timeStart,
+                  timeEnd: times.timeEnd,
+                  subject: parsed.subject,
+                  type: parsed.type,
+                  location: parsed.location,
+                  teacher
+                });
+                lessonCounter++;
+              }
+            }
+          }
+        }
+
+        groupParsedLessons += offLessons.length;
+        weekDays.push({ dayName, lessons: offLessons });
+      }
+
+      groupWeeks[w] = weekDays;
     }
 
     // Safety guard: if official API returned 0 lessons while existing schedule has lessons, do not wipe
     if (groupParsedLessons === 0 && existingTotalLessons > 0) {
       console.warn(`  🛡️ [Защита] API вернул 0 пар для группы ${conf.name}, но в локальном расписании ${existingTotalLessons} пар. Защита от затирания активирована, локальное расписание сохранено.`);
+      skipped[groupId] = `портал вернул 0 пар вместо ${existingTotalLessons}`;
+      continue;
+    }
+
+    if (!blockChanged && existingTotalLessons >= MIN_EXISTING_FOR_SHRINK_CHECK && groupParsedLessons < existingTotalLessons * MIN_KEPT_SHARE) {
+      const reason = `портал вернул ${groupParsedLessons} пар вместо ${existingTotalLessons} (меньше ${Math.round(MIN_KEPT_SHARE * 100)}%)`;
+      console.warn(`  🛡️ [Защита] ${conf.name}: ${reason}. Похоже на неполные данные, расписание не тронуто.`);
+      skipped[groupId] = reason;
       continue;
     }
 
@@ -266,7 +327,6 @@ export async function runNightlySync() {
     }
 
     updatedSchedules[groupId] = groupWeeks;
-    weekDecisionsByGroup[groupId] = weekDecisions;
 
     const totalGroupDiffs = groupDiff.added.length + groupDiff.removed.length + groupDiff.changed.length;
     if (totalGroupDiffs > 0) {
@@ -283,9 +343,18 @@ export async function runNightlySync() {
   console.log(`ИТОГИ СВЕРКИ: ${groupsWithChanges.length} из ${Object.keys(SAMGTU_GROUP_MAP).length} групп имеют изменения.`);
   console.log('================================================================');
 
+  const skippedNote = Object.keys(skipped).length > 0
+    ? `\n⚠️ <b>Пропущены группы (${Object.keys(skipped).length}):</b>\n` + Object.entries(skipped).map(([g, why]) => `  • ${SAMGTU_GROUP_MAP[g]?.name || g}: ${why}`).join('\n') + '\n'
+    : '';
+
   if (groupsWithChanges.length === 0) {
-    console.log('✨ Изменений не обнаружено. Все расписания актуальны. Уведомление в Telegram не требуется (тихий режим).');
-    return;
+    if (skippedNote) {
+      console.log('⚠️ Изменений нет, но часть групп пропущена защитой:' + skippedNote.replace(/<[^>]+>/g, ''));
+      await sendTelegramNotification(`🔔 <b>Автосверка расписания СамГТУ</b>\n${skippedNote}`);
+    } else {
+      console.log('✨ Изменений не обнаружено. Все расписания актуальны. Уведомление в Telegram не требуется (тихий режим).');
+    }
+    return { diffs: allDiffs, skipped, applied: false };
   }
 
   // Format Telegram Alert
@@ -320,32 +389,49 @@ export async function runNightlySync() {
     console.error(`🚨 СРАБОТАЛ CIRCUIT BREAKER: Спарсено всего ${totalParsedLessonsAcrossAll} пар. Запись отменена.`);
     msg += `⚠️ <i>Внимание: Автообновление заблокировано защитным порогом безопасности (<50 пар). Требуется ручная проверка.</i>`;
     await sendTelegramNotification(msg);
-    return;
+    return { diffs: allDiffs, skipped, applied: false };
   }
 
+  msg += skippedNote;
+
+  let applied = false;
   if (isAutoApply) {
     console.log(`\nПрименяю обновления в ${CONSTANTS_PATH}...`);
     let fileContent = fs.readFileSync(CONSTANTS_PATH, 'utf-8');
+    const applyErrors: string[] = [];
 
     // Update ingt-310 inside SCHEDULE_REGISTRY export
     if (updatedSchedules['ingt-310']) {
       const ingt310Serialized = serializeIngt310InsideRegistry(updatedSchedules['ingt-310']);
-      fileContent = fileContent.replace(
-        /\s*'ingt-310':\s*\{[^]*?\n\s{2}\}/,
-        `\n\n${ingt310Serialized}`
-      );
+      const ingt310Regex = /\s*'ingt-310':\s*\{[^]*?\n\s{2}\}/;
+      if (ingt310Regex.test(fileContent)) {
+        fileContent = fileContent.replace(ingt310Regex, `\n\n${ingt310Serialized}`);
+      } else {
+        applyErrors.push('ingt-310');
+      }
     }
 
     // Update other groups (faid-310, ingt-311, ingt-301, ingt-303, ingt-209, htf-215)
     const otherGroups = ['faid-310', 'ingt-311', 'ingt-301', 'ingt-303', 'ingt-209', 'htf-215'];
     for (const gid of otherGroups) {
-      if (updatedSchedules[gid] && groupHasChangedWeek(gid, weekDecisionsByGroup)) {
+      if (updatedSchedules[gid]) {
         const serialized = serializeGroupSchedule(gid, updatedSchedules[gid]);
         const regex = new RegExp(`SCHEDULE_REGISTRY\\['${gid}'\\]\\s*=\\s*\\{[\\s\\S]*?\\n\\};`, 'm');
         if (regex.test(fileContent)) {
           fileContent = fileContent.replace(regex, serialized);
+        } else {
+          applyErrors.push(gid);
         }
       }
+    }
+
+    if (applyErrors.length > 0) {
+      // constants.ts and public/schedules/*.json must never diverge: write nothing and say so loudly.
+      console.error(`🚨 Не найден блок расписания в constants.ts для: ${applyErrors.join(', ')}. Запись отменена, файлы не изменены.`);
+      msg += `🚨 <b>Автообновление отменено:</b> в constants.ts не найден блок для ${applyErrors.join(', ')}. Формат файла изменился, нужна ручная проверка.`;
+      await sendTelegramNotification(msg);
+      process.exitCode = 1;
+      return { diffs: allDiffs, skipped, applied: false };
     }
 
     fs.writeFileSync(CONSTANTS_PATH, fileContent, 'utf-8');
@@ -356,13 +442,17 @@ export async function runNightlySync() {
     if (!fs.existsSync(schedulesDir)) {
       fs.mkdirSync(schedulesDir, { recursive: true });
     }
-    let writtenChunks = 0;
-    for (const [gid, sched] of Object.entries(updatedSchedules)) {
-      // AUD-033: full chunk write only when at least one week REALLY changed.
-      if (!groupHasChangedWeek(gid, weekDecisionsByGroup)) {
-        console.log(`  ↷ ${gid}.json: недели без изменений, файл не перезаписывался.`);
-        continue;
+    if (blockChanged) {
+      // keep the previous block's template: past attendance must still be readable against it
+      const archiveDir = path.join(schedulesDir, 'archive', `block-from-week-${previousWindowStart}`);
+      fs.mkdirSync(archiveDir, { recursive: true });
+      for (const file of fs.readdirSync(schedulesDir)) {
+        if (file.endsWith('.json')) {
+          fs.copyFileSync(path.join(schedulesDir, file), path.join(archiveDir, file));
+        }
       }
+    }
+    for (const [gid, sched] of Object.entries(updatedSchedules)) {
       const hasAnyLessons = Object.values(sched).some(w => Array.isArray(w) && w.some(d => Array.isArray(d.lessons) && d.lessons.length > 0));
       if (!hasAnyLessons) {
         console.warn(`  🛡️ [Защита] Пропуск записи ${gid}.json: пустое расписание!`);
@@ -370,11 +460,14 @@ export async function runNightlySync() {
       }
       const jsonPath = path.join(schedulesDir, `${gid}.json`);
       fs.writeFileSync(jsonPath, JSON.stringify(sched, null, 2), 'utf-8');
-      writtenChunks++;
     }
-    console.log(`✅ public/schedules/*.json (${writtenChunks} из ${Object.keys(updatedSchedules).length} файлов обновлены — только реально изменившиеся).`);
+    if (Object.keys(skipped).length === 0) {
+      fs.writeFileSync(metaPath, JSON.stringify({ windowStart: window.start, blockId: window.blockId ?? null, updatedAt: todayISO }, null, 2) + '\n', 'utf-8');
+    }
+    console.log(`✅ public/schedules/*.json (${Object.keys(updatedSchedules).length} файлов) успешно обновлены!`);
 
     msg += `✅ <b>Расписание в приложении успешно обновлено.</b>`;
+    applied = true;
   } else {
     msg += `ℹ️ <i>Режим аудита (без автоприменения). Для применения запустите с флагом --apply</i>`;
   }
@@ -383,11 +476,8 @@ export async function runNightlySync() {
 
   // Send the Telegram alert
   await sendTelegramNotification(msg);
+  return { diffs: allDiffs, skipped, applied };
 }
-
-// ---------------------------------------------------------------------------
-// AUD-033: per-week write guards (exported for the mock-source test suite).
-// ---------------------------------------------------------------------------
 
 /** Total parsed lessons in one week (array of DaySchedule). */
 export function countWeekLessons(week?: DaySchedule[]): number {
