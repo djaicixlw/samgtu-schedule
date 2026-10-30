@@ -411,16 +411,14 @@ export async function runNightlySync(): Promise<SyncResult> {
       }
     }
 
-    // Update other groups (faid-310, ingt-311, ingt-301, ingt-303, ingt-209, htf-215)
+    // Update other groups if they exist in constants.ts (in v3 on-demand architecture all non-default groups live in public/schedules/*.json)
     const otherGroups = ['faid-310', 'ingt-311', 'ingt-301', 'ingt-303', 'ingt-209', 'htf-215'];
     for (const gid of otherGroups) {
       if (updatedSchedules[gid]) {
-        const serialized = serializeGroupSchedule(gid, updatedSchedules[gid]);
         const regex = new RegExp(`SCHEDULE_REGISTRY\\['${gid}'\\]\\s*=\\s*\\{[\\s\\S]*?\\n\\};`, 'm');
         if (regex.test(fileContent)) {
+          const serialized = serializeGroupSchedule(gid, updatedSchedules[gid]);
           fileContent = fileContent.replace(regex, serialized);
-        } else {
-          applyErrors.push(gid);
         }
       }
     }

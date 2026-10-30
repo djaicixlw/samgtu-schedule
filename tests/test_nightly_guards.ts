@@ -67,9 +67,9 @@ const realGet = (https as any).get;
 };
 
 const realLog = console.log, realWarn = console.warn, realErr = console.error, realArgv = process.argv, realExit = process.exitCode;
-async function sync() {
+async function sync(args = ['node', 'nightly_sync.ts', '--dry-run']) {
   console.log = () => {}; console.warn = () => {}; console.error = () => {};
-  process.argv = ['node', 'nightly_sync.ts', '--dry-run'];
+  process.argv = args;
   try {
     const mod = await import('../scripts/nightly_sync');
     return await mod.runNightlySync();
@@ -136,6 +136,36 @@ console.log('\n5. A new block: today is in block 3 (portal weeks 9..12)');
   r = await sync();
   assert(Boolean(r.skipped['ingt-310']), 'but a completely empty answer is still refused');
   process.env.SYNC_TODAY = '2026-10-20';
+}
+
+console.log('\n6. Auto-apply mode (--apply) handles on-demand architecture without errors');
+{
+  const constantsPath = path.join(ROOT, 'constants.ts');
+  const originalConstants = fs.readFileSync(constantsPath, 'utf-8');
+  const schedulesDir = path.join(ROOT, 'public/schedules');
+  const originalFiles: Record<string, string> = {};
+  for (const f of fs.readdirSync(schedulesDir)) {
+    const p = path.join(schedulesDir, f);
+    if (fs.statSync(p).isFile()) originalFiles[f] = fs.readFileSync(p, 'utf-8');
+  }
+
+  provider = (g, w) => officialWeek(shipped[g], w, g === 'ingt-310' ? (n, day, ls) => (n === 6 && day === 'Среда' && ls.length ? [{ ...ls[0], location: 'Корпус № 9, 999' }, ...ls.slice(1)] : ls) : undefined);
+  try {
+    const r = await sync(['node', 'nightly_sync.ts', '--apply']);
+    assert(r.applied === true, '--apply successfully applies changes when changes exist');
+    assert(Boolean(r.diffs['ingt-310']), 'ingt-310 change was detected and applied');
+    assert(Object.keys(r.skipped).length === 0, 'no groups skipped during apply');
+  } finally {
+    fs.writeFileSync(constantsPath, originalConstants, 'utf-8');
+    for (const [f, content] of Object.entries(originalFiles)) {
+      fs.writeFileSync(path.join(schedulesDir, f), content, 'utf-8');
+    }
+    provider = (g, w) => officialWeek(shipped[g], w);
+  }
+}
+
+if (originalSyncState !== null) {
+  fs.writeFileSync(syncStatePath, originalSyncState, 'utf-8');
 }
 
 (https as any).get = realGet;
