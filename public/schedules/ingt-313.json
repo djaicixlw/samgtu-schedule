@@ -295,44 +295,7 @@
     },
     {
       "dayName": "Среда",
-      "lessons": [
-        {
-          "id": "ingt-313-w2-we-1",
-          "timeStart": "09:45",
-          "timeEnd": "11:20",
-          "subject": "Биохимия микроорганизмов",
-          "type": "Лекции",
-          "location": "Корпус № 2, 29",
-          "teacher": ""
-        },
-        {
-          "id": "ingt-313-w2-we-2",
-          "timeStart": "11:50",
-          "timeEnd": "13:25",
-          "subject": "Биохимия микроорганизмов",
-          "type": "Лекции",
-          "location": "Корпус № 2, 29",
-          "teacher": ""
-        },
-        {
-          "id": "ingt-313-w2-we-3",
-          "timeStart": "13:35",
-          "timeEnd": "15:10",
-          "subject": "Промышленная экология",
-          "type": "Лекции",
-          "location": "Корпус № 2, 30",
-          "teacher": ""
-        },
-        {
-          "id": "ingt-313-w2-we-4",
-          "timeStart": "15:40",
-          "timeEnd": "17:15",
-          "subject": "Процессы и аппараты защиты окружающей среды",
-          "type": "Лекции",
-          "location": "Корпус № 1, 116",
-          "teacher": ""
-        }
-      ]
+      "lessons": []
     },
     {
       "dayName": "Четверг",
