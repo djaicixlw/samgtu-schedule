@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 const CONSTANTS_PATH = path.resolve(__dirname, '../constants.ts');
 
 // Pause between portal requests (tests set 0).
-const SYNC_DELAY_MS = Number(process.env.SYNC_REQUEST_DELAY_MS ?? 80);
+export const getSyncDelayMs = (): number => Number(process.env.SYNC_REQUEST_DELAY_MS ?? 80);
 
 /** Thresholds of the write guards. A group is never rewritten from data that looks truncated. */
 export const MIN_KEPT_SHARE = 0.6;
@@ -178,7 +178,10 @@ export async function runNightlySync(): Promise<SyncResult> {
       const url = `https://samgtu.ru/students/getschedule?GroupID=${conf.samgtuGroupId}&WeekNumber=${portalWeek}`;
       try {
         const res = await fetchJson(url);
-        await new Promise(r => setTimeout(r, SYNC_DELAY_MS));
+        const delayMs = getSyncDelayMs();
+        if (delayMs > 0) {
+          await new Promise(r => setTimeout(r, delayMs));
+        }
         if (res && typeof res === 'object' && res.wd) {
           rawOfficialWeeks[portalWeek] = res;
         }

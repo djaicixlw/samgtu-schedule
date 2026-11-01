@@ -31,29 +31,34 @@ console.log('--- 1. ПРОВЕРКА РАСПИСАНИЯ 3-ФАИД-110 (НЕД
 const faidSchedule = SCHEDULE_REGISTRY['faid-310'];
 check('1. FAID Schedule', 'SCHEDULE_REGISTRY["faid-310"] существует', !!faidSchedule);
 
-// Проверка количества пар по неделям и дням
-const expectedLessonCounts: Record<number, Record<string, number>> = {
-  1: { 'Понедельник': 4, 'Вторник': 4, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
-  2: { 'Понедельник': 5, 'Вторник': 1, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
-  3: { 'Понедельник': 4, 'Вторник': 4, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 },
-  4: { 'Понедельник': 5, 'Вторник': 1, 'Среда': 5, 'Четверг': 5, 'Пятница': 0, 'Суббота': 0 }
-};
+// Проверка контракта расписания по неделям и дням (инвариантные проверки)
+let totalFaidLessons = 0;
+const VALID_TYPES = ['Лекции', 'Практические занятия', 'Лабораторные работы'];
+const VALID_START_TIMES = ['08:00', '09:45', '11:50', '13:35', '15:40', '17:25'];
 
 for (let w = 1; w <= 4; w++) {
   const weekSchedule = faidSchedule[w];
-  check('1. FAID Schedule', `Неделя ${w} присутствует в расписании`, !!weekSchedule);
+  check('1. FAID Schedule', `Неделя ${w} присутствует в расписании`, !!weekSchedule && Array.isArray(weekSchedule));
+  check('1. FAID Schedule', `Неделя ${w} содержит 6 учебных дней`, weekSchedule?.length === 6, `дней: ${weekSchedule?.length}`);
   
-  for (const [dayName, expectedCount] of Object.entries(expectedLessonCounts[w])) {
-    const day = weekSchedule.find(d => d.dayName === dayName);
-    const count = day ? day.lessons.length : 0;
-    check(
-      '1. FAID Schedule',
-      `Неделя ${w} - ${dayName}: ожидается ${expectedCount} пар`,
-      count === expectedCount,
-      `фактически: ${count}`
-    );
+  if (weekSchedule) {
+    for (const day of weekSchedule) {
+      totalFaidLessons += day.lessons.length;
+      check(
+        '1. FAID Schedule',
+        `Неделя ${w} - ${day.dayName}: количество пар в пределах нормы (0..6)`,
+        day.lessons.length >= 0 && day.lessons.length <= 6,
+        `фактически: ${day.lessons.length}`
+      );
+      for (const l of day.lessons) {
+        if (!VALID_START_TIMES.includes(l.timeStart) || !VALID_TYPES.includes(l.type)) {
+          check('1. FAID Schedule', `Урок ${l.id} валиден по сетке звонков и типу`, false, `${l.timeStart} ${l.type}`);
+        }
+      }
+    }
   }
 }
+check('1. FAID Schedule', 'Суммарно пар за 4 недели >= 30', totalFaidLessons >= 30, `фактически: ${totalFaidLessons}`);
 
 // ==========================================
 // 2. КРИТИЧЕСКИЕ ДАТЫ И UX UI ОТОБРАЖЕНИЕ

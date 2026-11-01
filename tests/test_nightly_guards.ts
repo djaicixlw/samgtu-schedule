@@ -4,8 +4,12 @@
  * was committed and deployed.
  */
 process.env.SYNC_REQUEST_DELAY_MS = '0';
-// 20 October is block 2 (portal weeks 5..8), the same window the shipped data was built from (public/schedules/_sync-state.txt)
 process.env.SYNC_TODAY = '2026-10-20';
+delete process.env.TELEGRAM_BOT_TOKEN;
+delete process.env.DEV_CHAT_ID;
+delete process.env.TELEGRAM_DEV_CHAT_ID;
+delete process.env.TELEGRAM_CHANNEL_ID;
+
 import https from 'https';
 import { EventEmitter } from 'events';
 import fs from 'fs';
@@ -20,9 +24,22 @@ function assert(cond: boolean, msg: string) {
 }
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const syncStatePath = path.join(ROOT, 'public/schedules/_sync-state.txt');
-const originalSyncState = fs.existsSync(syncStatePath) ? fs.readFileSync(syncStatePath, 'utf-8') : null;
-fs.writeFileSync(syncStatePath, JSON.stringify({ windowStart: 5, blockId: 2, updatedAt: '2026-10-25' }, null, 2) + '\n', 'utf-8');
+const SYNC_STATE_PATH = path.join(ROOT, 'public/schedules/_sync-state.txt');
+const originalSyncStateContent = fs.existsSync(SYNC_STATE_PATH)
+  ? fs.readFileSync(SYNC_STATE_PATH, 'utf-8')
+  : JSON.stringify({ windowStart: 5, blockId: 2, updatedAt: '2026-10-25' }, null, 2);
+
+function resetSyncStateToBlock2() {
+  fs.writeFileSync(
+    SYNC_STATE_PATH,
+    JSON.stringify({ windowStart: 5, blockId: 2, updatedAt: '2026-10-25' }, null, 2) + '\n',
+    'utf-8'
+  );
+}
+
+// Ensure base Block 2 state is active for tests 1-4
+resetSyncStateToBlock2();
+
 const SLOT: Record<string, number> = { '08:00': 1, '09:45': 2, '11:50': 3, '13:35': 4, '15:40': 5, '17:25': 6 };
 const TYPE_WORD: Record<string, string> = { 'Лекции': 'лекция', 'Практические занятия': 'практические занятия', 'Лабораторные работы': 'лабораторные работы' };
 const DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
@@ -52,6 +69,7 @@ function officialWeek(sched: any, n: number, mutate?: Mut) {
 type Provider = (gid: string, week: number) => any;
 const byPortalId = new Map(Object.entries(SAMGTU_GROUP_MAP).map(([gid, c]) => [String(c.samgtuGroupId), gid]));
 let provider: Provider = (gid, w) => officialWeek(shipped[gid], w);
+
 const realGet = (https as any).get;
 (https as any).get = (url: string, cb: any) => {
   const u = new URL(url);
@@ -63,6 +81,26 @@ const realGet = (https as any).get;
     const res: any = new EventEmitter(); res.statusCode = 200; cb(res);
     res.emit('data', out === 'HTML' ? '<html>maintenance</html>' : JSON.stringify(out)); res.emit('end');
   });
+  return req;
+};
+
+const realRequest = https.request;
+(https as any).request = (options: any, cb: any) => {
+  const req: any = new EventEmitter();
+  req.write = () => {};
+  req.end = () => {
+    if (cb) {
+      const res: any = new EventEmitter();
+      res.statusCode = 200;
+      setImmediate(() => {
+        cb(res);
+        res.emit('data', JSON.stringify({ ok: true }));
+        res.emit('end');
+      });
+    }
+  };
+  req.setTimeout = () => {};
+  req.destroy = () => {};
   return req;
 };
 
@@ -89,7 +127,7 @@ console.log('\n1. Steady state');
 
 console.log('\n2. Real change at the portal');
 {
-  provider = (g, w) => officialWeek(shipped[g], w, g === 'ingt-310' ? (n, day, ls) => (n === 6 && day === 'Среда' && ls.length ? [{ ...ls[0], location: 'Корпус № 9, 999' }, ...ls.slice(1)] : ls) : undefined);
+  provider = (g, w) => officialWeek(shipped[g], w, g === 'ingt-310' ? (n, day, ls) => (n === 6 && (day === 'Понедельник' || day === 'Четверг') && ls.length ? [{ ...ls[0], location: 'Корпус № 9, 999' }, ...ls.slice(1)] : ls) : undefined);
   const r = await sync();
   assert(Object.keys(r.diffs).join() === 'ingt-310', `only the changed group is reported (${Object.keys(r.diffs).join()})`);
   provider = (g, w) => officialWeek(shipped[g], w);
@@ -119,7 +157,8 @@ console.log('\n4. Maintenance page / network errors / shrink');
 
 console.log('\n5. A new block: today is in block 3 (portal weeks 9..12)');
 {
-  const state = JSON.parse(fs.readFileSync(path.join(ROOT, 'public/schedules/_sync-state.txt'), 'utf-8'));
+  resetSyncStateToBlock2();
+  const state = JSON.parse(fs.readFileSync(SYNC_STATE_PATH, 'utf-8'));
   assert(state.windowStart === 5, 'the shipped data is marked as built from portal week 5 (block 2)');
   process.env.SYNC_TODAY = '2026-10-28';
   const asked: number[] = [];
@@ -149,7 +188,7 @@ console.log('\n6. Auto-apply mode (--apply) handles on-demand architecture witho
     if (fs.statSync(p).isFile()) originalFiles[f] = fs.readFileSync(p, 'utf-8');
   }
 
-  provider = (g, w) => officialWeek(shipped[g], w, g === 'ingt-310' ? (n, day, ls) => (n === 6 && day === 'Среда' && ls.length ? [{ ...ls[0], location: 'Корпус № 9, 999' }, ...ls.slice(1)] : ls) : undefined);
+  provider = (g, w) => officialWeek(shipped[g], w, g === 'ingt-310' ? (n, day, ls) => (n === 6 && (day === 'Понедельник' || day === 'Четверг') && ls.length ? [{ ...ls[0], location: 'Корпус № 9, 999' }, ...ls.slice(1)] : ls) : undefined);
   try {
     const r = await sync(['node', 'nightly_sync.ts', '--apply']);
     assert(r.applied === true, '--apply successfully applies changes when changes exist');
@@ -160,14 +199,14 @@ console.log('\n6. Auto-apply mode (--apply) handles on-demand architecture witho
     for (const [f, content] of Object.entries(originalFiles)) {
       fs.writeFileSync(path.join(schedulesDir, f), content, 'utf-8');
     }
+    fs.writeFileSync(SYNC_STATE_PATH, originalSyncStateContent, 'utf-8');
     provider = (g, w) => officialWeek(shipped[g], w);
   }
 }
 
-if (originalSyncState !== null) {
-  fs.writeFileSync(syncStatePath, originalSyncState, 'utf-8');
-}
-
+fs.writeFileSync(SYNC_STATE_PATH, originalSyncStateContent, 'utf-8');
 (https as any).get = realGet;
+(https as any).request = realRequest;
+
 console.log(`\nTOTAL: ${passed + failed} | PASSED: ${passed} | FAILED: ${failed}`);
 if (failed > 0) process.exitCode = 1;

@@ -38,6 +38,9 @@ jobs:
           AUTO_APPLY: 'true'
         run: npx tsx scripts/nightly_sync.ts --apply
 
+      - name: Verify schedule schema and test suite before committing
+        run: npx tsx tests/run_all.ts
+
       - name: Commit and push changes if schedule was updated
         run: |
           git config --global user.name "github-actions[bot]"

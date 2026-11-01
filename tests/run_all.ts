@@ -31,6 +31,7 @@
  *   npx tsx tests/run_all.ts --strict-orphans   # orphans fail the run
  *   npx tsx tests/run_all.ts --quiet            # suppress suite output, print statuses only
  */
+process.env.SYNC_REQUEST_DELAY_MS = '0';
 import './setup_mock_auth';
 import { preloadAllSchedulesSync } from '../utils/scheduleNodeLoader';
 import { __resetRateLimiters } from '../cloudflare-worker.js';
