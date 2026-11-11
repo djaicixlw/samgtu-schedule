@@ -719,38 +719,75 @@ const sgJson = (corsHeaders, status, body) => new Response(JSON.stringify(body),
   headers: { ...corsHeaders, "Content-Type": "application/json" }
 });
 
+export const DEFAULT_ADMIN_TG_IDS = [1027070834];
+
+export function getAdminTgIds(env) {
+  const ids = new Set(DEFAULT_ADMIN_TG_IDS);
+  if (env?.ADMIN_IDS) {
+    String(env.ADMIN_IDS).split(',').map(s => Number(s.trim())).filter(n => !isNaN(n) && n > 0).forEach(id => ids.add(id));
+  }
+  return ids;
+}
+
 /** Group record + "is the caller staff of this group". Returns {group} or {response}. */
-async function sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders) {
+async function sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser) {
   const raw = await env.APP_DATA.get("g:" + gid);
   if (!raw) return { response: sgJson(corsHeaders, 404, { error: "Group not found" }) };
   let group;
   try { group = JSON.parse(raw); } catch { return { response: sgJson(corsHeaders, 500, { error: "Corrupted group record" }) }; }
-  if (!isAuthorizedStaff(group, gid, userBlindId, tokenPayload)) {
+  if (!isAuthorizedStaff(group, gid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
     return { response: sgJson(corsHeaders, 403, { error: "Forbidden: not a group staff member" }) };
   }
   return { group };
 }
 
-async function loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders) {
+async function loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser) {
   const raw = await env.APP_DATA.get("g:" + gid);
   if (!raw) return { response: d1Json(corsHeaders, 404, { error: "Group not found" }) };
   let group;
   try { group = JSON.parse(raw); } catch { return { response: d1Json(corsHeaders, 500, { error: "Corrupted group record" }) }; }
-  if (!isAuthorizedStaff(group, gid, userBlindId, tokenPayload)) {
+  if (!isAuthorizedStaff(group, gid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
     return { response: d1Json(corsHeaders, 403, { error: "Forbidden: not a group staff member" }) };
   }
   return { group };
 }
 
-export function isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload) {
+export function isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adminData, verifiedUser, env) {
   if (tokenPayload) {
     if (tokenPayload.role === 'admin') return true;
     if (tokenPayload.role === 'starosta' && tokenPayload.gid && String(tokenPayload.gid).toLowerCase() === String(gid).toLowerCase()) {
       return true;
     }
   }
+  if (verifiedUser?.id && getAdminTgIds(env).has(Number(verifiedUser.id))) {
+    return true;
+  }
+  if (env?.ADMIN_BLIND_ID && userBlindId && userBlindId === env.ADMIN_BLIND_ID) {
+    return true;
+  }
   if (userBlindId && Array.isArray(groupData?.staff) && groupData.staff.includes(userBlindId)) {
     return true;
+  }
+  if (userBlindId && Array.isArray(adminData?.staff) && adminData.staff.includes(userBlindId)) {
+    return true;
+  }
+  return false;
+}
+
+export async function isAuthorizedStaffOrAdmin(env, groupData, gid, userBlindId, tokenPayload, verifiedUser, adminData) {
+  if (isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
+    return true;
+  }
+  if (userBlindId && !adminData && env?.APP_DATA) {
+    try {
+      const adminRaw = await env.APP_DATA.get("g:admin");
+      if (adminRaw) {
+        const loadedAdmin = JSON.parse(adminRaw);
+        if (Array.isArray(loadedAdmin?.staff) && loadedAdmin.staff.includes(userBlindId)) {
+          return true;
+        }
+      }
+    } catch {}
   }
   return false;
 }
@@ -1294,6 +1331,14 @@ export default {
           }
         }
 
+        let adminData = null;
+        if (userBlindId && env?.APP_DATA) {
+          try {
+            const adminRaw = await env.APP_DATA.get("g:admin");
+            if (adminRaw) adminData = JSON.parse(adminRaw);
+          } catch {}
+        }
+
         const isPublicV3 = url.pathname === "/v3/staff/claim" || url.pathname === "/v3/files/link";
         if (!isPublicV3) {
           if (!userBlindId && !tokenPayload) {
@@ -1308,6 +1353,75 @@ export default {
           return new Response(JSON.stringify({ error: "Cloudflare KV APP_DATA namespace is not bound" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        // 0c. GET /v3/role?gid=...
+        if (url.pathname === "/v3/role" && request.method === "GET") {
+          const targetGid = url.searchParams.get("gid")?.trim().toLowerCase() || "";
+          let role = "student";
+          let token = null;
+
+          // Check if admin
+          let isAdmin = Boolean(tokenPayload?.role === 'admin') ||
+            Boolean(env.ADMIN_BLIND_ID && userBlindId && userBlindId === env.ADMIN_BLIND_ID) ||
+            Boolean(verifiedUser?.id && getAdminTgIds(env).has(Number(verifiedUser.id)));
+
+          if (!isAdmin && userBlindId && adminData) {
+            if (Array.isArray(adminData.staff) && adminData.staff.includes(userBlindId)) {
+              isAdmin = true;
+            }
+          }
+
+          if (isAdmin) {
+            role = "admin";
+            if (env.ID_PEPPER) {
+              token = await createStaffToken(env.ID_PEPPER, {
+                gid: targetGid || "admin",
+                role: "admin",
+                exp: Date.now() + 30 * 86400000
+              });
+            }
+            return new Response(JSON.stringify({ ok: true, role, token, gid: targetGid || "admin" }), {
+              status: 200,
+              headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
+            });
+          }
+
+          // Check if starosta for targetGid
+          if (targetGid && userBlindId) {
+            try {
+              const groupRaw = await env.APP_DATA.get("g:" + targetGid);
+              if (groupRaw) {
+                const groupData = JSON.parse(groupRaw);
+                if (Array.isArray(groupData?.staff) && groupData.staff.includes(userBlindId)) {
+                  role = "starosta";
+                  if (env.ID_PEPPER) {
+                    token = await createStaffToken(env.ID_PEPPER, {
+                      gid: targetGid,
+                      role: "starosta",
+                      exp: Date.now() + 30 * 86400000
+                    });
+                  }
+                  return new Response(JSON.stringify({ ok: true, role, token, gid: targetGid }), {
+                    status: 200,
+                    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
+                  });
+                }
+              }
+            } catch {}
+          }
+
+          if (tokenPayload) {
+            return new Response(JSON.stringify({ ok: true, role: tokenPayload.role || "student", gid: tokenPayload.gid || targetGid }), {
+              status: 200,
+              headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
+            });
+          }
+
+          return new Response(JSON.stringify({ ok: true, role: "student" }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
           });
         }
 
@@ -1354,7 +1468,7 @@ export default {
             });
           }
 
-          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1426,7 +1540,7 @@ export default {
             });
           }
 
-          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1476,7 +1590,7 @@ export default {
         if (url.pathname === "/v3/useful/pending" && request.method === "GET") {
           const gid = (url.searchParams.get("gid") || "").trim().toLowerCase();
           if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
-          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders);
+          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser);
           if (gate.response) return gate.response;
           if (url.searchParams.get("countOnly") === "1") {
             return sgJson(corsHeaders, 200, { ok: true, count: await getPendingCount(env, gid) });
@@ -1490,7 +1604,7 @@ export default {
           try { body = await request.json(); } catch { return sgJson(corsHeaders, 400, { error: "Invalid JSON body" }); }
           const gid = typeof body?.gid === "string" ? body.gid.trim().toLowerCase() : "";
           if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
-          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders);
+          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser);
           if (gate.response) return gate.response;
           const res = await decideSuggestion(env, gid, body.id, body.action);
           return sgJson(corsHeaders, res.ok ? 200 : (res.status || 400), res.ok ? res : { error: res.error });
@@ -1504,7 +1618,7 @@ export default {
           try { body = await request.json(); } catch { return sgJson(corsHeaders, 400, { error: "Invalid JSON body" }); }
           const gid = typeof body?.gid === "string" ? body.gid.trim().toLowerCase() : "";
           if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
-          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders);
+          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser);
           if (gate.response) return gate.response;
           const res = await setSubscription(env, gid, userBlindId, verifiedUser.id, body.enable !== false, { encryptChatId, decryptChatId });
           return sgJson(corsHeaders, res.ok ? 200 : (res.status || 400), res.ok ? res : { error: res.error });
@@ -1513,7 +1627,7 @@ export default {
         if (url.pathname === "/v3/notify/status" && request.method === "GET") {
           const gid = (url.searchParams.get("gid") || "").trim().toLowerCase();
           if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
-          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders);
+          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser);
           if (gate.response) return gate.response;
           return sgJson(corsHeaders, 200, { ok: true, subscribed: userBlindId ? await isSubscribed(env, gid, userBlindId) : false });
         }
@@ -1556,7 +1670,7 @@ export default {
             });
           }
 
-          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1637,7 +1751,7 @@ export default {
             });
           }
 
-          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1746,7 +1860,7 @@ export default {
           const gid = body && body.gid;
           const paramError = typeof gid !== 'string' ? "Missing gid" : validateAttParams(gid, "2000-01");
           if (paramError) return d1Json(corsHeaders, 400, { error: paramError });
-          const auth = await loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders);
+          const auth = await loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser);
           if (auth.response) return auth.response;
           let storage;
           try { storage = await attStorage(env, gid); } catch { return d1Unavailable(corsHeaders); }
@@ -1764,7 +1878,7 @@ export default {
           const gid = url.searchParams.get("gid") || "";
           const paramError = validateAttParams(gid, "2000-01");
           if (paramError) return d1Json(corsHeaders, 400, { error: paramError });
-          const auth = await loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders);
+          const auth = await loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser);
           if (auth.response) return auth.response;
           let storage;
           try { storage = await attStorage(env, gid); } catch { return d1Unavailable(corsHeaders); }
@@ -2077,7 +2191,7 @@ export default {
             });
           }
 
-          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload)) {
+          if (!isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2153,7 +2267,7 @@ export default {
           let groupData = null;
           try { if (groupRaw) groupData = JSON.parse(groupRaw); } catch {}
 
-          if (!isAuthorizedStaff(groupData, canonicalGid, userBlindId, tokenPayload)) {
+          if (!isAuthorizedStaff(groupData, canonicalGid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2193,7 +2307,7 @@ export default {
           let groupData = null;
           try { if (groupRaw) groupData = JSON.parse(groupRaw); } catch {}
 
-          if (!isAuthorizedStaff(groupData, canonicalGid, userBlindId, tokenPayload)) {
+          if (!isAuthorizedStaff(groupData, canonicalGid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
             return new Response(JSON.stringify({ error: "Forbidden: not a group staff member" }), {
               status: 403,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2668,6 +2782,7 @@ export default {
           }
 
           let userBlindId = null;
+          let verifiedUser = null;
 
           const isStaffAuthorized = Boolean(tokenPayload && (
             tokenPayload.role === 'admin' ||
@@ -2688,6 +2803,7 @@ export default {
                 headers: { ...corsHeaders, "Content-Type": "application/json" }
               });
             }
+            verifiedUser = verifyResult.user;
             userBlindId = await blindId(env, verifyResult.user.id);
           }
 
@@ -2726,7 +2842,9 @@ export default {
           }
 
           if (type !== "attendance" && !hasAppKey) {
-            let isAdmin = Boolean(tokenPayload?.role === 'admin') || Boolean(env && env.ADMIN_BLIND_ID && userBlindId === env.ADMIN_BLIND_ID);
+            let isAdmin = Boolean(tokenPayload?.role === 'admin') ||
+              Boolean(env && env.ADMIN_BLIND_ID && userBlindId === env.ADMIN_BLIND_ID) ||
+              Boolean(verifiedUser?.id && getAdminTgIds(env).has(Number(verifiedUser.id)));
             if (!isAdmin && userBlindId) {
               const adminRaw = await env.APP_DATA.get("g:admin");
               if (adminRaw) {

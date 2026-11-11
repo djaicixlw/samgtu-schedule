@@ -70,8 +70,13 @@ export function parseWeekData(raw: unknown): WeekData | null {
           return null;
         }
 
+        let lessonId = lesson.id.trim();
+        if (lessonId.startsWith('ingt-310-w')) {
+          lessonId = lessonId.replace(/^ingt-310-/, '310-');
+        }
+
         parsedLessons.push({
-          id: lesson.id.trim(),
+          id: lessonId,
           timeStart: typeof lesson.timeStart === 'string' ? lesson.timeStart : '',
           timeEnd: typeof lesson.timeEnd === 'string' ? lesson.timeEnd : '',
           subject: lesson.subject.trim(),

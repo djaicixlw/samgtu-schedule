@@ -5,6 +5,7 @@ import { convertOfficialSamgtuToWeekData } from './samgtuParser';
 import { SCHEDULE_REGISTRY } from '../constants';
 import { officialWeeksForCycle, weekFallbackChain, officialWeekHasLessons } from './officialWeeks';
 import { getSemesterConfig, samaraISO } from './samaraDate';
+import { normalizeScheduleOverridesKeys } from './lessonOverrides';
 
 import { WORKER_BASE, getAttendanceApiBase } from './attendanceStorage';
 
@@ -85,11 +86,12 @@ export const sanitizeTeachers = (teachers: Record<string, string>, groupId = 'in
 };
 
 // Sanitize schedule overrides: clear outdated "Кафедра ИНГТ" overrides & ensure correct teachers
-export const sanitizeOverrides = (overrides: Record<string, Partial<Lesson>>): Record<string, Partial<Lesson>> => {
+export const sanitizeOverrides = (overrides: Record<string, Partial<Lesson>>, groupId?: string): Record<string, Partial<Lesson>> => {
   if (!overrides || typeof overrides !== 'object') return {};
+  const normalizedOverrides = groupId ? normalizeScheduleOverridesKeys(groupId, overrides) : normalizeScheduleOverridesKeys('ingt-310', overrides);
   const res: Record<string, Partial<Lesson>> = {};
   const patentPracticalIds = ['310-w1-fr-4', '310-w2-mo-4', '310-w3-fr-4', '310-w4-mo-4'];
-  for (const [id, ov] of Object.entries(overrides)) {
+  for (const [id, ov] of Object.entries(normalizedOverrides)) {
     if (!ov) continue;
     const clean = { ...ov };
     if (clean.teacher === 'Кафедра ИНГТ') {
@@ -304,14 +306,35 @@ const putJson = async (url: string, body: any, timeoutMs = 7000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const isAttendance = url.includes('/sync/attendance');
     const initData = (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData)
       || (typeof globalThis !== 'undefined' && (globalThis as any).Telegram?.WebApp?.initData)
       || '';
 
-    const staffToken = typeof localStorage !== 'undefined'
-      ? (localStorage.getItem('staff_token') || '')
-      : '';
+    let urlGroupId = '';
+    try {
+      urlGroupId = new URL(url, 'http://localhost').searchParams.get('groupId') || '';
+    } catch {}
+
+    let staffToken = '';
+    try {
+      if (typeof localStorage !== 'undefined') {
+        if (urlGroupId) {
+          staffToken = localStorage.getItem(`staff_token_${urlGroupId.toLowerCase()}`) || '';
+        }
+        if (!staffToken) {
+          staffToken = localStorage.getItem('staff_token') || '';
+        }
+        if (!staffToken) {
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith('staff_token_')) {
+              staffToken = localStorage.getItem(k) || '';
+              if (staffToken) break;
+            }
+          }
+        }
+      }
+    } catch {}
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -337,6 +360,17 @@ const putJson = async (url: string, body: any, timeoutMs = 7000) => {
         return false;
       }
       return true;
+    }
+    // If 401/403 with group token, clear stale token so subsequent calls can fall back
+    if (res.status === 401 || res.status === 403) {
+      try {
+        if (urlGroupId && typeof localStorage !== 'undefined') {
+          const groupTokKey = `staff_token_${urlGroupId.toLowerCase()}`;
+          if (localStorage.getItem(groupTokKey) && localStorage.getItem('staff_token')) {
+            localStorage.removeItem(groupTokKey);
+          }
+        }
+      } catch {}
     }
     return false;
   } catch (e) {
@@ -524,8 +558,8 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
   if (partialUpdate.scheduleOverrides !== undefined || partialUpdate.subjectTeachers !== undefined) {
     const local = getLocalBackup(groupId);
     const overrides = partialUpdate.scheduleOverrides !== undefined 
-      ? sanitizeOverrides(partialUpdate.scheduleOverrides)
-      : sanitizeOverrides({ ...(lastFetchedDataMap[groupId]?.scheduleOverrides || {}), ...(local.scheduleOverrides || {}) });
+      ? sanitizeOverrides(partialUpdate.scheduleOverrides, groupId)
+      : sanitizeOverrides({ ...(lastFetchedDataMap[groupId]?.scheduleOverrides || {}), ...(local.scheduleOverrides || {}) }, groupId);
     const teachers = partialUpdate.subjectTeachers !== undefined 
       ? sanitizeTeachers(partialUpdate.subjectTeachers, groupId)
       : sanitizeTeachers({ ...(lastFetchedDataMap[groupId]?.subjectTeachers || {}), ...(local.subjectTeachers || {}) }, groupId);

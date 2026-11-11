@@ -398,7 +398,15 @@ export function getSavedStaffToken(groupId?: string): string {
         const byGroup = localStorage.getItem(`staff_token_${normalizeGroupId(groupId).toLowerCase()}`);
         if (byGroup) return byGroup;
       }
-      return localStorage.getItem('staff_token') || '';
+      const generic = localStorage.getItem('staff_token');
+      if (generic) return generic;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('staff_token_')) {
+          const val = localStorage.getItem(k);
+          if (val) return val;
+        }
+      }
     }
   } catch {}
   return '';

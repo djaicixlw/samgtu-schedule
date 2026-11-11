@@ -134,7 +134,7 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
       teacher,
       location,
       note: cleanNote,
-      noteDate: cleanNote ? (isNoteRecurring ? undefined : (noteDate || targetDate)) : undefined,
+      noteDate: cleanNote ? (isNoteRecurring ? undefined : (targetDate || noteDate)) : undefined,
       isNoteRecurring: cleanNote ? isNoteRecurring : false,
       isCancelled,
       isHidden,

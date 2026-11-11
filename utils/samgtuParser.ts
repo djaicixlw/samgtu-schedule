@@ -810,11 +810,25 @@ function lookupOfficialTeacher(
   return '';
 }
 
+export const CANONICAL_LESSON_PREFIXES: Record<string, string> = {
+  'ingt-310': '310',
+  'faid-310': 'faid310',
+  'ingt-311': '311',
+  'ingt-301': '301',
+  'ingt-303': '303',
+  'ingt-209': '209',
+  'htf-215': 'htf215'
+};
+
 /**
  * Lesson ids of a group share a prefix ("310" for ingt-310). Applying an official schedule must keep it,
  * otherwise notes, rooms, attachments and attendance, all keyed by lesson id, would be orphaned.
  */
 export function deriveLessonIdPrefix(existing: WeekData | undefined, fallback: string): string {
+  const cleanFallback = String(fallback || '').trim().toLowerCase();
+  if (CANONICAL_LESSON_PREFIXES[cleanFallback]) {
+    return CANONICAL_LESSON_PREFIXES[cleanFallback];
+  }
   for (const w of [1, 2, 3, 4] as const) {
     for (const day of existing?.[w] || []) {
       for (const lesson of day.lessons || []) {

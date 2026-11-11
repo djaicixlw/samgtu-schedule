@@ -175,3 +175,36 @@ export function clearTeacherOverridesForChangedKeys(
   }
   return { overrides: result, cleared };
 }
+
+/**
+ * Normalizes lesson override keys for a group.
+ * For ingt-310: canonical lesson ids start with '310-' (e.g. '310-w3-we-1').
+ * If any legacy/external key has 'ingt-310-w...', it is normalized to '310-w...'
+ * with field merging (newer fields taking precedence).
+ */
+export function normalizeScheduleOverridesKeys(
+  groupId: string,
+  overrides: Record<string, any>
+): Record<string, any> {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return {};
+  const cleanGid = String(groupId || '').trim().toLowerCase();
+  const normalized: Record<string, any> = {};
+
+  for (const [key, val] of Object.entries(overrides)) {
+    if (!val || typeof val !== 'object') continue;
+    let targetKey = key;
+    if (cleanGid === 'ingt-310') {
+      const m = key.match(/^ingt-310-(w[1-4]-[a-z]{2}-\d+)$/);
+      if (m) {
+        targetKey = `310-${m[1]}`;
+      }
+    }
+    if (normalized[targetKey]) {
+      normalized[targetKey] = { ...normalized[targetKey], ...val };
+    } else {
+      normalized[targetKey] = { ...val };
+    }
+  }
+
+  return normalized;
+}
