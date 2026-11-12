@@ -217,6 +217,93 @@ async function run() {
     assert(typeof roleData.token === 'string' && roleData.token.length > 20, 'GET /v3/role returns freshly minted staff token');
   }
 
+  console.log('\n10. Bug #3ИНГТ110: Exact E2E scenario (Photo 1/2 -> Photo 2/2)');
+  {
+    class MemKV {
+      m = new Map<string, string>();
+      async get(k: string) { return this.m.has(k) ? this.m.get(k)! : null; }
+      async put(k: string, v: string) { this.m.set(k, v); }
+      async delete(k: string) { this.m.delete(k); }
+      async list() { return { keys: [], list_complete: true }; }
+    }
+
+    const kv = new MemKV();
+    const env: any = {
+      APP_DATA: kv,
+      ID_PEPPER: 'test-pepper-12345678901234567890',
+      TELEGRAM_BOT_TOKEN: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11',
+      ADMIN_BLIND_ID: 'admin-blind-test-id'
+    };
+
+    const adminTgId = 1027070834;
+    const adminInitData = await createTelegramInitData({
+      user: JSON.stringify({ id: adminTgId, first_name: 'Admin' }),
+      auth_date: String(Math.floor(Date.now() / 1000))
+    }, env.TELEGRAM_BOT_TOKEN);
+
+    // Device 1: Admin on Week 3 (2026-11-11) adds note "к 9" to lesson 310-w3-we-1
+    const lessonDate = getDayISODate('Среда', 3);
+    assert(lessonDate === '2026-11-11', 'Lesson date is 2026-11-11');
+
+    const updatePayload = {
+      note: 'к 9',
+      noteDate: lessonDate,
+      isNoteRecurring: false
+    };
+
+    const overrideResult = buildLessonOverride({}, fullPayload(updatePayload) as any, base, 'lesson');
+    assert(overrideResult.next.note === 'к 9', 'Note built locally as "к 9"');
+    assert(overrideResult.next.noteDate === '2026-11-11', 'noteDate is 2026-11-11');
+
+    // PUT to server
+    const syncReq = new Request('https://worker.test/sync/schedule?groupId=ingt-310', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': adminInitData
+      },
+      body: JSON.stringify({
+        byGroup: {
+          'ingt-310': {
+            overrides: {
+              '310-w3-we-1': overrideResult.next
+            },
+            updatedAt: Date.now()
+          }
+        }
+      })
+    });
+
+    const syncRes = await worker.fetch(syncReq, env);
+    assert(syncRes.status === 200, 'Device 1: Sync to worker returns 200 OK');
+
+    // Verify stored in KV
+    const kvRaw = await kv.get('schedule:ingt-310');
+    assert(kvRaw !== null, 'schedule:ingt-310 written to KV');
+    const kvParsed = JSON.parse(kvRaw!);
+    assert(kvParsed.overrides?.['310-w3-we-1']?.note === 'к 9', 'KV contains note "к 9"');
+    assert(kvParsed.overrides?.['310-w3-we-1']?.noteDate === '2026-11-11', 'KV contains noteDate 2026-11-11');
+
+    // Device 1 reloads / fetches again:
+    const reloadReq = new Request('https://worker.test/sync/schedule?groupId=ingt-310', {
+      method: 'GET'
+    });
+    const reloadRes = await worker.fetch(reloadReq, env);
+    const reloadData = await reloadRes.json();
+    const reloadOverrides = reloadData.byGroup?.['ingt-310']?.overrides || reloadData.scheduleOverrides;
+    assert(reloadOverrides?.['310-w3-we-1']?.note === 'к 9', 'Device 1 reload: note "к 9" persists, NOT disappeared!');
+
+    // Device 2 (another device / user) fetches:
+    const dev2Req = new Request('https://worker.test/sync/schedule?groupId=ingt-310', {
+      method: 'GET'
+    });
+    const dev2Res = await worker.fetch(dev2Req, env);
+    const dev2Data = await dev2Res.json();
+    const dev2Overrides = dev2Data.byGroup?.['ingt-310']?.overrides || dev2Data.scheduleOverrides;
+    assert(dev2Overrides?.['310-w3-we-1']?.note === 'к 9', 'Device 2: note "к 9" received on secondary device!');
+    assert(dev2Overrides?.['310-w3-we-1']?.noteDate === '2026-11-11', 'Device 2: noteDate matches lesson date (2026-11-11)!');
+  }
+
   console.log(`\nTOTAL: ${passed + failed} | PASSED: ${passed} | FAILED: ${failed}`);
   if (failed > 0) process.exitCode = 1;
 }

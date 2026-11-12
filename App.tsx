@@ -802,6 +802,12 @@ const App: React.FC = () => {
         if (isCancelled || !data || !data.ok) return;
         if (data.token) {
           saveStaffToken(data.token, data.gid || currentGroupId);
+          if (data.role === 'admin') {
+            try {
+              localStorage.setItem('staff_token', data.token);
+              localStorage.setItem(`staff_token_${currentGroupId.toLowerCase()}`, data.token);
+            } catch {}
+          }
         }
         if (data.role === 'admin' || data.role === 'starosta') {
           setUserRole(data.role);
@@ -903,10 +909,26 @@ const App: React.FC = () => {
           }
 
           const isDirty = localStorage.getItem(`schedule_dirty_${currentGroupId}`) === 'true';
+          if (isDirty) {
+            // Attempt retry push of unsaved overrides before loading!
+            const localOvRaw = localStorage.getItem(`schedule_overrides_${currentGroupId}`);
+            const localStRaw = localStorage.getItem(`subject_teachers_${currentGroupId}`);
+            try {
+              const localOv = localOvRaw ? JSON.parse(localOvRaw) : undefined;
+              const localSt = localStRaw ? JSON.parse(localStRaw) : undefined;
+              if (localOv || localSt) {
+                const retryOk = await pushGroupCloudData({ scheduleOverrides: localOv, subjectTeachers: localSt }, currentGroupId);
+                if (retryOk) {
+                  localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
+                }
+              }
+            } catch {}
+          }
+          const stillDirty = localStorage.getItem(`schedule_dirty_${currentGroupId}`) === 'true';
           const lastLocalEdit = Number(localStorage.getItem(`last_local_edit_${currentGroupId}`) || 0);
           const isRecentLocalEdit = Date.now() - lastLocalEdit < 30000;
           const cloudTimestamp = (cloud as any).lastUpdated ? new Date((cloud as any).lastUpdated).getTime() : 0;
-          const shouldSkipOverrides = isDirty || (isRecentLocalEdit && cloudTimestamp <= lastLocalEdit);
+          const shouldSkipOverrides = stillDirty || (isRecentLocalEdit && cloudTimestamp <= lastLocalEdit);
 
           if (cloud.scheduleOverrides !== undefined && !shouldSkipOverrides) {
             const cleanOv = normalizeScheduleOverridesKeys(currentGroupId, sanitizeOverrides(cloud.scheduleOverrides, currentGroupId));
@@ -1338,7 +1360,11 @@ const App: React.FC = () => {
       else if (summary.kind === 'info') toast.info(summary.text);
       else toast.success(summary.text);
     } else {
-      toast.error('Сохранено только на этом устройстве: не удалось отправить в облако (проверьте сеть или войдите по коду старосты)');
+      try {
+        localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
+      } catch (e) {}
+      toast.error('Не удалось сохранить в облако (ошибка доступа или сети). Заметка видна только локально.');
+      return;
     }
   }, [canEdit, currentGroupId, scheduleOverrides, subjectTeachers, attendanceRecords, selectedWeek, markAttendance]);
 
@@ -1382,7 +1408,11 @@ const App: React.FC = () => {
       } catch (e) {}
       toast.success('Список преподавателей сохранен для всех 4 недель расписания');
     } else {
-      toast.error('Сохранено только на этом устройстве: не удалось отправить в облако');
+      try {
+        localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
+      } catch (e) {}
+      toast.error('Не удалось сохранить в облако (ошибка доступа или сети)');
+      return;
     }
   };
 
@@ -1408,7 +1438,11 @@ const App: React.FC = () => {
       } catch (e) {}
       toast.success(`Преподаватель теперь берётся из настройки у ${result.cleared.length} пар`);
     } else {
-      toast.error('Сохранено только на этом устройстве: не удалось отправить в облако');
+      try {
+        localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
+      } catch (e) {}
+      toast.error('Не удалось сохранить в облако (ошибка доступа или сети)');
+      return;
     }
   };
 
@@ -1479,7 +1513,11 @@ const App: React.FC = () => {
       } catch (e) {}
       toast.info('Пара сброшена до исходного расписания');
     } else {
-      toast.error('Сброшено только на этом устройстве: не удалось отправить в облако');
+      try {
+        localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
+      } catch (e) {}
+      toast.error('Не удалось сохранить сброс в облако (ошибка доступа или сети)');
+      return;
     }
   }, [canEdit, currentGroupId, scheduleOverrides, subjectTeachers, attendanceRecords, selectedWeek, markAttendance]);
 

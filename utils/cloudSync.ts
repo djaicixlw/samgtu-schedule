@@ -1,3 +1,4 @@
+import { logger } from './logger';
 import { HomeworkItem, Lesson, Student } from '../types';
 import { AttendanceRecord, STUDENTS_REGISTRY } from '../attendance';
 import { SAMGTU_GROUP_MAP } from './samgtuGroupMap';
@@ -208,7 +209,7 @@ export const fetchJsonMeta = async (
 
     const res = await fetch(url, {
       signal: controller.signal,
-      cache: forceFresh ? 'no-cache' : 'default',
+      cache: forceFresh ? 'no-store' : 'default',
       headers: {
         'Accept': 'application/json',
         ...(etag ? { 'If-None-Match': etag } : {}),
@@ -357,10 +358,13 @@ const putJson = async (url: string, body: any, timeoutMs = 7000) => {
       const text = await res.text();
       // If the response is the default text from an un-updated worker, consider it failed
       if (text.includes('Running OK') && !text.includes('status') && !text.includes('data')) {
+        logger.error('SYNC', `putJson received un-updated worker fallback for ${url}`, { url, text });
         return false;
       }
       return true;
     }
+    const errText = await res.text().catch(() => '');
+    logger.error('SYNC', `pushGroupCloudData failed for ${urlGroupId || url}: HTTP ${res.status}`, { status: res.status, body: errText });
     // If 401/403 with group token, clear stale token so subsequent calls can fall back
     if (res.status === 401 || res.status === 403) {
       try {
@@ -373,8 +377,9 @@ const putJson = async (url: string, body: any, timeoutMs = 7000) => {
       } catch {}
     }
     return false;
-  } catch (e) {
+  } catch (e: any) {
     clearTimeout(id);
+    logger.error('SYNC', `putJson network failure for ${url}: ${e?.message || e}`, e);
     return false;
   }
 };
@@ -438,9 +443,11 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
           cloudSubjectTeachers = {};
         }
 
-        // Sanitize out old generic "Кафедра ИНГТ"
-        cloudScheduleOverrides = sanitizeOverrides(cloudScheduleOverrides);
+        // Sanitize out old generic "Кафедра ИНГТ" and normalize keys
+        cloudScheduleOverrides = normalizeScheduleOverridesKeys(groupId, sanitizeOverrides(cloudScheduleOverrides, groupId));
         cloudSubjectTeachers = sanitizeTeachers(cloudSubjectTeachers, groupId);
+
+        const isDirty = typeof localStorage !== 'undefined' && localStorage.getItem(`schedule_dirty_${groupId}`) === 'true';
 
         // Preserve local attachments if cloud data temporarily omitted them
         if (localBackup.scheduleOverrides) {
@@ -457,8 +464,16 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
           }
         }
 
-        try { localStorage.setItem(`schedule_overrides_${groupId}`, JSON.stringify(cloudScheduleOverrides)); } catch (e) {}
-        try { localStorage.setItem(`subject_teachers_${groupId}`, JSON.stringify(cloudSubjectTeachers)); } catch (e) {}
+        // If local overrides are dirty (unsynced), NEVER overwrite them in localStorage with stale cloud data!
+        if (isDirty && localBackup.scheduleOverrides) {
+          cloudScheduleOverrides = normalizeScheduleOverridesKeys(groupId, {
+            ...cloudScheduleOverrides,
+            ...localBackup.scheduleOverrides
+          });
+        } else {
+          try { localStorage.setItem(`schedule_overrides_${groupId}`, JSON.stringify(cloudScheduleOverrides)); } catch (e) {}
+          try { localStorage.setItem(`subject_teachers_${groupId}`, JSON.stringify(cloudSubjectTeachers)); } catch (e) {}
+        }
       }
     }
 

@@ -754,7 +754,7 @@ async function loadStaffGroup(env, gid, userBlindId, tokenPayload, corsHeaders, 
 
 export function isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adminData, verifiedUser, env) {
   if (tokenPayload) {
-    if (tokenPayload.role === 'admin') return true;
+    if (tokenPayload.role === 'admin' || tokenPayload.gid === '*') return true;
     if (tokenPayload.role === 'starosta' && tokenPayload.gid && String(tokenPayload.gid).toLowerCase() === String(gid).toLowerCase()) {
       return true;
     }
@@ -1170,7 +1170,7 @@ async function handleStaffClaim(request, env, corsHeaders, userBlindId) {
     const staffToken = await createStaffToken(env.ID_PEPPER, {
       gid: targetGid,
       role: "starosta",
-      exp: Date.now() + 30 * 86400000
+      exp: Date.now() + 365 * 86400 * 1000
     });
     return json({ ok: true, role: "starosta", gid: targetGid, token: staffToken });
   }
@@ -1375,14 +1375,29 @@ export default {
 
           if (isAdmin) {
             role = "admin";
+            if (userBlindId && env?.APP_DATA) {
+              try {
+                let adminObj = adminData;
+                if (!adminObj) {
+                  const raw = await env.APP_DATA.get("g:admin");
+                  if (raw) adminObj = JSON.parse(raw);
+                }
+                adminObj = adminObj || { codeSalt: "", codeHash: "", staff: [] };
+                adminObj.staff = Array.isArray(adminObj.staff) ? adminObj.staff : [];
+                if (!adminObj.staff.includes(userBlindId)) {
+                  adminObj.staff.push(userBlindId);
+                  await env.APP_DATA.put("g:admin", JSON.stringify(adminObj));
+                }
+              } catch {}
+            }
             if (env.ID_PEPPER) {
               token = await createStaffToken(env.ID_PEPPER, {
-                gid: targetGid || "admin",
+                gid: "*",
                 role: "admin",
-                exp: Date.now() + 30 * 86400000
+                exp: Date.now() + 365 * 86400 * 1000
               });
             }
-            return new Response(JSON.stringify({ ok: true, role, token, gid: targetGid || "admin" }), {
+            return new Response(JSON.stringify({ ok: true, role, token, gid: "*" }), {
               status: 200,
               headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, no-store" }
             });
@@ -2786,6 +2801,7 @@ export default {
 
           const isStaffAuthorized = Boolean(tokenPayload && (
             tokenPayload.role === 'admin' ||
+            tokenPayload.gid === '*' ||
             (tokenPayload.role === 'starosta' && String(tokenPayload.gid).toLowerCase() === String(groupId).toLowerCase())
           ));
 
