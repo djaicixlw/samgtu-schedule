@@ -219,7 +219,7 @@ export function sanitizeScheduleOverride(ov) {
   if (ov.timeEnd !== undefined) res.timeEnd = String(ov.timeEnd).slice(0, 20);
   if (ov.updatedAt !== undefined) res.updatedAt = typeof ov.updatedAt === 'number' ? ov.updatedAt : String(ov.updatedAt).slice(0, 50);
   if (Array.isArray(ov.attachments)) {
-    res.attachments = ov.attachments.slice(0, 10).map(att => {
+    const list = ov.attachments.slice(0, 10).map(att => {
       if (!att || typeof att !== 'object') return null;
       return {
         id: String(att.id || '').slice(0, 100),
@@ -231,6 +231,10 @@ export function sanitizeScheduleOverride(ov) {
         fileId: att.fileId ? String(att.fileId).slice(0, 200) : undefined
       };
     }).filter(Boolean);
+    if (list.length > 0) {
+      res.attachments = list;
+      if (ov.attachmentsDate !== undefined) res.attachmentsDate = String(ov.attachmentsDate).slice(0, 30);
+    }
   }
   return res;
 }
@@ -318,9 +322,21 @@ export function sanitizeSyncPayload(type, rawData) {
               cleanGrp.teachers[k] = String(v).slice(0, 150);
             }
           }
+          if (Array.isArray(grp.deletedOverrides)) {
+            cleanGrp.deletedOverrides = grp.deletedOverrides.map(String).slice(-500);
+          }
+          if (Array.isArray(grp.deletedKeys)) {
+            cleanGrp.deletedKeys = grp.deletedKeys.map(String).slice(-500);
+          }
           res.byGroup[gid] = cleanGrp;
         }
       }
+    }
+    if (Array.isArray(rawData.deletedOverrides)) {
+      res.deletedOverrides = rawData.deletedOverrides.map(String).slice(-500);
+    }
+    if (Array.isArray(rawData.deletedKeys)) {
+      res.deletedKeys = rawData.deletedKeys.map(String).slice(-500);
     }
     if (rawData.scheduleOverrides && typeof rawData.scheduleOverrides === 'object') {
       res.scheduleOverrides = {};
@@ -431,20 +447,76 @@ export function mergeUsefulGroupSlice(existingGroup, incoming) {
   return result;
 }
 
+export function normalizeScheduleOverridesKeysWorker(groupId, overrides) {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return {};
+  const cleanGid = String(groupId || '').trim().toLowerCase();
+  const normalized = {};
+
+  // First pass: put all canonical (non-legacy) keys directly
+  for (const [key, val] of Object.entries(overrides)) {
+    if (!val || typeof val !== 'object') continue;
+    if (cleanGid === 'ingt-310' && key.startsWith('ingt-310-')) {
+      continue;
+    }
+    const clean = sanitizeScheduleOverride(val);
+    if (clean && Object.keys(clean).length > 0) {
+      normalized[key] = clean;
+    }
+  }
+
+  // Second pass: map legacy keys ONLY if the canonical key does not exist yet.
+  // Never merge fields from a legacy key over a canonical key!
+  if (cleanGid === 'ingt-310') {
+    for (const [key, val] of Object.entries(overrides)) {
+      if (!val || typeof val !== 'object') continue;
+      const m = key.match(/^ingt-310-(w[1-4]-[a-z]{2}-\d+)$/);
+      if (m) {
+        const canonicalKey = `310-${m[1]}`;
+        if (!normalized[canonicalKey]) {
+          const clean = sanitizeScheduleOverride(val);
+          if (clean && Object.keys(clean).length > 0) {
+            normalized[canonicalKey] = clean;
+          }
+        }
+      }
+    }
+  }
+
+  return normalized;
+}
+
 export function mergeScheduleGroupSlice(existingGroup, incoming) {
   const ex = (existingGroup && typeof existingGroup === 'object') ? existingGroup : {};
   const inc = (incoming && typeof incoming === 'object') ? incoming : {};
   const result = { ...ex };
+  const gid = incoming.groupId || existingGroup?.groupId || 'ingt-310';
 
   const exOverrides = (ex.overrides && typeof ex.overrides === 'object') ? ex.overrides
     : (ex.scheduleOverrides && typeof ex.scheduleOverrides === 'object') ? ex.scheduleOverrides : {};
   const incOverrides = (inc.overrides && typeof inc.overrides === 'object') ? inc.overrides
     : (inc.scheduleOverrides && typeof inc.scheduleOverrides === 'object') ? inc.scheduleOverrides : {};
-  const overrides = { ...exOverrides };
-  for (const k of Object.keys(incOverrides)) {
+
+  const normEx = normalizeScheduleOverridesKeysWorker(gid, exOverrides);
+  const normInc = normalizeScheduleOverridesKeysWorker(gid, incOverrides);
+
+  const overrides = { ...normEx };
+  for (const k of Object.keys(normInc)) {
     const prev = overrides[k];
-    if (!prev || syncItemNewer(incOverrides[k], prev)) overrides[k] = incOverrides[k];
+    if (!prev || syncItemNewer(normInc[k], prev)) {
+      overrides[k] = normInc[k];
+    }
   }
+
+  // Handle deleted override keys if specified in incoming
+  const deletedKeys = Array.isArray(inc.deletedOverrides) ? inc.deletedOverrides
+    : Array.isArray(inc.deletedKeys) ? inc.deletedKeys : [];
+  for (const dk of deletedKeys) {
+    delete overrides[dk];
+    if (gid === 'ingt-310' && dk.startsWith('310-')) {
+      delete overrides[`ingt-${dk}`];
+    }
+  }
+
   result.overrides = overrides;
 
   const exTeachers = (ex.teachers && typeof ex.teachers === 'object') ? ex.teachers
@@ -2760,6 +2832,14 @@ export default {
             }
           }
           if (type === 'useful') groupData = sanitizeUsefulGroup(groupData, groupId);
+          if (type === 'schedule') {
+            const rawOv = groupData.overrides || groupData.scheduleOverrides;
+            if (rawOv && typeof rawOv === 'object') {
+              const clean = normalizeScheduleOverridesKeysWorker(groupId, rawOv);
+              groupData.overrides = clean;
+              if (groupData.scheduleOverrides) groupData.scheduleOverrides = clean;
+            }
+          }
           const responseBody = JSON.stringify({ byGroup: { [groupId]: groupData }, updatedAt: groupData.updatedAt || 0 });
           const etag = `"${await sha256Hex(responseBody)}"`;
           const clientEtag = request.headers.get("If-None-Match");

@@ -140,6 +140,7 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
       isHidden,
       hours,
       attachments,
+      attachmentsDate: attachments.length > 0 ? (isNoteRecurring ? undefined : (targetDate || noteDate)) : undefined,
     }, applyScope);
     onClose();
   };

@@ -1255,6 +1255,14 @@ const App: React.FC = () => {
       }
     }
 
+    if (normalizedUpdatedLesson.attachments !== undefined) {
+      if (normalizedUpdatedLesson.attachments.length > 0 && !normalizedUpdatedLesson.isNoteRecurring) {
+        normalizedUpdatedLesson.attachmentsDate = normalizedUpdatedLesson.attachmentsDate || isoDate;
+      } else {
+        delete normalizedUpdatedLesson.attachmentsDate;
+      }
+    }
+
     // Only what really changed is stored: a full snapshot would pin the teacher/room/subject of this lesson forever.
     const { next: nextOverride, changed } = buildLessonOverride(
       currentOverride,
@@ -1293,8 +1301,10 @@ const App: React.FC = () => {
 
     let updated = { ...scheduleOverrides };
     delete updated[lessonId];
+    const deletedOverrides: string[] = [];
     if (Object.keys(nextOverride).length === 0) {
       delete updated[targetLessonId];
+      deletedOverrides.push(targetLessonId, lessonId);
     } else {
       updated[targetLessonId] = nextOverride;
     }
@@ -1342,13 +1352,13 @@ const App: React.FC = () => {
         localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(normalizedOverrides));
         localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updatedTeachers));
       } catch (e) {}
-      pushPromise = pushGroupCloudData({ scheduleOverrides: normalizedOverrides as any, subjectTeachers: updatedTeachers }, currentGroupId);
+      pushPromise = pushGroupCloudData({ scheduleOverrides: normalizedOverrides as any, subjectTeachers: updatedTeachers, deletedOverrides }, currentGroupId);
     } else {
       setScheduleOverrides(updated);
       try {
         localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
       } catch (e) {}
-      pushPromise = pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
+      pushPromise = pushGroupCloudData({ scheduleOverrides: updated, deletedOverrides }, currentGroupId);
     }
 
     const pushSuccess = await pushPromise;
@@ -1506,7 +1516,7 @@ const App: React.FC = () => {
     }
 
     // Push reset to REST Cloud immediately
-    const ok = await pushGroupCloudData({ scheduleOverrides: updated }, currentGroupId);
+    const ok = await pushGroupCloudData({ scheduleOverrides: updated, deletedOverrides: [targetLessonId, lessonId] }, currentGroupId);
     if (ok) {
       try {
         localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
@@ -1574,12 +1584,40 @@ const App: React.FC = () => {
           }
         }
 
+        let resolvedAttachments = override.attachments !== undefined ? override.attachments : lesson.attachments;
+        let resolvedAttachmentsDate = override.attachmentsDate !== undefined ? override.attachmentsDate : lesson.attachmentsDate;
+
+        // Date-bound attachments check: class materials are date-specific unless recurring
+        if (resolvedAttachments && resolvedAttachments.length > 0 && !resolvedIsNoteRecurring) {
+          const effectiveDate = resolvedAttachmentsDate || resolvedNoteDate;
+          if (effectiveDate) {
+            if (effectiveDate !== isoDate) {
+              resolvedAttachments = undefined;
+            }
+          } else {
+            // Legacy attachment without date: check timestamp in id (e.g. att_1792744617209_...) or past cycle
+            const firstAttId = resolvedAttachments[0]?.id || '';
+            const matchTs = firstAttId.match(/^att_(\d{13})/);
+            if (matchTs) {
+              const attTime = Number(matchTs[1]);
+              const lessonTime = new Date(`${isoDate}T12:00:00+04:00`).getTime();
+              if (Math.abs(lessonTime - attTime) > 7 * 86400 * 1000) {
+                resolvedAttachments = undefined;
+              }
+            } else if (isoDate && !isoDate.startsWith('2026-09')) {
+              resolvedAttachments = undefined;
+            }
+          }
+        }
+
         return {
           ...lesson,
           ...override,
           note: resolvedNote,
           noteDate: resolvedNote ? resolvedNoteDate : undefined,
           isNoteRecurring: resolvedNote ? resolvedIsNoteRecurring : false,
+          attachments: resolvedAttachments && resolvedAttachments.length > 0 ? resolvedAttachments : undefined,
+          attachmentsDate: resolvedAttachments && resolvedAttachments.length > 0 ? (resolvedAttachmentsDate || resolvedNoteDate) : undefined,
           teacher: resolvedTeacher,
           isCancelled: isCancelledInAttendance,
           isHidden: !!override.isHidden
@@ -1609,6 +1647,29 @@ const App: React.FC = () => {
             }
           }
 
+          let resolvedAttachments = ov.attachments;
+          let resolvedAttachmentsDate = ov.attachmentsDate;
+          if (resolvedAttachments && resolvedAttachments.length > 0 && !resolvedIsNoteRecurring) {
+            const effectiveDate = resolvedAttachmentsDate || resolvedNoteDate;
+            if (effectiveDate) {
+              if (effectiveDate !== isoDate) {
+                resolvedAttachments = undefined;
+              }
+            } else {
+              const firstAttId = resolvedAttachments[0]?.id || '';
+              const matchTs = firstAttId.match(/^att_(\d{13})/);
+              if (matchTs) {
+                const attTime = Number(matchTs[1]);
+                const lessonTime = new Date(`${isoDate}T12:00:00+04:00`).getTime();
+                if (Math.abs(lessonTime - attTime) > 7 * 86400 * 1000) {
+                  resolvedAttachments = undefined;
+                }
+              } else if (isoDate && !isoDate.startsWith('2026-09')) {
+                resolvedAttachments = undefined;
+              }
+            }
+          }
+
           return {
             id,
             timeStart: ov.timeStart || '08:00',
@@ -1621,7 +1682,9 @@ const App: React.FC = () => {
             ...ov,
             note: resolvedNote,
             noteDate: resolvedNote ? resolvedNoteDate : undefined,
-            isNoteRecurring: resolvedNote ? resolvedIsNoteRecurring : false
+            isNoteRecurring: resolvedNote ? resolvedIsNoteRecurring : false,
+            attachments: resolvedAttachments && resolvedAttachments.length > 0 ? resolvedAttachments : undefined,
+            attachmentsDate: resolvedAttachments && resolvedAttachments.length > 0 ? (resolvedAttachmentsDate || resolvedNoteDate) : undefined
           } as Lesson;
         });
 

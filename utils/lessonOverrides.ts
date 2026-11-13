@@ -69,9 +69,21 @@ export function buildLessonOverride(
 
   if (edited.attachments !== undefined) {
     const effective = current.attachments ?? [];
-    if (!same(edited.attachments, effective)) {
+    const attachmentsChanged = !same(edited.attachments, effective);
+    const dateChanged = edited.attachmentsDate !== current.attachmentsDate;
+    if (attachmentsChanged || dateChanged) {
       changed.push('attachments');
-      if (edited.attachments.length === 0) delete next.attachments; else next.attachments = edited.attachments;
+      if (edited.attachments.length === 0) {
+        delete next.attachments;
+        delete next.attachmentsDate;
+      } else {
+        next.attachments = edited.attachments;
+        if (edited.attachmentsDate !== undefined) {
+          next.attachmentsDate = edited.attachmentsDate;
+        } else {
+          delete next.attachmentsDate;
+        }
+      }
     }
   }
 
@@ -179,8 +191,8 @@ export function clearTeacherOverridesForChangedKeys(
 /**
  * Normalizes lesson override keys for a group.
  * For ingt-310: canonical lesson ids start with '310-' (e.g. '310-w3-we-1').
- * If any legacy/external key has 'ingt-310-w...', it is normalized to '310-w...'
- * with field merging (newer fields taking precedence).
+ * If any legacy key has 'ingt-310-w...', canonical keys strictly take priority:
+ * if '310-...' exists, the legacy key is dropped and its fields are NEVER merged over canonical data.
  */
 export function normalizeScheduleOverridesKeys(
   groupId: string,
@@ -190,19 +202,27 @@ export function normalizeScheduleOverridesKeys(
   const cleanGid = String(groupId || '').trim().toLowerCase();
   const normalized: Record<string, any> = {};
 
+  // First pass: put all canonical (non-legacy) keys directly
   for (const [key, val] of Object.entries(overrides)) {
     if (!val || typeof val !== 'object') continue;
-    let targetKey = key;
-    if (cleanGid === 'ingt-310') {
+    if (cleanGid === 'ingt-310' && key.startsWith('ingt-310-')) {
+      continue;
+    }
+    normalized[key] = { ...val };
+  }
+
+  // Second pass: map legacy keys ONLY if the canonical key does not exist yet.
+  // Never merge fields from a legacy key over a canonical key!
+  if (cleanGid === 'ingt-310') {
+    for (const [key, val] of Object.entries(overrides)) {
+      if (!val || typeof val !== 'object') continue;
       const m = key.match(/^ingt-310-(w[1-4]-[a-z]{2}-\d+)$/);
       if (m) {
-        targetKey = `310-${m[1]}`;
+        const canonicalKey = `310-${m[1]}`;
+        if (!normalized[canonicalKey]) {
+          normalized[canonicalKey] = { ...val };
+        }
       }
-    }
-    if (normalized[targetKey]) {
-      normalized[targetKey] = { ...normalized[targetKey], ...val };
-    } else {
-      normalized[targetKey] = { ...val };
     }
   }
 

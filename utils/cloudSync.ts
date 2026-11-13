@@ -27,6 +27,7 @@ export interface GroupCloudData {
   deletedIds?: string[];
   schedule?: any;
   scheduleOverrides: Record<string, Partial<Lesson>>;
+  deletedOverrides?: string[];
   subjectTeachers: Record<string, string>;
   attendance: AttendanceRecord[];
   lastUpdated?: number;
@@ -107,6 +108,11 @@ export const sanitizeOverrides = (overrides: Record<string, Partial<Lesson>>, gr
       delete clean.note;
       delete clean.noteDate;
       delete clean.isNoteRecurring;
+    }
+    // Clean up empty attachments and attachmentsDate
+    if (clean.attachments !== undefined && (!Array.isArray(clean.attachments) || clean.attachments.length === 0)) {
+      delete clean.attachments;
+      delete clean.attachmentsDate;
     }
     if (Object.keys(clean).length > 0) {
       res[id] = clean;
@@ -449,8 +455,8 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
 
         const isDirty = typeof localStorage !== 'undefined' && localStorage.getItem(`schedule_dirty_${groupId}`) === 'true';
 
-        // Preserve local attachments if cloud data temporarily omitted them
-        if (localBackup.scheduleOverrides) {
+        // Preserve local attachments during sync if this device has unsynced local edits
+        if (isDirty && localBackup.scheduleOverrides) {
           for (const [id, localOv] of Object.entries(localBackup.scheduleOverrides)) {
             if (localOv?.attachments && localOv.attachments.length > 0) {
               if (cloudScheduleOverrides[id]) {
@@ -462,10 +468,6 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
               }
             }
           }
-        }
-
-        // If local overrides are dirty (unsynced), NEVER overwrite them in localStorage with stale cloud data!
-        if (isDirty && localBackup.scheduleOverrides) {
           cloudScheduleOverrides = normalizeScheduleOverridesKeys(groupId, {
             ...cloudScheduleOverrides,
             ...localBackup.scheduleOverrides
@@ -606,6 +608,7 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
           [groupId]: {
             overrides,
             teachers,
+            deletedOverrides: partialUpdate.deletedOverrides || [],
             updatedAt: Date.now()
           }
         }

@@ -131,14 +131,14 @@ async function run() {
     assert(normalized310['ingt-310-w3-we-1'] === undefined, 'legacy ingt-310- key removed');
     assert(normalized310['310-w3-we-2'].teacher === 'Сидоров А.А.', 'existing 310- key preserved');
 
-    // Merging fields if both legacy and canonical keys exist
+    // Canonical key has absolute priority over legacy key (no resurrecting stale fields/attachments)
     const conflictingOverrides = {
-      'ingt-310-w3-fr-4': { note: 'Старая заметка', teacher: 'Иванов' },
+      'ingt-310-w3-fr-4': { note: 'Старая заметка', teacher: 'Иванов', attachments: [{ name: 'old.pdf', url: 'https://x.com' }] },
       '310-w3-fr-4': { note: 'Свежая заметка' }
     };
     const merged = normalizeScheduleOverridesKeys('ingt-310', conflictingOverrides);
     assert(merged['310-w3-fr-4'].note === 'Свежая заметка', 'canonical key fields win over legacy fields');
-    assert(merged['310-w3-fr-4'].teacher === 'Иванов', 'non-overlapping fields merged cleanly');
+    assert(merged['310-w3-fr-4'].attachments === undefined, 'legacy attachments are never merged onto canonical key');
 
     // Other groups untouched
     const otherGroup = normalizeScheduleOverridesKeys('faid-310', rawOverrides);
@@ -302,6 +302,151 @@ async function run() {
     const dev2Overrides = dev2Data.byGroup?.['ingt-310']?.overrides || dev2Data.scheduleOverrides;
     assert(dev2Overrides?.['310-w3-we-1']?.note === 'к 9', 'Device 2: note "к 9" received on secondary device!');
     assert(dev2Overrides?.['310-w3-we-1']?.noteDate === '2026-11-11', 'Device 2: noteDate matches lesson date (2026-11-11)!');
+  }
+
+  console.log('\n11. Bug 8_3_pdf: Deleting attachments removes override from server and never resurrects');
+  {
+    class MemKV {
+      m = new Map<string, string>();
+      async get(k: string) { return this.m.has(k) ? this.m.get(k)! : null; }
+      async put(k: string, v: string) { this.m.set(k, v); }
+      async delete(k: string) { this.m.delete(k); }
+      async list() { return { keys: [], list_complete: true }; }
+    }
+
+    const kv = new MemKV();
+    const env: any = {
+      APP_DATA: kv,
+      ID_PEPPER: 'test-pepper-12345678901234567890',
+      TELEGRAM_BOT_TOKEN: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11',
+      ADMIN_BLIND_ID: 'admin-blind-test-id'
+    };
+
+    const adminTgId = 1027070834;
+    const adminInitData = await createTelegramInitData({
+      user: JSON.stringify({ id: adminTgId, first_name: 'Admin' }),
+      auth_date: String(Math.floor(Date.now() / 1000))
+    }, env.TELEGRAM_BOT_TOKEN);
+
+    // 1. Initial save with attachment "ПЗ 8_3.pdf"
+    const push1 = new Request('https://worker.test/sync/schedule?groupId=ingt-310', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': adminInitData
+      },
+      body: JSON.stringify({
+        byGroup: {
+          'ingt-310': {
+            overrides: {
+              '310-w4-fr-2': {
+                attachments: [{ id: 'att_1792744617209_xhvy98', name: 'ПЗ 8_3.pdf', url: 'https://example.com/8_3.pdf' }],
+                attachmentsDate: '2026-10-23'
+              }
+            },
+            updatedAt: Date.now()
+          }
+        }
+      })
+    });
+    const res1 = await worker.fetch(push1, env);
+    assert(res1.status === 200, 'Initial push with attachment succeeded');
+
+    const get1 = new Request('https://worker.test/sync/schedule?groupId=ingt-310', { method: 'GET' });
+    const data1 = await (await worker.fetch(get1, env)).json();
+    assert(data1.byGroup?.['ingt-310']?.overrides?.['310-w4-fr-2']?.attachments?.length === 1, 'Attachment present on server');
+
+    // 2. User deletes attachment (attachments: []) -> buildLessonOverride removes attachments
+    const baseVal: BaseLessonValues = {
+      subject: 'Техника и технология бурения нефтегазовых скважин',
+      teacher: 'Драницына Елена Геннадьевна',
+      location: 'Корпус № 1, 4',
+      hours: 2
+    };
+    const currentOv = data1.byGroup['ingt-310'].overrides['310-w4-fr-2'];
+    const { next: nextOv } = buildLessonOverride(currentOv, { attachments: [] }, baseVal, 'lesson');
+    assert(nextOv.attachments === undefined, 'buildLessonOverride removed attachments');
+    assert(nextOv.attachmentsDate === undefined, 'buildLessonOverride removed attachmentsDate');
+    assert(Object.keys(nextOv).length === 0, 'No more overrides left for this lesson');
+
+    // Client deletes key from scheduleOverrides and pushes clean overrides dict with deletedOverrides
+    const cleanOverrides: Record<string, any> = {};
+    const push2 = new Request('https://worker.test/sync/schedule?groupId=ingt-310', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': adminInitData
+      },
+      body: JSON.stringify({
+        byGroup: {
+          'ingt-310': {
+            overrides: cleanOverrides,
+            deletedOverrides: ['310-w4-fr-2'],
+            updatedAt: Date.now()
+          }
+        }
+      })
+    });
+    const res2 = await worker.fetch(push2, env);
+    assert(res2.status === 200, 'Clean push succeeded');
+
+    // Verify GET /sync/schedule: 310-w4-fr-2 is completely gone, NOT resurrected!
+    const get2 = new Request('https://worker.test/sync/schedule?groupId=ingt-310', { method: 'GET' });
+    const data2 = await (await worker.fetch(get2, env)).json();
+    const ov2 = data2.byGroup?.['ingt-310']?.overrides || {};
+    assert(ov2['310-w4-fr-2'] === undefined, 'Deleted override 310-w4-fr-2 is NOT resurrected on server!');
+  }
+
+  console.log('\n12. Bug 8_3_pdf: Cycle date boundary for lesson attachments (October vs November)');
+  {
+    // Case A: Override has attachmentsDate = 2026-10-23 (October, Cycle 2, Week 4 Friday)
+    const octOverride = {
+      attachments: [{ id: 'att_1792744617209_xhvy98', name: 'ПЗ 8_3.pdf', url: 'https://example.com/8_3.pdf' }],
+      attachmentsDate: '2026-10-23',
+      isNoteRecurring: false
+    };
+
+    const resolveForDate = (ov: any, isoDate: string) => {
+      let resolvedAtt = ov.attachments;
+      const effectiveDate = ov.attachmentsDate || ov.noteDate;
+      if (resolvedAtt && resolvedAtt.length > 0 && !ov.isNoteRecurring) {
+        if (effectiveDate) {
+          if (effectiveDate !== isoDate) resolvedAtt = undefined;
+        } else {
+          const matchTs = (resolvedAtt[0]?.id || '').match(/^att_(\d{13})/);
+          if (matchTs) {
+            const attTime = Number(matchTs[1]);
+            const lessonTime = new Date(`${isoDate}T12:00:00+04:00`).getTime();
+            if (Math.abs(lessonTime - attTime) > 7 * 86400 * 1000) resolvedAtt = undefined;
+          } else if (isoDate && !isoDate.startsWith('2026-09')) {
+            resolvedAtt = undefined;
+          }
+        }
+      }
+      return resolvedAtt;
+    };
+
+    const octDateView = resolveForDate(octOverride, '2026-10-23');
+    assert(octDateView !== undefined && octDateView.length === 1, 'Attachment visible on its intended date (2026-10-23)');
+
+    const novDateView = resolveForDate(octOverride, '2026-11-20');
+    assert(novDateView === undefined, 'October attachment hidden when viewing November 20 (Week 4, Block 3)');
+
+    // Case B: Legacy attachment with NO attachmentsDate, but created with October timestamp
+    const legacyOctOverride = {
+      attachments: [{ id: 'att_1792744617209_xhvy98', name: 'ПЗ 8_3.pdf', url: 'https://example.com/8_3.pdf' }],
+      isNoteRecurring: false
+    };
+    const legacyNovView = resolveForDate(legacyOctOverride, '2026-11-20');
+    assert(legacyNovView === undefined, 'Legacy October attachment suppressed in November via timestamp guard');
+
+    // Case C: Recurring attachment (isNoteRecurring: true)
+    const recurringOverride = {
+      attachments: [{ id: 'att_1', name: 'постоянная_методичка.pdf', url: 'https://example.com/m.pdf' }],
+      isNoteRecurring: true
+    };
+    const recurringNovView = resolveForDate(recurringOverride, '2026-11-20');
+    assert(recurringNovView !== undefined && recurringNovView.length === 1, 'Recurring attachment visible across cycles');
   }
 
   console.log(`\nTOTAL: ${passed + failed} | PASSED: ${passed} | FAILED: ${failed}`);

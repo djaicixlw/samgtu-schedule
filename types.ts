@@ -60,6 +60,7 @@ export interface Lesson {
   order?: number;
   hours?: number;
   attachments?: HomeworkAttachment[];
+  attachmentsDate?: string;
 }
 
 export interface DaySchedule {
