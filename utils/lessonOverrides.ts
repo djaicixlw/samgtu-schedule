@@ -228,3 +228,36 @@ export function normalizeScheduleOverridesKeys(
 
   return normalized;
 }
+
+const deletedOverridesKey = (gid: string) => `schedule_deleted_overrides_${String(gid || '').trim().toLowerCase()}`;
+
+export function readDeletedOverrides(gid: string): Record<string, number> {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(deletedOverridesKey(gid));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      }
+    }
+  } catch {}
+  return {};
+}
+
+export function recordDeletedOverride(gid: string, lessonId: string, at: number = Date.now()): void {
+  try {
+    if (typeof localStorage === 'undefined' || !lessonId) return;
+    const cleanGid = String(gid || '').trim().toLowerCase();
+    const all = readDeletedOverrides(cleanGid);
+    all[lessonId] = at;
+    if (cleanGid === 'ingt-310') {
+      if (lessonId.startsWith('310-')) {
+        all[`ingt-${lessonId}`] = at;
+      } else if (lessonId.startsWith('ingt-310-')) {
+        all[lessonId.replace(/^ingt-/, '')] = at;
+      }
+    }
+    const entries = Object.entries(all).sort((a, b) => b[1] - a[1]).slice(0, 500);
+    localStorage.setItem(deletedOverridesKey(cleanGid), JSON.stringify(Object.fromEntries(entries)));
+  } catch {}
+}

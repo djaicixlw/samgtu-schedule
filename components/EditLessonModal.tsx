@@ -441,7 +441,10 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
           </div>
 
           {/* Lesson Cancellation Toggle (Rock-solid Clickable Container) */}
-          <div 
+          <button 
+            type="button"
+            role="switch"
+            aria-checked={isCancelled}
             onClick={() => {
               if (!isCancelled) {
                 const confirmed = window.confirm('Вы уверены, что хотите отметить пару как отмененную на эту дату?');
@@ -449,7 +452,7 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
               }
               setIsCancelled(!isCancelled);
             }}
-            className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
+            className={`w-full text-left p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
               isCancelled 
                 ? 'bg-red-500/15 border-red-500/40 dark:bg-red-950/40 dark:border-red-800' 
                 : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700/60 hover:border-red-200 dark:hover:border-red-900/40'
@@ -472,17 +475,20 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
             </div>
             
             {/* Custom Rock-solid Toggle Switch */}
-            <div className="relative inline-flex items-center shrink-0">
+            <div className="relative inline-flex items-center shrink-0 pointer-events-none">
               <div className={`w-11 h-6 rounded-full transition-colors relative ${isCancelled ? 'bg-red-600' : 'bg-slate-300 dark:bg-slate-700'}`}>
                 <div className={`w-5 h-5 bg-white rounded-full transition-transform absolute top-[2px] shadow-sm ${isCancelled ? 'translate-x-[22px]' : 'translate-x-[2px]'}`} />
               </div>
             </div>
-          </div>
+          </button>
 
           {/* Lesson Hidden / Exclude Toggle */}
-          <div 
+          <button 
+            type="button"
+            role="switch"
+            aria-checked={isHidden}
             onClick={() => setIsHidden(!isHidden)}
-            className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
+            className={`w-full text-left p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
               isHidden 
                 ? 'bg-amber-500/15 border-amber-500/40 dark:bg-amber-950/40 dark:border-amber-800' 
                 : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700/60 hover:border-amber-200 dark:hover:border-amber-900/40'
@@ -505,12 +511,12 @@ const EditLessonModal: React.FC<EditLessonModalProps> = ({
             </div>
             
             {/* Custom Rock-solid Toggle Switch */}
-            <div className="relative inline-flex items-center shrink-0">
+            <div className="relative inline-flex items-center shrink-0 pointer-events-none">
               <div className={`w-11 h-6 rounded-full transition-colors relative ${isHidden ? 'bg-amber-600' : 'bg-slate-300 dark:bg-slate-700'}`}>
                 <div className={`w-5 h-5 bg-white rounded-full transition-transform absolute top-[2px] shadow-sm ${isHidden ? 'translate-x-[22px]' : 'translate-x-[2px]'}`} />
               </div>
             </div>
-          </div>
+          </button>
         </form>
 
         {/* Fixed Footer with Safe Area */}

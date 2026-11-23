@@ -324,6 +324,11 @@ export function sanitizeSyncPayload(type, rawData) {
           }
           if (Array.isArray(grp.deletedOverrides)) {
             cleanGrp.deletedOverrides = grp.deletedOverrides.map(String).slice(-500);
+          } else if (grp.deletedOverrides && typeof grp.deletedOverrides === 'object') {
+            cleanGrp.deletedOverrides = {};
+            for (const [dk, dv] of Object.entries(grp.deletedOverrides).slice(-500)) {
+              cleanGrp.deletedOverrides[String(dk).slice(0, 100)] = Number(dv) || now;
+            }
           }
           if (Array.isArray(grp.deletedKeys)) {
             cleanGrp.deletedKeys = grp.deletedKeys.map(String).slice(-500);
@@ -334,6 +339,11 @@ export function sanitizeSyncPayload(type, rawData) {
     }
     if (Array.isArray(rawData.deletedOverrides)) {
       res.deletedOverrides = rawData.deletedOverrides.map(String).slice(-500);
+    } else if (rawData.deletedOverrides && typeof rawData.deletedOverrides === 'object') {
+      res.deletedOverrides = {};
+      for (const [dk, dv] of Object.entries(rawData.deletedOverrides).slice(-500)) {
+        res.deletedOverrides[String(dk).slice(0, 100)] = Number(dv) || now;
+      }
     }
     if (Array.isArray(rawData.deletedKeys)) {
       res.deletedKeys = rawData.deletedKeys.map(String).slice(-500);
@@ -398,8 +408,10 @@ function syncTsMs(value) {
 }
 
 function syncItemNewer(incoming, existing) {
-  return syncTsMs(incoming && (incoming.updatedAt ?? incoming.createdAt)) >
-         syncTsMs(existing && (existing.updatedAt ?? existing.createdAt));
+  const incTs = syncTsMs(incoming && (incoming.updatedAt ?? incoming.createdAt));
+  const exTs = syncTsMs(existing && (existing.updatedAt ?? existing.createdAt));
+  if (incTs > 0 && exTs === 0) return true;
+  return incTs >= exTs;
 }
 
 function mergeSyncItemArrays(existingItems, incomingItems) {
@@ -499,25 +511,71 @@ export function mergeScheduleGroupSlice(existingGroup, incoming) {
   const normEx = normalizeScheduleOverridesKeysWorker(gid, exOverrides);
   const normInc = normalizeScheduleOverridesKeysWorker(gid, incOverrides);
 
-  const overrides = { ...normEx };
-  for (const k of Object.keys(normInc)) {
-    const prev = overrides[k];
-    if (!prev || syncItemNewer(normInc[k], prev)) {
-      overrides[k] = normInc[k];
-    }
-  }
+  // 1. Merge deletedOverrides tombstones dictionary (up to 500 newest)
+  const exDel = (ex.deletedOverrides && typeof ex.deletedOverrides === 'object' && !Array.isArray(ex.deletedOverrides)) ? ex.deletedOverrides : {};
+  const incDel = (inc.deletedOverrides && typeof inc.deletedOverrides === 'object' && !Array.isArray(inc.deletedOverrides)) ? inc.deletedOverrides : {};
 
-  // Handle deleted override keys if specified in incoming
-  const deletedKeys = Array.isArray(inc.deletedOverrides) ? inc.deletedOverrides
+  const mergedDel = {};
+  for (const [k, ts] of Object.entries(exDel)) {
+    mergedDel[k] = syncTsMs(ts);
+  }
+  for (const [k, ts] of Object.entries(incDel)) {
+    const ms = syncTsMs(ts);
+    mergedDel[k] = Math.max(mergedDel[k] || 0, ms);
+  }
+  const incDeletedList = Array.isArray(inc.deletedOverrides) ? inc.deletedOverrides
     : Array.isArray(inc.deletedKeys) ? inc.deletedKeys : [];
-  for (const dk of deletedKeys) {
-    delete overrides[dk];
-    if (gid === 'ingt-310' && dk.startsWith('310-')) {
-      delete overrides[`ingt-${dk}`];
-    }
+  const nowTs = Date.now();
+  for (const dk of incDeletedList) {
+    mergedDel[String(dk)] = Math.max(mergedDel[String(dk)] || 0, nowTs);
   }
 
+  // Prune mergedDel to 500 newest entries
+  const sortedDelEntries = Object.entries(mergedDel)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 500);
+  const prunedDel = Object.fromEntries(sortedDelEntries);
+
+  // 2. Merge overrides with deletedOverrides filtering & updatedAt comparisons
+  const allKeys = new Set([...Object.keys(normEx), ...Object.keys(normInc)]);
+  const overrides = {};
+
+  for (const k of allKeys) {
+    const prev = normEx[k];
+    const incomingItem = normInc[k];
+
+    let candidate = null;
+    if (incomingItem && prev) {
+      const incTs = syncTsMs(incomingItem.updatedAt);
+      const prevTs = syncTsMs(prev.updatedAt);
+      if (incTs >= prevTs) {
+        candidate = incomingItem;
+      } else {
+        candidate = prev;
+      }
+    } else if (incomingItem) {
+      candidate = incomingItem;
+    } else {
+      candidate = prev;
+    }
+
+    if (!candidate) continue;
+
+    // Check against prunedDel tombstones
+    const delTs = prunedDel[k] || (gid === 'ingt-310' && k.startsWith('310-') ? prunedDel[`ingt-${k}`] : 0) || 0;
+    const candTs = syncTsMs(candidate.updatedAt);
+    if (delTs > 0 && delTs >= candTs) {
+      continue;
+    }
+
+    overrides[k] = candidate;
+  }
+
+  result.deletedOverrides = prunedDel;
   result.overrides = overrides;
+  if (result.scheduleOverrides) {
+    result.scheduleOverrides = overrides;
+  }
 
   const exTeachers = (ex.teachers && typeof ex.teachers === 'object') ? ex.teachers
     : (ex.subjectTeachers && typeof ex.subjectTeachers === 'object') ? ex.subjectTeachers : {};
@@ -2840,7 +2898,11 @@ export default {
               if (groupData.scheduleOverrides) groupData.scheduleOverrides = clean;
             }
           }
-          const responseBody = JSON.stringify({ byGroup: { [groupId]: groupData }, updatedAt: groupData.updatedAt || 0 });
+          const responseBody = JSON.stringify({
+            byGroup: { [groupId]: groupData },
+            updatedAt: groupData.updatedAt || 0,
+            ver: groupData.ver ?? 0
+          });
           const etag = `"${await sha256Hex(responseBody)}"`;
           const clientEtag = request.headers.get("If-None-Match");
 
@@ -2998,7 +3060,8 @@ export default {
           } else {
             groupSlice = { ...existingGroup, ...incomingSlice };
           }
-          groupSlice.updatedAt = Date.now();
+          groupSlice.ver = (Number(existingGroup.ver) || 0) + 1;
+          groupSlice.updatedAt = Math.max(Date.now(), (Number(existingGroup.updatedAt) || 0) + 1);
 
           if (type === 'homework' || type === 'useful') {
             const asIds = (v) => (Array.isArray(v) ? v.map(String) : []);
@@ -3014,7 +3077,7 @@ export default {
           }
 
           await env.APP_DATA.put(kvKey, JSON.stringify(groupSlice));
-          return new Response(JSON.stringify({ ok: true, updatedAt: groupSlice.updatedAt }), {
+          return new Response(JSON.stringify({ ok: true, ver: groupSlice.ver, updatedAt: groupSlice.updatedAt }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }

@@ -79,7 +79,9 @@ export function sanitizeUsefulItem(raw: any, defaultGroupId: string): UsefulItem
     links,
     attachments,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
-    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : undefined,
+    updatedAt: typeof raw.updatedAt === 'number'
+      ? (raw.updatedAt > 1000000000 ? new Date(raw.updatedAt).toISOString() : String(raw.updatedAt))
+      : typeof raw.updatedAt === 'string' ? raw.updatedAt : undefined,
     createdBy: typeof raw.createdBy === 'string' ? raw.createdBy : undefined,
     isPending: raw.isPending ? true : undefined,
     submittedBy
@@ -179,7 +181,56 @@ export function saveLocalUsefulItems(groupId: string, items: UsefulItem[]): void
   }
 }
 
-const MAX_USEFUL_TOMBSTONES = 500;
+const MAX_USEFUL_TOMBSTONES = 1000;
+
+const USEFUL_STALE_WINDOW_MS = 120_000;
+const usefulSeenVersKey = (gid: string) => `useful_seen_ver_${gid.toLowerCase()}`;
+
+export function readUsefulSeenVer(gid: string): { ver: number; at: number } | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(usefulSeenVersKey(gid));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.ver === 'number') return parsed;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+export function noteUsefulSeenVer(gid: string, ver: number | undefined): void {
+  if (!ver || !Number.isFinite(ver)) return;
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const current = readUsefulSeenVer(gid);
+    if (!current || ver >= current.ver) {
+      localStorage.setItem(usefulSeenVersKey(gid), JSON.stringify({ ver, at: Date.now() }));
+    }
+  } catch {}
+}
+
+export function isUsefulStaleRead(gid: string, ver: number | undefined): boolean {
+  if (ver === undefined) return false;
+  const seen = readUsefulSeenVer(gid);
+  return Boolean(seen && ver < seen.ver && Date.now() - seen.at < USEFUL_STALE_WINDOW_MS);
+}
+
+function parseUsefulItemTs(item: any): number {
+  if (!item) return 0;
+  if (typeof item.updatedAt === 'number' && Number.isFinite(item.updatedAt)) return item.updatedAt;
+  if (typeof item.updatedAt === 'string') {
+    const t = Date.parse(item.updatedAt);
+    if (!Number.isNaN(t)) return t;
+    const n = Number(item.updatedAt);
+    if (!Number.isNaN(n)) return n;
+  }
+  if (typeof item.createdAt === 'string') {
+    const t = Date.parse(item.createdAt);
+    if (!Number.isNaN(t)) return t;
+  }
+  return 0;
+}
 
 export function getDeletedUsefulIds(groupId: string): string[] {
   try {
@@ -215,7 +266,7 @@ export async function fetchGroupUsefulData(
   try {
     const base = WORKER_BASE;
     const url = `${base}/sync/useful?groupId=${encodeURIComponent(groupId.toLowerCase())}`;
-    const res = await fetch(url, { signal });
+    const res = await fetch(url, { signal, cache: 'no-store' });
     if (!res.ok) {
       return { items: local, fromNetwork: false };
     }
@@ -281,6 +332,7 @@ export async function fetchUsefulState(groupId: string, etag?: string): Promise<
     const base = WORKER_BASE;
     const url = `${base}/sync/useful?groupId=${encodeURIComponent(groupId.toLowerCase())}`;
     const res = await fetch(url, {
+      cache: 'no-store',
       headers: etag ? { 'If-None-Match': etag } : undefined
     });
     const resEtag = (() => {
@@ -295,6 +347,14 @@ export async function fetchUsefulState(groupId: string, etag?: string): Promise<
     if (!res.ok) return { status: 'error' };
     const data = await res.json();
     const groupPayload = data?.byGroup?.[groupId.toLowerCase()] || data;
+    const cloudVer = Number(data?.ver ?? groupPayload?.ver ?? 0);
+    if (isUsefulStaleRead(groupId, cloudVer)) {
+      console.warn(`[UsefulStorage] Stale useful read detected for ${groupId}: server ver ${cloudVer} < seen ver.`);
+      return { status: 'error' };
+    }
+    if (cloudVer > 0) {
+      noteUsefulSeenVer(groupId, cloudVer);
+    }
     const rawItems = Array.isArray(groupPayload?.items) ? groupPayload.items : [];
     const serverDeletedIds: string[] = Array.isArray(groupPayload?.deletedIds)
       ? groupPayload.deletedIds.map(String)
@@ -308,7 +368,7 @@ export async function fetchUsefulState(groupId: string, etag?: string): Promise<
 /**
  * Pure merge of a remote useful slice into the local state (AUD-023 engine adapter).
  * Same rules as fetchGroupUsefulData: sanitize, absorb server tombstones (AUD-011),
- * cloud wins per id, non-deleted local-only items kept, canonical sort. Also
+ * cloud wins per id unless local is newer, non-deleted local-only items kept, canonical sort. Also
  * persists the merged tombstone set; item persistence stays with the caller
  * (setState) so the engine stays storage-agnostic.
  */
@@ -316,15 +376,26 @@ export function mergeUsefulState(
   groupId: string,
   local: UsefulItem[],
   remote: { rawItems: any[]; serverDeletedIds: string[] }
-): { merged: UsefulItem[]; serverApplied: boolean } {
+): { merged: UsefulItem[]; serverApplied: boolean; hasLocalNewer: boolean } {
   let deletedSet = new Set<string>();
+  const localDeleted = getDeletedUsefulIds(groupId);
   try {
-    deletedSet = new Set(JSON.parse(localStorage.getItem(getDeletedUsefulKey(groupId)) || '[]'));
+    deletedSet = new Set(localDeleted);
   } catch {}
 
+  let hasLocalNewer = false;
+  // Check if local has deletions that server doesn't have yet
+  const serverDeletedSet = new Set((remote.serverDeletedIds || []).map(String));
+  for (const id of localDeleted) {
+    if (!serverDeletedSet.has(id)) {
+      hasLocalNewer = true;
+      break;
+    }
+  }
+
   // AUD-011: absorb server tombstones so deletions propagate between devices.
-  if (remote.serverDeletedIds.length > 0) {
-    const mergedTombstones = Array.from(new Set([...deletedSet, ...remote.serverDeletedIds])).slice(-100);
+  if (remote.serverDeletedIds && remote.serverDeletedIds.length > 0) {
+    const mergedTombstones = Array.from(new Set([...deletedSet, ...remote.serverDeletedIds])).slice(-MAX_USEFUL_TOMBSTONES);
     try {
       localStorage.setItem(getDeletedUsefulKey(groupId), JSON.stringify(mergedTombstones));
     } catch {}
@@ -337,9 +408,22 @@ export function mergeUsefulState(
 
   const itemMap = new Map<string, UsefulItem>();
   cloudItems.forEach(item => itemMap.set(item.id, item));
-  (local || []).forEach(item => {
-    if (item && !deletedSet.has(item.id) && !itemMap.has(item.id)) {
-      itemMap.set(item.id, item);
+
+  // Merge local items: if present in both, compare timestamps
+  (local || []).forEach(localItem => {
+    if (!localItem || deletedSet.has(localItem.id)) return;
+    const cloudItem = itemMap.get(localItem.id);
+    if (cloudItem) {
+      const localTs = parseUsefulItemTs(localItem);
+      const cloudTs = parseUsefulItemTs(cloudItem);
+      if (localTs > cloudTs) {
+        itemMap.set(localItem.id, localItem);
+        hasLocalNewer = true;
+      }
+    } else {
+      // Local item not present on server at all
+      itemMap.set(localItem.id, localItem);
+      hasLocalNewer = true;
     }
   });
 
@@ -355,7 +439,11 @@ export function mergeUsefulState(
     return (b.createdAt || '').localeCompare(a.createdAt || '');
   });
 
-  return { merged, serverApplied: remote.rawItems.length > 0 || remote.serverDeletedIds.length > 0 };
+  return {
+    merged,
+    serverApplied: remote.rawItems.length > 0 || remote.serverDeletedIds.length > 0,
+    hasLocalNewer
+  };
 }
 
 export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]): Promise<boolean> {
@@ -402,6 +490,15 @@ export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]):
         updatedAt: Date.now()
       })
     });
+
+    if (res.ok) {
+      try {
+        const json = await res.json();
+        if (json && json.ver) {
+          noteUsefulSeenVer(groupId, json.ver);
+        }
+      } catch {}
+    }
 
     return res.ok;
   } catch {

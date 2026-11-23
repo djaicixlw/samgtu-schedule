@@ -242,7 +242,7 @@ async function run() {
     }, env.TELEGRAM_BOT_TOKEN);
 
     // Device 1: Admin on Week 3 (2026-11-11) adds note "к 9" to lesson 310-w3-we-1
-    const lessonDate = getDayISODate('Среда', 3);
+    const lessonDate = getDayISODate('Среда', 3, '2026-11-11');
     assert(lessonDate === '2026-11-11', 'Lesson date is 2026-11-11');
 
     const updatePayload = {
@@ -453,4 +453,4 @@ async function run() {
   if (failed > 0) process.exitCode = 1;
 }
 
-run();
+await run();

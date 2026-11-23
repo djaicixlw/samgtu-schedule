@@ -1,0 +1,777 @@
+{
+  "1": [
+    {
+      "dayName": "Понедельник",
+      "lessons": [
+        {
+          "id": "ingt-103-w1-mo-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Экономика",
+          "type": "Практические занятия",
+          "location": "Корпус № 10, 209",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-mo-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "История России",
+          "type": "Практические занятия",
+          "location": "Корпус № 10, 203",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-mo-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Элективные курсы по физической культуре и спорту",
+          "type": "Практические занятия",
+          "location": "Спортивный комплекс",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Вторник",
+      "lessons": [
+        {
+          "id": "ingt-103-w1-tu-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Математика",
+          "type": "Лекции",
+          "location": "Корпус № 1, 434",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-tu-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Физика",
+          "type": "Лекции",
+          "location": "Корпус № 7, 793",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-tu-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Иностранный язык",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 11",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-tu-4",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "Иностранный язык",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 11",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Среда",
+      "lessons": [
+        {
+          "id": "ingt-103-w1-we-1",
+          "timeStart": "08:00",
+          "timeEnd": "09:35",
+          "subject": "Инженерная и компьютерная графика",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 424",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-we-2",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Физика",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 427",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-we-3",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Физическая культура и спорт",
+          "type": "Практические занятия",
+          "location": "Спортивный комплекс",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Четверг",
+      "lessons": [
+        {
+          "id": "ingt-103-w1-th-1",
+          "timeStart": "08:00",
+          "timeEnd": "09:35",
+          "subject": "Математика",
+          "type": "Практические занятия",
+          "location": "Корпус № 8, 206",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-th-2",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Основы российской государственности",
+          "type": "Практические занятия",
+          "location": "Корпус № 9, 412",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-th-3",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Физика",
+          "type": "Лекции",
+          "location": "Корпус № 10, 104",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-th-4",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Математика",
+          "type": "Лекции",
+          "location": "Корпус № 1, 426",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Пятница",
+      "lessons": [
+        {
+          "id": "ingt-103-w1-fr-1",
+          "timeStart": "08:00",
+          "timeEnd": "09:35",
+          "subject": "Математика",
+          "type": "Практические занятия",
+          "location": "Корпус № 8, 206",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-fr-2",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Химия",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 427",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Суббота",
+      "lessons": [
+        {
+          "id": "ingt-103-w1-sa-1",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "История России",
+          "type": "Лекции",
+          "location": "Moodle, ауд. не указана",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w1-sa-2",
+          "timeStart": "17:25",
+          "timeEnd": "19:00",
+          "subject": "История России",
+          "type": "Лекции",
+          "location": "Moodle, ауд. не указана",
+          "teacher": ""
+        }
+      ]
+    }
+  ],
+  "2": [
+    {
+      "dayName": "Понедельник",
+      "lessons": [
+        {
+          "id": "ingt-103-w2-mo-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Математика",
+          "type": "Лекции",
+          "location": "Корпус № 1, 426",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-mo-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Инженерная и компьютерная графика",
+          "type": "Лекции",
+          "location": "Корпус № 1, 433",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-mo-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Введение в информационные технологии",
+          "type": "Лекции",
+          "location": "Корпус № 1, 434",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-mo-4",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "Введение в информационные технологии",
+          "type": "Практические занятия",
+          "location": "Корпус № 8, 502",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-mo-5",
+          "timeStart": "17:25",
+          "timeEnd": "19:00",
+          "subject": "Введение в информационные технологии",
+          "type": "Практические занятия",
+          "location": "Корпус № 8, 502",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Вторник",
+      "lessons": [
+        {
+          "id": "ingt-103-w2-tu-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Учебная практика: технологическая практика, практика",
+          "type": "Практические занятия",
+          "location": "Корпус № 9, 314",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-tu-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Учебная практика: технологическая практика, практика",
+          "type": "Практические занятия",
+          "location": "Корпус № 9, 314",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Среда",
+      "lessons": [
+        {
+          "id": "ingt-103-w2-we-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Основы российской государственности",
+          "type": "Лекции",
+          "location": "Корпус № 7, 793",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-we-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "История России",
+          "type": "Лекции",
+          "location": "Корпус № 7, 793",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-we-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Экономика",
+          "type": "Лекции",
+          "location": "Корпус № 7, 793",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Четверг",
+      "lessons": [
+        {
+          "id": "ingt-103-w2-th-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Элективные курсы по физической культуре и спорту",
+          "type": "Практические занятия",
+          "location": "Спортивный комплекс",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-th-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Инженерная и компьютерная графика",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 350",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-th-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Математика",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 430",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-th-4",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "Химия",
+          "type": "Лекции",
+          "location": "Корпус № 1, 326",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Пятница",
+      "lessons": [
+        {
+          "id": "ingt-103-w2-fr-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Физическая культура и спорт",
+          "type": "Практические занятия",
+          "location": "Спортивный комплекс",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-fr-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Химия",
+          "type": "Лабораторные работы",
+          "location": "Корпус № 1, 327",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-fr-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Химия",
+          "type": "Лабораторные работы",
+          "location": "Корпус № 1, 327",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-fr-4",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "Основы российской государственности",
+          "type": "Практические занятия",
+          "location": "Корпус № 9, 412",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Суббота",
+      "lessons": [
+        {
+          "id": "ingt-103-w2-sa-1",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Физика",
+          "type": "Лабораторные работы",
+          "location": "Корпус № 1, 322",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w2-sa-2",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Физика",
+          "type": "Лабораторные работы",
+          "location": "Корпус № 1, 322",
+          "teacher": ""
+        }
+      ]
+    }
+  ],
+  "3": [
+    {
+      "dayName": "Понедельник",
+      "lessons": [
+        {
+          "id": "ingt-103-w3-mo-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Экономика",
+          "type": "Практические занятия",
+          "location": "Корпус № 10, 209",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-mo-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "История России",
+          "type": "Практические занятия",
+          "location": "Корпус № 10, 203",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-mo-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Элективные курсы по физической культуре и спорту",
+          "type": "Практические занятия",
+          "location": "Спортивный комплекс",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Вторник",
+      "lessons": [
+        {
+          "id": "ingt-103-w3-tu-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Математика",
+          "type": "Лекции",
+          "location": "Корпус № 1, 434",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-tu-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Физика",
+          "type": "Лекции",
+          "location": "Корпус № 7, 793",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-tu-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Иностранный язык",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 11",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-tu-4",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "Иностранный язык",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 11",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Среда",
+      "lessons": [
+        {
+          "id": "ingt-103-w3-we-1",
+          "timeStart": "08:00",
+          "timeEnd": "09:35",
+          "subject": "Инженерная и компьютерная графика",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 424",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-we-2",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Физика",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 427",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-we-3",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Физическая культура и спорт",
+          "type": "Практические занятия",
+          "location": "Спортивный комплекс",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Четверг",
+      "lessons": [
+        {
+          "id": "ingt-103-w3-th-1",
+          "timeStart": "08:00",
+          "timeEnd": "09:35",
+          "subject": "Математика",
+          "type": "Практические занятия",
+          "location": "Корпус № 8, 206",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-th-2",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Основы российской государственности",
+          "type": "Практические занятия",
+          "location": "Корпус № 9, 412",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-th-3",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Физика",
+          "type": "Лекции",
+          "location": "Корпус № 7, 792",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-th-4",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Математика",
+          "type": "Лекции",
+          "location": "Корпус № 1, 426",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Пятница",
+      "lessons": [
+        {
+          "id": "ingt-103-w3-fr-1",
+          "timeStart": "08:00",
+          "timeEnd": "09:35",
+          "subject": "Математика",
+          "type": "Практические занятия",
+          "location": "Корпус № 8, 206",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-fr-2",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Химия",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 427",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Суббота",
+      "lessons": [
+        {
+          "id": "ingt-103-w3-sa-1",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "История России",
+          "type": "Лекции",
+          "location": "Moodle, ауд. не указана",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-sa-2",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "Физическая культура и спорт",
+          "type": "Лекции",
+          "location": "Moodle, ауд. не указана",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w3-sa-3",
+          "timeStart": "17:25",
+          "timeEnd": "19:00",
+          "subject": "История России",
+          "type": "Лекции",
+          "location": "Moodle, ауд. не указана",
+          "teacher": ""
+        }
+      ]
+    }
+  ],
+  "4": [
+    {
+      "dayName": "Понедельник",
+      "lessons": [
+        {
+          "id": "ingt-103-w4-mo-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Математика",
+          "type": "Лекции",
+          "location": "Корпус № 1, 426",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-mo-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Инженерная и компьютерная графика",
+          "type": "Лекции",
+          "location": "Корпус № 1, 433",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-mo-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Введение в информационные технологии",
+          "type": "Лекции",
+          "location": "Корпус № 1, 434",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Вторник",
+      "lessons": [
+        {
+          "id": "ingt-103-w4-tu-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Введение в проектную деятельность",
+          "type": "Лекции",
+          "location": "Корпус № 10, 107",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Среда",
+      "lessons": [
+        {
+          "id": "ingt-103-w4-we-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Основы российской государственности",
+          "type": "Лекции",
+          "location": "Корпус № 7, 793",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-we-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "История России",
+          "type": "Лекции",
+          "location": "Корпус № 7, 793",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-we-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Экономика",
+          "type": "Лекции",
+          "location": "Moodle, ауд. не указана",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Четверг",
+      "lessons": [
+        {
+          "id": "ingt-103-w4-th-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Элективные курсы по физической культуре и спорту",
+          "type": "Практические занятия",
+          "location": "Спортивный комплекс",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-th-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Инженерная и компьютерная графика",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 350",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-th-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Математика",
+          "type": "Практические занятия",
+          "location": "Корпус № 1, 430",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-th-4",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "Химия",
+          "type": "Лекции",
+          "location": "Корпус № 1, 326",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Пятница",
+      "lessons": [
+        {
+          "id": "ingt-103-w4-fr-1",
+          "timeStart": "09:45",
+          "timeEnd": "11:20",
+          "subject": "Физическая культура и спорт",
+          "type": "Практические занятия",
+          "location": "Спортивный комплекс",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-fr-2",
+          "timeStart": "11:50",
+          "timeEnd": "13:25",
+          "subject": "Химия",
+          "type": "Лабораторные работы",
+          "location": "Корпус № 1, 327",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-fr-3",
+          "timeStart": "13:35",
+          "timeEnd": "15:10",
+          "subject": "Химия",
+          "type": "Лабораторные работы",
+          "location": "Корпус № 1, 327",
+          "teacher": ""
+        },
+        {
+          "id": "ingt-103-w4-fr-4",
+          "timeStart": "15:40",
+          "timeEnd": "17:15",
+          "subject": "Основы российской государственности",
+          "type": "Практические занятия",
+          "location": "Корпус № 9, 412",
+          "teacher": ""
+        }
+      ]
+    },
+    {
+      "dayName": "Суббота",
+      "lessons": []
+    }
+  ]
+}

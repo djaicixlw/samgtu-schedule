@@ -6,7 +6,7 @@ import { getSamaraDate, getSemesterConfig, getDayName, samaraISO } from './utils
 import { useSamaraDayTick } from './utils/useNow';
 import { useOnlineStatus } from './utils/useOnlineStatus';
 import { deleteMyData, local_storage, session_storage } from './utils/personalData';
-import { buildLessonOverride, describeLessonSave, clearTeacherOverridesForChangedKeys, normalizeScheduleOverridesKeys } from './utils/lessonOverrides';
+import { buildLessonOverride, describeLessonSave, clearTeacherOverridesForChangedKeys, normalizeScheduleOverridesKeys, readDeletedOverrides, recordDeletedOverride } from './utils/lessonOverrides';
 import { clearFrozenTeachers, buildLessonIndex, countPinnedTeachers, unpinTeachers } from './utils/teacherOverrides';
 import SwipeableDays from './components/SwipeableDays';
 import BottomNav from './components/BottomNav';
@@ -678,6 +678,18 @@ const App: React.FC = () => {
     }
   });
 
+  const scheduleOverridesRef = useRef(scheduleOverrides);
+  useEffect(() => {
+    scheduleOverridesRef.current = scheduleOverrides;
+  }, [scheduleOverrides]);
+
+  const subjectTeachersRef = useRef(subjectTeachers);
+  useEffect(() => {
+    subjectTeachersRef.current = subjectTeachers;
+  }, [subjectTeachers]);
+
+  const scheduleMutationSeqRef = useRef(0);
+
   useEffect(() => {
     setSelectedWeek(currentWeek);
   }, [currentWeek]);
@@ -1018,6 +1030,20 @@ const App: React.FC = () => {
         }
       }
 
+      // If there are unsaved local schedule changes, push them before refreshing
+      const scheduleDirty = typeof localStorage !== 'undefined' && localStorage.getItem(`schedule_dirty_${currentGroupId}`) === 'true';
+      if (scheduleDirty) {
+        try {
+          await pushGroupCloudData({
+            scheduleOverrides: scheduleOverridesRef.current,
+            subjectTeachers: subjectTeachersRef.current,
+            deletedOverrides: readDeletedOverrides(currentGroupId)
+          }, currentGroupId);
+        } catch (e) {
+          console.warn('Pre-refresh schedule sync error:', e);
+        }
+      }
+
       // Clear HTTP/PWA caches without touching localStorage
       if (typeof window !== 'undefined' && 'caches' in window) {
         try {
@@ -1035,19 +1061,23 @@ const App: React.FC = () => {
       const cloud = await fetchGroupCloudData(true, currentGroupId, refreshController.signal);
       if (refreshController.signal.aborted) return;
       if (cloud && cloud.fromNetwork) {
-        if (cloud.scheduleOverrides !== undefined) {
-          const cleanOv = sanitizeOverrides(cloud.scheduleOverrides);
-          setScheduleOverrides(cleanOv);
-          try {
-            localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(cleanOv));
-          } catch (e) {}
-        }
-        if (cloud.subjectTeachers !== undefined) {
-          const cleanSt = sanitizeTeachers(cloud.subjectTeachers, currentGroupId);
-          setSubjectTeachers(cleanSt);
-          try {
-            localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt));
-          } catch (e) {}
+        if (!cloud.stale) {
+          if (cloud.scheduleOverrides !== undefined) {
+            const cleanOv = sanitizeOverrides(cloud.scheduleOverrides);
+            scheduleOverridesRef.current = cleanOv;
+            setScheduleOverrides(cleanOv);
+            try {
+              localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(cleanOv));
+            } catch (e) {}
+          }
+          if (cloud.subjectTeachers !== undefined) {
+            const cleanSt = sanitizeTeachers(cloud.subjectTeachers, currentGroupId);
+            subjectTeachersRef.current = cleanSt;
+            setSubjectTeachers(cleanSt);
+            try {
+              localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt));
+            } catch (e) {}
+          }
         }
         lastVisibilitySyncRef.current = Date.now();
         toast.success('Данные обновлены');
@@ -1196,12 +1226,14 @@ const App: React.FC = () => {
       targetLessonId = targetLessonId.replace(/^ingt-310-/, '310-');
     }
 
+    const seq = ++scheduleMutationSeqRef.current;
+
     try {
       localStorage.setItem('last_local_edit_' + currentGroupId, String(Date.now()));
       localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
     } catch (e) {}
 
-    const currentOverride = scheduleOverrides[targetLessonId] || scheduleOverrides[lessonId] || {};
+    const currentOverride = scheduleOverridesRef.current[targetLessonId] || scheduleOverridesRef.current[lessonId] || {};
 
     // Find the original lesson to know its type, default teacher, etc.
     let originalLesson: Lesson | undefined;
@@ -1276,6 +1308,13 @@ const App: React.FC = () => {
       teacherGoesToMapping ? 'mapped' : 'lesson'
     );
 
+    if (Object.keys(nextOverride).length > 0) {
+      nextOverride.updatedAt = Date.now();
+    } else {
+      recordDeletedOverride(currentGroupId, targetLessonId, Date.now());
+      recordDeletedOverride(currentGroupId, lessonId, Date.now());
+    }
+
     // Cancellation is date-specific and lives in the attendance records; act only if it really changed.
     const existingAtt = attendanceRecords.find(r => r.date === isoDate && (r.lessonId === targetLessonId || r.lessonId === lessonId));
     const wasCancelled = Boolean(existingAtt?.isCancelled);
@@ -1299,16 +1338,23 @@ const App: React.FC = () => {
       return;
     }
 
-    let updated = { ...scheduleOverrides };
-    delete updated[lessonId];
-    const deletedOverrides: string[] = [];
-    if (Object.keys(nextOverride).length === 0) {
-      delete updated[targetLessonId];
-      deletedOverrides.push(targetLessonId, lessonId);
-    } else {
-      updated[targetLessonId] = nextOverride;
-    }
-    updated = normalizeScheduleOverridesKeys(currentGroupId, updated);
+    let updatedSnapshot: Record<string, Partial<Lesson>> = {};
+    setScheduleOverrides(prev => {
+      let updated = { ...prev };
+      delete updated[lessonId];
+      if (Object.keys(nextOverride).length === 0) {
+        delete updated[targetLessonId];
+      } else {
+        updated[targetLessonId] = nextOverride;
+      }
+      updated = normalizeScheduleOverridesKeys(currentGroupId, updated);
+      scheduleOverridesRef.current = updated;
+      try {
+        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
+      } catch (e) {}
+      updatedSnapshot = updated;
+      return updated;
+    });
 
     if (cancelChanged) {
       markAttendance(
@@ -1340,32 +1386,32 @@ const App: React.FC = () => {
         });
       }
       const { overrides: cleanedOverrides } = clearTeacherOverridesForChangedKeys(
-        updated as any,
+        updatedSnapshot as any,
         (SCHEDULE_REGISTRY[currentGroupId] || {}) as any,
         subjectTeachers,
         updatedTeachers
       );
       const normalizedOverrides = normalizeScheduleOverridesKeys(currentGroupId, cleanedOverrides);
+      scheduleOverridesRef.current = normalizedOverrides as any;
       setScheduleOverrides(normalizedOverrides as any);
       setSubjectTeachers(updatedTeachers);
+      subjectTeachersRef.current = updatedTeachers;
       try {
         localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(normalizedOverrides));
         localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updatedTeachers));
       } catch (e) {}
-      pushPromise = pushGroupCloudData({ scheduleOverrides: normalizedOverrides as any, subjectTeachers: updatedTeachers, deletedOverrides }, currentGroupId);
+      pushPromise = pushGroupCloudData({ scheduleOverrides: normalizedOverrides as any, subjectTeachers: updatedTeachers, deletedOverrides: readDeletedOverrides(currentGroupId) }, currentGroupId);
     } else {
-      setScheduleOverrides(updated);
-      try {
-        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
-      } catch (e) {}
-      pushPromise = pushGroupCloudData({ scheduleOverrides: updated, deletedOverrides }, currentGroupId);
+      pushPromise = pushGroupCloudData({ scheduleOverrides: updatedSnapshot, deletedOverrides: readDeletedOverrides(currentGroupId) }, currentGroupId);
     }
 
     const pushSuccess = await pushPromise;
     if (pushSuccess) {
-      try {
-        localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
-      } catch (e) {}
+      if (scheduleMutationSeqRef.current === seq) {
+        try {
+          localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
+        } catch (e) {}
+      }
       if (summary.kind === 'warning') toast.warning(summary.text);
       else if (summary.kind === 'info') toast.info(summary.text);
       else toast.success(summary.text);
@@ -1464,6 +1510,10 @@ const App: React.FC = () => {
       targetLessonId = targetLessonId.replace(/^ingt-310-/, '310-');
     }
 
+    const seq = ++scheduleMutationSeqRef.current;
+    recordDeletedOverride(currentGroupId, targetLessonId, Date.now());
+    recordDeletedOverride(currentGroupId, lessonId, Date.now());
+
     try {
       localStorage.setItem('last_local_edit_' + currentGroupId, String(Date.now()));
       localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
@@ -1483,27 +1533,31 @@ const App: React.FC = () => {
       if (originalLesson) break;
     }
 
-    let updated = { ...scheduleOverrides };
-    delete updated[lessonId];
+    let updatedSnapshot: Record<string, Partial<Lesson>> = {};
+    setScheduleOverrides(prev => {
+      let updated = { ...prev };
+      delete updated[lessonId];
 
-    // AUD-043: If subjectTeachers has an override for this subject/type, pin original teacher
-    if (originalLesson) {
-      const typeKey = `${originalLesson.subject}::${originalLesson.type}`;
-      const assignedTeacher = subjectTeachers[typeKey] || subjectTeachers[originalLesson.subject];
-      if (assignedTeacher && originalLesson.teacher && assignedTeacher !== originalLesson.teacher) {
-        updated[targetLessonId] = { teacher: originalLesson.teacher };
+      // AUD-043: If subjectTeachers has an override for this subject/type, pin original teacher
+      if (originalLesson) {
+        const typeKey = `${originalLesson.subject}::${originalLesson.type}`;
+        const assignedTeacher = subjectTeachers[typeKey] || subjectTeachers[originalLesson.subject];
+        if (assignedTeacher && originalLesson.teacher && assignedTeacher !== originalLesson.teacher) {
+          updated[targetLessonId] = { teacher: originalLesson.teacher, updatedAt: Date.now() };
+        } else {
+          delete updated[targetLessonId];
+        }
       } else {
         delete updated[targetLessonId];
       }
-    } else {
-      delete updated[targetLessonId];
-    }
-    updated = normalizeScheduleOverridesKeys(currentGroupId, updated);
-
-    setScheduleOverrides(updated);
-    try {
-      localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
-    } catch (e) {}
+      updated = normalizeScheduleOverridesKeys(currentGroupId, updated);
+      scheduleOverridesRef.current = updated;
+      try {
+        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
+      } catch (e) {}
+      updatedSnapshot = updated;
+      return updated;
+    });
 
     // Also un-cancel in attendance if it was cancelled
     const allDays = Object.values(SCHEDULE_REGISTRY[currentGroupId] || {}).flatMap(days => days);
@@ -1516,11 +1570,13 @@ const App: React.FC = () => {
     }
 
     // Push reset to REST Cloud immediately
-    const ok = await pushGroupCloudData({ scheduleOverrides: updated, deletedOverrides: [targetLessonId, lessonId] }, currentGroupId);
+    const ok = await pushGroupCloudData({ scheduleOverrides: updatedSnapshot, deletedOverrides: readDeletedOverrides(currentGroupId) }, currentGroupId);
     if (ok) {
-      try {
-        localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
-      } catch (e) {}
+      if (scheduleMutationSeqRef.current === seq) {
+        try {
+          localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
+        } catch (e) {}
+      }
       toast.info('Пара сброшена до исходного расписания');
     } else {
       try {
@@ -1529,7 +1585,7 @@ const App: React.FC = () => {
       toast.error('Не удалось сохранить сброс в облако (ошибка доступа или сети)');
       return;
     }
-  }, [canEdit, currentGroupId, scheduleOverrides, subjectTeachers, attendanceRecords, selectedWeek, markAttendance]);
+  }, [canEdit, currentGroupId, subjectTeachers, attendanceRecords, selectedWeek, markAttendance]);
 
   // Merge default schedule with subject teachers, attendance cancellations, overrides & custom lessons
   const currentSchedule = useMemo(() => {

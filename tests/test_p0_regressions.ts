@@ -17,6 +17,9 @@ import {
   pullAttendanceRecordsFromV3
 } from '../utils/attendanceStorage';
 import { mergeAttendance, STUDENTS_REGISTRY } from '../attendance';
+import { noteScheduleSeenVer, isScheduleStaleRead } from '../utils/cloudSync';
+import { mergeUsefulState } from '../utils/usefulStorage';
+import { blockWindow } from '../utils/officialSchedule';
 
 let passed = 0;
 let failed = 0;
@@ -418,6 +421,105 @@ console.log('\n12. 3-way merge (merge3) tests');
   };
   const res4 = merge3([], baseMap, [remoteNewLesson], ['2026-10']);
   assert(res4.merged.length === 1 && res4.merged[0].absentStudentIds.includes(3), 'new remote lesson in fetched month is added to local');
+
+  // 13. Stage 1 (P0) Sync & KV resilience: DEF-01, DEF-02, DEF-03, DEF-08
+  console.log('\n--- 13. Stage 1 (P0) Sync & KV resilience ---');
+
+  // 13.1. Schedule overrides tombstone resilience and monotonic versioning
+  {
+    const GID = 'ingt-310';
+    const token = await createTelegramInitData({
+      user: JSON.stringify({ id: 1027070834, first_name: 'Admin' }),
+      auth_date: String(Math.floor(Date.now() / 1000))
+    }, BOT_TOKEN);
+
+    const putReq1 = new Request(`${BASE}/sync/schedule?groupId=${GID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': token },
+      body: JSON.stringify({
+        byGroup: {
+          [GID]: {
+            overrides: { '310-w1-mo-1': { note: 'Первая заметка', updatedAt: 1000 } },
+            updatedAt: 1000
+          }
+        }
+      })
+    });
+    const res1 = await worker.fetch(putReq1, env);
+    const data1 = await res1.json();
+    assert(data1.ok === true && data1.ver >= 1, 'Worker returns monotonic ver on first PUT');
+
+    // Second PUT: tombstone deletes 310-w1-mo-1, adds 310-w1-mo-2
+    const putReq2 = new Request(`${BASE}/sync/schedule?groupId=${GID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': token },
+      body: JSON.stringify({
+        byGroup: {
+          [GID]: {
+            overrides: { '310-w1-mo-2': { note: 'Вторая заметка', updatedAt: 2000 } },
+            deletedOverrides: { '310-w1-mo-1': 1500 },
+            updatedAt: 2000
+          }
+        }
+      })
+    });
+    const res2 = await worker.fetch(putReq2, env);
+    const data2 = await res2.json();
+    assert(data2.ok === true && data2.ver > data1.ver, 'Worker increments monotonic ver on second PUT');
+
+    // GET schedule and verify tombstone pruned deleted item
+    const getReq = new Request(`${BASE}/sync/schedule?groupId=${GID}`, { method: 'GET' });
+    const getRes = await worker.fetch(getReq, env);
+    const getData = await getRes.json();
+    const groupSlice = getData.byGroup[GID];
+    assert(!groupSlice.overrides['310-w1-mo-1'], 'Deleted override is purged by tombstone in worker');
+    assert(Boolean(groupSlice.overrides['310-w1-mo-2']), 'Alive override survives in worker');
+    assert(groupSlice.ver === data2.ver, 'Worker GET returns current monotonic ver');
+  }
+
+  // 13.2. Stale KV read protection: isScheduleStaleRead
+  {
+    const GID = 'p0-test-stale';
+    noteScheduleSeenVer(GID, 5);
+    assert(isScheduleStaleRead(GID, 4) === true, 'isScheduleStaleRead detects stale cloud ver (< seenVer)');
+    assert(isScheduleStaleRead(GID, 5) === false, 'isScheduleStaleRead accepts equal cloud ver');
+    assert(isScheduleStaleRead(GID, 6) === false, 'isScheduleStaleRead accepts higher cloud ver');
+  }
+
+  // 13.3. Useful tracker merge: hasLocalNewer and auto-heal
+  {
+    const GID = 'p0-test-useful';
+    const localItems: any[] = [
+      { id: 'u1', groupId: GID, title: 'Local newer note', text: 'Text', updatedAt: '2026-11-20T15:00:00Z', createdAt: '2026-11-20T10:00:00Z' }
+    ];
+    const cloudItems: any[] = [
+      { id: 'u1', groupId: GID, title: 'Cloud stale note', text: 'Text', updatedAt: '2026-11-20T12:00:00Z', createdAt: '2026-11-20T10:00:00Z' },
+      { id: 'u2', groupId: GID, title: 'Cloud new note', text: 'Text', updatedAt: '2026-11-20T13:00:00Z', createdAt: '2026-11-20T10:00:00Z' }
+    ];
+    const mergeRes = mergeUsefulState(GID, localItems, { rawItems: cloudItems, serverDeletedIds: [] });
+    assert(mergeRes.hasLocalNewer === true, 'mergeUsefulState flags hasLocalNewer when local item is newer');
+    const u1 = mergeRes.merged.find(i => i.id === 'u1');
+    assert(u1?.title === 'Local newer note', 'Local newer item wins over stale cloud item');
+    assert(mergeRes.merged.length === 2, 'Cloud new item is also merged');
+  }
+
+  // 13.4. DEF-08: blockWindow boundary checks (Block 3 vs Block 4)
+  {
+    const config: any = {
+      semesterStart: '2026-08-31',
+      blocks: [
+        { id: 1, start: '2026-08-31', end: '2026-09-27' },
+        { id: 2, start: '2026-09-28', end: '2026-10-25' },
+        { id: 3, start: '2026-10-26', end: '2026-11-22' },
+        { id: 4, start: '2026-11-23', end: '2026-12-20' }
+      ]
+    };
+    const b3 = blockWindow('2026-11-22', config); // Last day of Block 3
+    assert(b3.start === 9 && b3.weeks[3] === 12, '2026-11-22 resolves to Block 3 (weeks 9..12)');
+
+    const b4 = blockWindow('2026-11-23', config); // First day of Block 4
+    assert(b4.start === 13 && b4.weeks[3] === 16, '2026-11-23 resolves to Block 4 (weeks 13..16)');
+  }
 }
 
 (globalThis as any).fetch = realFetch;

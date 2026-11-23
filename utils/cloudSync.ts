@@ -4,9 +4,10 @@ import { AttendanceRecord, STUDENTS_REGISTRY } from '../attendance';
 import { SAMGTU_GROUP_MAP } from './samgtuGroupMap';
 import { convertOfficialSamgtuToWeekData } from './samgtuParser';
 import { SCHEDULE_REGISTRY } from '../constants';
-import { officialWeeksForCycle, weekFallbackChain, officialWeekHasLessons } from './officialWeeks';
+import { weekFallbackChain, officialWeekHasLessons } from './officialWeeks';
 import { getSemesterConfig, samaraISO } from './samaraDate';
-import { normalizeScheduleOverridesKeys } from './lessonOverrides';
+import { normalizeScheduleOverridesKeys, readDeletedOverrides } from './lessonOverrides';
+import { blockWindow } from './officialSchedule';
 
 import { WORKER_BASE, getAttendanceApiBase } from './attendanceStorage';
 
@@ -27,11 +28,47 @@ export interface GroupCloudData {
   deletedIds?: string[];
   schedule?: any;
   scheduleOverrides: Record<string, Partial<Lesson>>;
-  deletedOverrides?: string[];
+  deletedOverrides?: Record<string, number> | string[];
   subjectTeachers: Record<string, string>;
   attendance: AttendanceRecord[];
   lastUpdated?: number;
   fromNetwork?: boolean;
+  ver?: number;
+  stale?: boolean;
+}
+
+const SCHEDULE_STALE_WINDOW_MS = 120_000;
+const scheduleSeenVersKey = (gid: string) => `schedule_seen_ver_${String(gid || '').trim().toLowerCase()}`;
+
+export function readScheduleSeenVer(gid: string): { ver: number; at: number } | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(scheduleSeenVersKey(gid));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.ver === 'number') return parsed;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+export function noteScheduleSeenVer(gid: string, ver: number | undefined): void {
+  if (!ver || !Number.isFinite(ver)) return;
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const cleanGid = String(gid || '').trim().toLowerCase();
+    const current = readScheduleSeenVer(cleanGid);
+    if (!current || ver >= current.ver) {
+      localStorage.setItem(scheduleSeenVersKey(cleanGid), JSON.stringify({ ver, at: Date.now() }));
+    }
+  } catch {}
+}
+
+export function isScheduleStaleRead(gid: string, ver: number | undefined): boolean {
+  if (ver === undefined) return false;
+  const seen = readScheduleSeenVer(gid);
+  return Boolean(seen && ver < seen.ver && Date.now() - seen.at < SCHEDULE_STALE_WINDOW_MS);
 }
 
 import { SEED_SCHEDULE_OVERRIDES, SEED_SUBJECT_TEACHERS, SEED_ATTENDANCE, SEED_HOMEWORK, getSeedSubjectTeachers } from '../defaultData';
@@ -114,7 +151,8 @@ export const sanitizeOverrides = (overrides: Record<string, Partial<Lesson>>, gr
       delete clean.attachments;
       delete clean.attachmentsDate;
     }
-    if (Object.keys(clean).length > 0) {
+    const functionalKeys = Object.keys(clean).filter(k => k !== 'updatedAt');
+    if (functionalKeys.length > 0) {
       res[id] = clean;
     }
   }
@@ -309,7 +347,7 @@ export const fetchHomeworkSlice = async (
 };
 
 // Safe PUT with timeout
-const putJson = async (url: string, body: any, timeoutMs = 7000) => {
+const putJson = async (url: string, body: any, timeoutMs = 7000): Promise<{ ok: boolean; ver?: number; updatedAt?: number }> => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -365,9 +403,11 @@ const putJson = async (url: string, body: any, timeoutMs = 7000) => {
       // If the response is the default text from an un-updated worker, consider it failed
       if (text.includes('Running OK') && !text.includes('status') && !text.includes('data')) {
         logger.error('SYNC', `putJson received un-updated worker fallback for ${url}`, { url, text });
-        return false;
+        return { ok: false };
       }
-      return true;
+      let json: any = null;
+      try { json = JSON.parse(text); } catch {}
+      return { ok: true, ver: json?.ver, updatedAt: json?.updatedAt };
     }
     const errText = await res.text().catch(() => '');
     logger.error('SYNC', `pushGroupCloudData failed for ${urlGroupId || url}: HTTP ${res.status}`, { status: res.status, body: errText });
@@ -382,11 +422,11 @@ const putJson = async (url: string, body: any, timeoutMs = 7000) => {
         }
       } catch {}
     }
-    return false;
+    return { ok: false };
   } catch (e: any) {
     clearTimeout(id);
     logger.error('SYNC', `putJson network failure for ${url}: ${e?.message || e}`, e);
-    return false;
+    return { ok: false };
   }
 };
 
@@ -431,50 +471,61 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
     let cloudScheduleOverrides: Record<string, Partial<Lesson>> = localBackup.scheduleOverrides || {};
     let cloudSubjectTeachers: Record<string, string> = localBackup.subjectTeachers || {};
     let serverTimestamp = (schedRes.status === 'fulfilled' && schedRes.value) || (hwRes.status === 'fulfilled' && hwRes.value) ? now : 0;
+    let isStale = false;
+    let cloudVer = 0;
 
     if (schedRes.status === 'fulfilled' && schedRes.value) {
       const d = parseCloudPayload(schedRes.value);
       if (d && typeof d === 'object') {
         serverTimestamp = d.updatedAt ? Number(d.updatedAt) : now;
-        if (d.byGroup && d.byGroup[groupId]) {
-          const gData = d.byGroup[groupId];
-          if (gData.updatedAt) serverTimestamp = Number(gData.updatedAt);
-          if (gData.overrides !== undefined) cloudScheduleOverrides = gData.overrides;
-          if (gData.teachers !== undefined) cloudSubjectTeachers = gData.teachers;
-        } else if (groupId === 'ingt-310') {
-          if (d.overrides !== undefined) cloudScheduleOverrides = d.overrides;
-          if (d.teachers !== undefined) cloudSubjectTeachers = d.teachers;
+        cloudVer = Number(d.ver ?? d.byGroup?.[groupId]?.ver ?? 0);
+        if (isScheduleStaleRead(groupId, cloudVer)) {
+          isStale = true;
+          console.warn(`[CloudSync] Stale schedule read detected for ${groupId}: server ver ${cloudVer} < seen ver. Preserving local state.`);
         } else {
-          cloudScheduleOverrides = {};
-          cloudSubjectTeachers = {};
-        }
+          if (cloudVer > 0) {
+            noteScheduleSeenVer(groupId, cloudVer);
+          }
+          if (d.byGroup && d.byGroup[groupId]) {
+            const gData = d.byGroup[groupId];
+            if (gData.updatedAt) serverTimestamp = Number(gData.updatedAt);
+            if (gData.overrides !== undefined) cloudScheduleOverrides = gData.overrides;
+            if (gData.teachers !== undefined) cloudSubjectTeachers = gData.teachers;
+          } else if (groupId === 'ingt-310') {
+            if (d.overrides !== undefined) cloudScheduleOverrides = d.overrides;
+            if (d.teachers !== undefined) cloudSubjectTeachers = d.teachers;
+          } else {
+            cloudScheduleOverrides = {};
+            cloudSubjectTeachers = {};
+          }
 
-        // Sanitize out old generic "Кафедра ИНГТ" and normalize keys
-        cloudScheduleOverrides = normalizeScheduleOverridesKeys(groupId, sanitizeOverrides(cloudScheduleOverrides, groupId));
-        cloudSubjectTeachers = sanitizeTeachers(cloudSubjectTeachers, groupId);
+          // Sanitize out old generic "Кафедра ИНГТ" and normalize keys
+          cloudScheduleOverrides = normalizeScheduleOverridesKeys(groupId, sanitizeOverrides(cloudScheduleOverrides, groupId));
+          cloudSubjectTeachers = sanitizeTeachers(cloudSubjectTeachers, groupId);
 
-        const isDirty = typeof localStorage !== 'undefined' && localStorage.getItem(`schedule_dirty_${groupId}`) === 'true';
+          const isDirty = typeof localStorage !== 'undefined' && localStorage.getItem(`schedule_dirty_${groupId}`) === 'true';
 
-        // Preserve local attachments during sync if this device has unsynced local edits
-        if (isDirty && localBackup.scheduleOverrides) {
-          for (const [id, localOv] of Object.entries(localBackup.scheduleOverrides)) {
-            if (localOv?.attachments && localOv.attachments.length > 0) {
-              if (cloudScheduleOverrides[id]) {
-                if (!cloudScheduleOverrides[id].attachments || cloudScheduleOverrides[id].attachments.length === 0) {
-                  cloudScheduleOverrides[id].attachments = localOv.attachments;
+          // Preserve local attachments during sync if this device has unsynced local edits
+          if (isDirty && localBackup.scheduleOverrides) {
+            for (const [id, localOv] of Object.entries(localBackup.scheduleOverrides)) {
+              if (localOv?.attachments && localOv.attachments.length > 0) {
+                if (cloudScheduleOverrides[id]) {
+                  if (!cloudScheduleOverrides[id].attachments || cloudScheduleOverrides[id].attachments.length === 0) {
+                    cloudScheduleOverrides[id].attachments = localOv.attachments;
+                  }
+                } else {
+                  cloudScheduleOverrides[id] = localOv;
                 }
-              } else {
-                cloudScheduleOverrides[id] = localOv;
               }
             }
+            cloudScheduleOverrides = normalizeScheduleOverridesKeys(groupId, {
+              ...cloudScheduleOverrides,
+              ...localBackup.scheduleOverrides
+            });
+          } else {
+            try { localStorage.setItem(`schedule_overrides_${groupId}`, JSON.stringify(cloudScheduleOverrides)); } catch (e) {}
+            try { localStorage.setItem(`subject_teachers_${groupId}`, JSON.stringify(cloudSubjectTeachers)); } catch (e) {}
           }
-          cloudScheduleOverrides = normalizeScheduleOverridesKeys(groupId, {
-            ...cloudScheduleOverrides,
-            ...localBackup.scheduleOverrides
-          });
-        } else {
-          try { localStorage.setItem(`schedule_overrides_${groupId}`, JSON.stringify(cloudScheduleOverrides)); } catch (e) {}
-          try { localStorage.setItem(`subject_teachers_${groupId}`, JSON.stringify(cloudSubjectTeachers)); } catch (e) {}
         }
       }
     }
@@ -554,7 +605,9 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
       subjectTeachers: cloudSubjectTeachers,
       attendance: cloudAttendance,
       lastUpdated: serverTimestamp,
-      fromNetwork: isNetworkSuccess
+      fromNetwork: isNetworkSuccess,
+      ver: cloudVer,
+      stale: isStale
     };
 
     lastFetchedDataMap[groupId] = result;
@@ -603,16 +656,21 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
 
     promises.push((async () => {
       const endpoints = getEndpoints();
-      return await putJson(`${endpoints.schedule}?groupId=${encodeURIComponent(groupId)}`, {
+      const delOverrides = partialUpdate.deletedOverrides || readDeletedOverrides(groupId);
+      const res = await putJson(`${endpoints.schedule}?groupId=${encodeURIComponent(groupId)}`, {
         byGroup: {
           [groupId]: {
             overrides,
             teachers,
-            deletedOverrides: partialUpdate.deletedOverrides || [],
+            deletedOverrides: delOverrides,
             updatedAt: Date.now()
           }
         }
       });
+      if (res.ok && res.ver) {
+        noteScheduleSeenVer(groupId, res.ver);
+      }
+      return res.ok;
     })());
   }
 
@@ -664,7 +722,7 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
 
     promises.push((async () => {
       const endpoints = getEndpoints();
-      return await putJson(`${endpoints.homework}?groupId=${encodeURIComponent(groupId)}`, {
+      const res = await putJson(`${endpoints.homework}?groupId=${encodeURIComponent(groupId)}`, {
         byGroup: {
           [groupId]: {
             items: cleanItems,
@@ -673,6 +731,7 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
           }
         }
       });
+      return res.ok;
     })());
   }
 
@@ -729,7 +788,14 @@ export const fetchOfficialWeeks = async (
 export const fetchOfficialCycleWeeks = async (
   samgtuGroupId: number
 ): Promise<{ rawWeeks: Record<number, any>; usedWeeks: Record<number, number> }> => {
-  const targets = officialWeeksForCycle(samaraISO(new Date()), getSemesterConfig().semesterStart);
+  const cfg = getSemesterConfig();
+  const window = blockWindow(samaraISO(new Date()), cfg);
+  const targets: Record<1 | 2 | 3 | 4, number> = {
+    1: window.weeks[0],
+    2: window.weeks[1],
+    3: window.weeks[2],
+    4: window.weeks[3]
+  };
   const rawWeeks: Record<number, any> = {};
   const usedWeeks: Record<number, number> = {};
   for (const cycle of [1, 2, 3, 4] as const) {

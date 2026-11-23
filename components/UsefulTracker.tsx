@@ -98,7 +98,10 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     scope: `useful:${currentGroupId.toLowerCase()}`,
     refreshKey: `${currentGroupId}:${refreshTrigger}`,
     fetchState: ({ etag }) => fetchUsefulState(currentGroupId, etag),
-    mergeFn: (local, remote) => ({ state: mergeUsefulState(currentGroupId, local, remote).merged }),
+    mergeFn: (local, remote) => {
+      const res = mergeUsefulState(currentGroupId, local, remote);
+      return { state: res.merged, hasLocalNewer: res.hasLocalNewer };
+    },
     getState: () => itemsRef.current,
     setState: (next) => {
       itemsRef.current = next;
@@ -517,7 +520,8 @@ export const UsefulTracker: React.FC<UsefulTrackerProps> = ({
     setItems(updated);
     saveLocalUsefulItems(currentGroupId, updated);
     toast.info('Предложение отклонено');
-    pushGroupUsefulData(currentGroupId, updated);
+    itemsRef.current = updated;
+    usefulSync.flushPush();
   };
 
   const handleUnblockAllAuthors = async () => {

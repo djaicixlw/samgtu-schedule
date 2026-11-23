@@ -165,8 +165,18 @@ console.log("\n-----------------------------------------------------------------
 console.log("3. SCHEDULE OF PREVIOUSLY MISSING DAYS (W1 Mo, W3 Mo, W2 Tu, W4 Tu)");
 console.log("--------------------------------------------------------------------------------");
 
-const faidSchedule = SCHEDULE_REGISTRY['faid-310'];
-assert(!!faidSchedule, "SCHEDULE_REGISTRY['faid-310'] exists");
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const fixturePath = path.resolve(__dirname, '../public/schedules/archive/block-from-week-5/faid-310.json');
+const faidSchedule = fs.existsSync(fixturePath)
+  ? JSON.parse(fs.readFileSync(fixturePath, 'utf-8'))
+  : SCHEDULE_REGISTRY['faid-310'];
+assert(!!faidSchedule, "SCHEDULE_REGISTRY['faid-310'] or frozen fixture exists");
 
 // 3.1 Week 1 Monday
 const w1MoDay = faidSchedule[1]?.find(d => d.dayName === 'Понедельник');
