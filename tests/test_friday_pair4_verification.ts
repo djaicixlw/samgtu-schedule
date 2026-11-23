@@ -58,12 +58,13 @@ if (projLesson) {
   console.log("  ✓ [PASS] Tuesday Week 2: 09:45 (Колибасов) verified!");
 }
 
-// 2. Check public/schedules/ingt-310.json
-const chunkPath = path.resolve(__dirname, '../public/schedules/ingt-310.json');
+// 2. Check public/schedules/ingt-310.json or frozen fixture
+const frozenPath = path.resolve(__dirname, '../public/schedules/archive/block-from-week-5/ingt-310.json');
+const chunkPath = fs.existsSync(frozenPath) ? frozenPath : path.resolve(__dirname, '../public/schedules/ingt-310.json');
 const chunkData = JSON.parse(fs.readFileSync(chunkPath, 'utf8'));
-const chunkFri2 = chunkData['2']['4'];
-assert(!!chunkFri2, "public/schedules/ingt-310.json Friday Week 2 exists");
-assert(chunkFri2.lessons.length >= 0 && chunkFri2.lessons.length <= 6, "public/schedules/ingt-310.json Friday Week 2 must be 0..6 lessons");
+const chunkFri2 = chunkData['2']?.['4'] || (Array.isArray(chunkData['2']) ? chunkData['2'].find((d: any) => d.dayName === 'Пятница') : null);
+assert(!!chunkFri2, "Friday Week 2 exists in schedule fixture");
+assert(chunkFri2.lessons.length >= 0 && chunkFri2.lessons.length <= 6, "Friday Week 2 must be 0..6 lessons");
 chunkFri2.lessons.forEach((l: any, idx: number) => {
   assert(VALID_START_TIMES.includes(l.timeStart), `Chunk Friday Lesson ${idx + 1} timeStart valid: ${l.timeStart}`);
   assert(typeof l.subject === 'string' && l.subject.trim().length > 0, `Chunk Friday Lesson ${idx + 1} subject non-empty`);

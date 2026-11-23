@@ -173,13 +173,13 @@ export function getCanonicalGroupKey(input: { id?: string; name?: string } | str
     if (norm.id && norm.id !== 'custom-group') {
       return norm.id;
     }
-    // Clean id string: remove non-alphanumeric
-    const cleanId = idStr.toLowerCase().replace(/[^a-z0-9а-яё]/gi, '');
+    // Clean id string via single canonicalizer
+    const cleanId = makeGroupId(idStr);
     if (cleanId) return cleanId;
   }
 
-  // 3. Fallback clean name
-  return nameStr.toLowerCase().replace(/[^a-z0-9а-яё]/gi, '');
+  // 3. Fallback clean name via single canonicalizer
+  return makeGroupId(nameStr);
 }
 
 /**

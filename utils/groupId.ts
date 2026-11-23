@@ -117,7 +117,7 @@ export function transliterateCyrillic(text: string): string {
 
 /** Pre-cleaning shared by the structural and fallback stages (idempotent on ids). */
 function cleanGroupInput(name: string): string {
-  return name
+  const basic = name
     .replace(/^группа\s+/i, '')
     .replace(/[\u2010\u2011\u2012\u2013\u2014]/g, '-')
     .replace(/\s*[\(\[].*?[\)\]]/g, '')
@@ -126,6 +126,9 @@ function cleanGroupInput(name: string): string {
     .replace(/[\s_\\\/.,;]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '');
+
+  // Normalize 2-digit year prefix followed by dash and faculty (e.g. 25-ИНГТ-101м -> 25ингт-101м)
+  return basic.replace(/^(\d{2})-([a-zа-яё]+)-(\d+[a-zа-яё]*)$/i, '$1$2-$3');
 }
 
 /**

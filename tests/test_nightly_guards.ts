@@ -37,6 +37,18 @@ function resetSyncStateToBlock2() {
   );
 }
 
+function restoreSyncState() {
+  try {
+    if (originalSyncStateContent && fs.existsSync(SYNC_STATE_PATH)) {
+      fs.writeFileSync(SYNC_STATE_PATH, originalSyncStateContent, 'utf-8');
+    }
+  } catch {}
+}
+
+process.on('exit', restoreSyncState);
+process.on('SIGINT', () => { restoreSyncState(); process.exit(1); });
+process.on('uncaughtException', (err) => { restoreSyncState(); console.error(err); process.exit(1); });
+
 // Ensure base Block 2 state is active for tests 1-4
 resetSyncStateToBlock2();
 

@@ -9,7 +9,10 @@ import worker, {
   signFileUrl,
   verifyFileSignature,
   clearWorkerRateLimits,
-  deriveFileSigningKey
+  deriveFileSigningKey,
+  createStaffToken,
+  isAdminUser,
+  WORKER_VERSION
 } from '../cloudflare-worker.js';
 // AUD-038: the initData FORGERY helper moved out of the production worker.
 import { createTelegramInitData } from './worker_test_helpers';
@@ -419,6 +422,128 @@ assert(!authFileContent.includes("'618342'"), 'Plaintext starosta PIN 618342 NOT
 assert(!authFileContent.includes("'482915'"), 'Plaintext starosta PIN 482915 NOT stored in utils/auth.ts');
 assert(!(worker as any).ADMIN_PIN_HASH, 'Admin PIN hash strictly purged from worker (R3)');
 assert(!(worker as any).GROUP_STAROSTA_PIN_HASHES, 'Starosta PIN hashes strictly purged from worker (R3)');
+
+// ------------------------------------------------------------
+// TEST 6: DEF-07 AUTHORIZATION UNIFICATION & DEF-06 HEALTH
+// ------------------------------------------------------------
+console.log('\n--- 6. DEF-06 Health & DEF-07 Authorization Unification ---');
+
+// 6.1 GET /health returns workerVersion and ok: true
+const healthRes = await worker.fetch(new Request('https://worker.test/health'), mockEnv);
+assert(healthRes.status === 200, `GET /health returns 200 OK (got ${healthRes.status})`);
+const healthJson: any = await healthRes.json();
+assert(healthJson.ok === true && healthJson.workerVersion === WORKER_VERSION, `GET /health returns ok: true and workerVersion (${healthJson.workerVersion})`);
+
+// 6.2 isAdminUser unit tests
+const testPepper = 'test_pepper_security_audit_32_bytes!';
+const adminToken = await createStaffToken(testPepper, {
+  sub: 'blind_admin_1',
+  role: 'admin',
+  gid: '*',
+  exp: Date.now() + 3600000
+});
+const starostaToken = await createStaffToken(testPepper, {
+  sub: 'blind_starosta_1',
+  role: 'starosta',
+  gid: 'ingt-310',
+  exp: Date.now() + 3600000
+});
+
+// Admin via tokenPayload
+const isAdminByToken = await isAdminUser(mockEnv, null, 'blind_admin_1', { role: 'admin' });
+assert(isAdminByToken === true, 'isAdminUser authorizes tokenPayload.role === "admin"');
+
+// Admin via DEFAULT_ADMIN_TG_IDS
+const isAdminByTgId = await isAdminUser(mockEnv, { id: 1027070834 }, 'blind_x', null);
+assert(isAdminByTgId === true, 'isAdminUser authorizes user in DEFAULT_ADMIN_TG_IDS');
+
+// Starosta is NOT admin
+const starostaNotAdmin = await isAdminUser(mockEnv, { id: 999999 }, 'blind_starosta_1', { role: 'starosta', gid: 'ingt-310' });
+assert(starostaNotAdmin === false, 'isAdminUser rejects starosta without admin privileges');
+
+// 6.3 POST /v3/useful/decision allows admin even if g:<gid> is not in KV
+const mockEnvKV = {
+  ...mockEnv,
+  APP_DATA: {
+    get: async (k: string) => (k === 'g:admin' ? JSON.stringify({ staff: ['blind_admin_kv'] }) : null),
+    put: async () => {}
+  }
+};
+// Non-admin without g:ingt-399 gets 404
+const decStarostaReq = new Request('https://worker.test/v3/useful/decision', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Staff-Token': starostaToken
+  },
+  body: JSON.stringify({ gid: 'ingt-399', id: 'sg_0123456789ab', action: 'approve' })
+});
+const decStarostaRes = await worker.fetch(decStarostaReq, mockEnvKV);
+assert(decStarostaRes.status === 404, `Starosta without g:gid gets 404 on decision (got ${decStarostaRes.status})`);
+
+// Admin with adminToken bypasses g:gid 404 (and hits suggestion logic -> returns ok: true, already: true)
+const decAdminReq = new Request('https://worker.test/v3/useful/decision', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Staff-Token': adminToken
+  },
+  body: JSON.stringify({ gid: 'ingt-399', id: 'sg_0123456789ab', action: 'approve' })
+});
+const decAdminRes = await worker.fetch(decAdminReq, mockEnvKV);
+const decAdminJson: any = await decAdminRes.json();
+assert(decAdminJson.ok === true && decAdminJson.already === true, `Admin is permitted to moderate missing g:gid without 403 (got status ${decAdminRes.status})`);
+
+// 6.4 POST /upload with X-Staff-Token
+const uploadStaffReq = new Request('https://worker.test/upload', {
+  method: 'POST',
+  headers: {
+    'X-Staff-Token': starostaToken
+  }
+});
+const uploadStaffRes = await worker.fetch(uploadStaffReq, mockEnv);
+// Should NOT be 401 Unauthorized (it passes auth and fails on missing form data / file -> 400)
+assert(uploadStaffRes.status === 400, `POST /upload with X-Staff-Token passes auth (status 400 on empty form, got ${uploadStaffRes.status})`);
+
+// 6.5 POST /report with X-Staff-Token
+const reportStaffReq = new Request('https://worker.test/report', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Staff-Token': starostaToken
+  },
+  body: JSON.stringify({ text: 'Тестовый баг-репорт от старосты' })
+});
+const reportStaffRes = await worker.fetch(reportStaffReq, mockEnv);
+assert(reportStaffRes.status === 200, `POST /report with X-Staff-Token succeeds with 200 (got ${reportStaffRes.status})`);
+
+// 6.6 POST /export-doc with X-Staff-Token & In-Memory Rate Limiting
+const exportStaffReq = new Request('https://worker.test/export-doc', {
+  method: 'POST',
+  headers: {
+    'X-Staff-Token': starostaToken
+  }
+});
+const exportStaffRes = await worker.fetch(exportStaffReq, mockEnv);
+assert(exportStaffRes.status === 400, `POST /export-doc with X-Staff-Token passes auth (status 400 on empty form, got ${exportStaffRes.status})`);
+
+// Rate limit test on /export-doc (5 allowed, 6th returns 429)
+let rateLimitHit = false;
+for (let i = 0; i < 7; i++) {
+  const rlReq = new Request('https://worker.test/export-doc', {
+    method: 'POST',
+    headers: {
+      'X-Staff-Token': starostaToken,
+      'CF-Connecting-IP': '192.168.1.100'
+    }
+  });
+  const res = await worker.fetch(rlReq, mockEnv);
+  if (res.status === 429) {
+    rateLimitHit = true;
+    break;
+  }
+}
+assert(rateLimitHit, 'POST /export-doc enforces in-memory rate limiting (returns 429)');
 
 // ------------------------------------------------------------
 // SUMMARY

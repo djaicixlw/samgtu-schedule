@@ -1,3 +1,8 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import './setup_mock_auth';
 import { preloadAllSchedulesSync } from '../utils/scheduleNodeLoader';
 preloadAllSchedulesSync();
@@ -27,10 +32,15 @@ console.log('============================================================\n');
 
 // 1. Check 3-ИНГТ-111 (ingt-311) Teacher Purity
 console.log('--- 1. 3-ИНГТ-111 (ingt-311) Teacher Purity ---');
-const w1_311 = SCHEDULE_REGISTRY['ingt-311']?.[1] || [];
-const w2_311 = SCHEDULE_REGISTRY['ingt-311']?.[2] || [];
-const w3_311 = SCHEDULE_REGISTRY['ingt-311']?.[3] || [];
-const w4_311 = SCHEDULE_REGISTRY['ingt-311']?.[4] || [];
+const frozen311Path = path.resolve(__dirname, '../public/schedules/archive/block-from-week-5/ingt-311.json');
+let sched311 = SCHEDULE_REGISTRY['ingt-311'];
+if (fs.existsSync(frozen311Path)) {
+  sched311 = JSON.parse(fs.readFileSync(frozen311Path, 'utf8'));
+}
+const w1_311 = sched311?.[1] || [];
+const w2_311 = sched311?.[2] || [];
+const w3_311 = sched311?.[3] || [];
+const w4_311 = sched311?.[4] || [];
 
 const all311Lessons = [...w1_311, ...w2_311, ...w3_311, ...w4_311].flatMap(d => d.lessons);
 assert(all311Lessons.length > 0, `3-ИНГТ-111 has official schedule lessons (found ${all311Lessons.length})`);

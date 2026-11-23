@@ -1,8 +1,14 @@
 import assert from 'assert';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { 
   isPhysicalEducationLesson, 
   isPhysicalEducationLessonId 
 } from '../utils/scheduleLoader';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { 
   parseTimeToMinutes, 
   getSamaraTimeHM, 
@@ -69,6 +75,12 @@ console.log('  ✓ [PASS] PE filter accurately recognizes PE while strictly pres
 // 2. isPhysicalEducationLessonId resolution across registries
 // -----------------------------------------------------------------------------
 console.log('\n2. Testing isPhysicalEducationLessonId...');
+
+// Decouple from live schedule: ensure ingt-310 fixture lessons are available
+const frozenIngtPath = path.resolve(__dirname, '../public/schedules/archive/block-from-week-5/ingt-310.json');
+if (fs.existsSync(frozenIngtPath) && !isPhysicalEducationLessonId('310-w2-fr-1', 'ingt-310')) {
+  SCHEDULE_REGISTRY['ingt-310'] = JSON.parse(fs.readFileSync(frozenIngtPath, 'utf8'));
+}
 
 // ingt-310 has PE lesson: '310-w2-fr-1'
 const isPeLesson = isPhysicalEducationLessonId('310-w2-fr-1', 'ingt-310');

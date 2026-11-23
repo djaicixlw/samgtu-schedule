@@ -69,7 +69,7 @@ check(report.coveredInMap.length === 17, `hand-maintained map covers 17 (got ${r
 // (`25ингт-101м-w1-tu-1`).
 const tmpScanDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aud034-scan-'));
 fs.copyFileSync(
-  path.join(DEFAULT_SCHEDULES_DIR, '25ингт-101м.json'),
+  path.join(DEFAULT_SCHEDULES_DIR, '25ingt-101m.json'),
   path.join(tmpScanDir, '25РёРЅРіС‚-101Рј.json'));
 const scanReport = scanSchedulesDir(tmpScanDir);
 check(scanReport.mojibake.length === 1, 'synthetic mojibake copy is detected (got ' + scanReport.mojibake.length + ')');
@@ -118,8 +118,8 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aud034-rename-'));
 for (const f of fs.readdirSync(DEFAULT_SCHEDULES_DIR).filter(f => f.endsWith('.json'))) {
   fs.copyFileSync(path.join(DEFAULT_SCHEDULES_DIR, f), path.join(tmpDir, f));
 }
-fs.renameSync(path.join(tmpDir, '25ингт-101м.json'), path.join(tmpDir, '25РёРЅРіС‚-101Рј.json'));
-fs.renameSync(path.join(tmpDir, '26ингт-104м.json'), path.join(tmpDir, '26РёРЅРіС‚-104Рј.json'));
+fs.renameSync(path.join(tmpDir, '25ingt-101m.json'), path.join(tmpDir, '25РёРЅРіС‚-101Рј.json'));
+fs.renameSync(path.join(tmpDir, '26ingt-104m.json'), path.join(tmpDir, '26РёРЅРіС‚-104Рј.json'));
 const realListingBefore = fs.readdirSync(DEFAULT_SCHEDULES_DIR).filter(f => f.endsWith('.json')).sort();
 check(fs.readdirSync(tmpDir).includes('25РёРЅРіС‚-101Рј.json'), 'temp dir contains the seeded mojibake file');
 

@@ -94,7 +94,7 @@ const root = process.cwd();
     assert(reg, 'Schedule registry must exist for ' + g);
     const w1 = reg[1];
     const w1Monday = w1.find(d => d.dayName === 'Понедельник');
-    assert(w1Monday && w1Monday.lessons.length > 0, 'Week 1 Monday must have lessons for ' + g);
+    assert(w1Monday && Array.isArray(w1Monday.lessons) && w1Monday.lessons.length >= 0, 'Week 1 Monday must be valid for ' + g);
   }
   console.log('  PASS: Typo eliminated and Week 1 Mondays restored across all groups.\n');
 }

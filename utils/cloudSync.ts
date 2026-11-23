@@ -462,8 +462,8 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
     const gq = `groupId=${encodeURIComponent(groupId)}`;
     const endpoints = getEndpoints();
     const [schedRes, hwRes] = await Promise.allSettled([
-      fetchJson(`${endpoints.schedule}?${gq}`, 4000, signal, force),
-      fetchJson(`${endpoints.homework}?${gq}`, 4000, signal, force)
+      fetchJson(`${endpoints.schedule}?${gq}`, 4000, signal, true),
+      fetchJson(`${endpoints.homework}?${gq}`, 4000, signal, true)
     ]);
 
     if (signal?.aborted) return null;

@@ -302,6 +302,35 @@ export function registerScheduleAliases(canonicalId: string, data: WeekData): vo
     SCHEDULE_REGISTRY[`${fac}-${course}${num}`] = data;
   }
 
+  // Pattern: 25ingt-101m -> 25ингт-101м, 25-ингт-101м, 25ИНГТ-101м
+  const masterMatch = canonicalId.match(/^(\d{2})([a-z]+)-(\d+)([a-z])$/);
+  if (masterMatch) {
+    const year = masterMatch[1];
+    const fac = masterMatch[2];
+    const num = masterMatch[3];
+    const suffix = masterMatch[4];
+    const facRuMap: Record<string, string> = {
+      ingt: 'ингт',
+      faid: 'фаид',
+      htf: 'хтф',
+      asa: 'аса',
+      iait: 'иаит',
+      itf: 'итф',
+      etf: 'этф',
+      tef: 'тэф',
+      fmmt: 'фммт',
+      fpp: 'фпп',
+      iiego: 'ииэго'
+    };
+    const facRu = facRuMap[fac] || fac;
+    const suffixRu = suffix === 'm' ? 'м' : suffix;
+    SCHEDULE_REGISTRY[`${year}${facRu}-${num}${suffixRu}`] = data;
+    SCHEDULE_REGISTRY[`${year}-${facRu}-${num}${suffixRu}`] = data;
+    SCHEDULE_REGISTRY[`${year}${facRu.toUpperCase()}-${num}${suffixRu.toUpperCase()}`] = data;
+    SCHEDULE_REGISTRY[`${year}-${facRu.toUpperCase()}-${num}${suffixRu.toUpperCase()}`] = data;
+    SCHEDULE_REGISTRY[`${year}-${fac}-${num}${suffix}`] = data;
+  }
+
   // Explicit legacy aliases
   if (canonicalId === 'faid-310') {
     SCHEDULE_REGISTRY['faid-110'] = data;

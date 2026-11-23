@@ -141,6 +141,9 @@ const MANIFEST: Suite[] = [
   { name: 'test_official_fixtures', load: () => import('./test_official_fixtures') },
   { name: 'test_nightly_guards', load: () => import('./test_nightly_guards') },
   { name: 'test_suggestions_client', load: () => import('./test_suggestions_client') },
+
+  // DEF-05: 19 групп магистратуры и строгая ASCII-нормализация public/schedules/
+  { name: 'test_cyrillic_and_ascii_schedules', load: () => import('./test_cyrillic_and_ascii_schedules') },
 ];
 
 /** Files in tests/ that are not suites (helpers/fixtures/analysis scripts). */

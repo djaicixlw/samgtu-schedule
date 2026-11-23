@@ -1,4 +1,5 @@
 // Cloudflare Worker: Telegram Unlimited File Storage & CORS Cloud Sync Proxy for SamGTU 3-INGT-110
+export const WORKER_VERSION = '2026-11-23-stage2';
 import {
   attStorage, readMonth, applyLegacyPatch, applyOps, normalizeOps, readChanges, readStudentMarks,
   deleteSlotMarks, migrateCopy, migrateVerify, migrateFlip, migrateRollback, hasD1, currentRev
@@ -853,8 +854,9 @@ export const DEFAULT_ADMIN_TG_IDS = [1027070834];
 
 export function getAdminTgIds(env) {
   const ids = new Set(DEFAULT_ADMIN_TG_IDS);
-  if (env?.ADMIN_IDS) {
-    String(env.ADMIN_IDS).split(',').map(s => Number(s.trim())).filter(n => !isNaN(n) && n > 0).forEach(id => ids.add(id));
+  const rawIds = env?.ADMIN_TG_IDS || env?.ADMIN_IDS;
+  if (rawIds) {
+    String(rawIds).split(',').map(s => Number(s.trim())).filter(n => !isNaN(n) && n > 0).forEach(id => ids.add(id));
   }
   return ids;
 }
@@ -906,6 +908,33 @@ export function isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adm
 
 export async function isAuthorizedStaffOrAdmin(env, groupData, gid, userBlindId, tokenPayload, verifiedUser, adminData) {
   if (isAuthorizedStaff(groupData, gid, userBlindId, tokenPayload, adminData, verifiedUser, env)) {
+    return true;
+  }
+  if (userBlindId && !adminData && env?.APP_DATA) {
+    try {
+      const adminRaw = await env.APP_DATA.get("g:admin");
+      if (adminRaw) {
+        const loadedAdmin = JSON.parse(adminRaw);
+        if (Array.isArray(loadedAdmin?.staff) && loadedAdmin.staff.includes(userBlindId)) {
+          return true;
+        }
+      }
+    } catch {}
+  }
+  return false;
+}
+
+export async function isAdminUser(env, verifiedUser, userBlindId, tokenPayload, adminData) {
+  if (tokenPayload) {
+    if (tokenPayload.role === 'admin' || tokenPayload.gid === '*') return true;
+  }
+  if (verifiedUser?.id && getAdminTgIds(env).has(Number(verifiedUser.id))) {
+    return true;
+  }
+  if (env?.ADMIN_BLIND_ID && userBlindId && userBlindId === env.ADMIN_BLIND_ID) {
+    return true;
+  }
+  if (userBlindId && Array.isArray(adminData?.staff) && adminData.staff.includes(userBlindId)) {
     return true;
   }
   if (userBlindId && !adminData && env?.APP_DATA) {
@@ -1403,12 +1432,13 @@ export default {
 
     try {
       // 0. Maintenance & Service Health Endpoint
-      if (url.pathname === "/status" || url.pathname === "/maintenance") {
+      if (url.pathname === "/status" || url.pathname === "/maintenance" || url.pathname === "/health") {
         const isMaintenance = (env && (env.MAINTENANCE_MODE === "true" || env.MAINTENANCE_MODE === true)) || false;
         const message = (env && env.MAINTENANCE_MESSAGE) || "Ведутся плановые технические работы по обновлению базы данных расписания.";
         const estimatedEndTime = (env && env.MAINTENANCE_UNTIL) || null;
         return new Response(JSON.stringify({
           ok: true,
+          workerVersion: WORKER_VERSION,
           maintenance: isMaintenance,
           message,
           estimatedEndTime,
@@ -1749,8 +1779,11 @@ export default {
           try { body = await request.json(); } catch { return sgJson(corsHeaders, 400, { error: "Invalid JSON body" }); }
           const gid = typeof body?.gid === "string" ? body.gid.trim().toLowerCase() : "";
           if (!ATT_GID_RE.test(gid)) return sgJson(corsHeaders, 400, { error: "Invalid gid" });
-          const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser);
-          if (gate.response) return gate.response;
+          const isAdminCaller = await isAdminUser(env, verifiedUser, userBlindId, tokenPayload, adminData);
+          if (!isAdminCaller) {
+            const gate = await sgStaffGate(env, gid, userBlindId, tokenPayload, corsHeaders, adminData, verifiedUser);
+            if (gate.response) return gate.response;
+          }
           const res = await decideSuggestion(env, gid, body.id, body.action);
           return sgJson(corsHeaders, res.ok ? 200 : (res.status || 400), res.ok ? res : { error: res.error });
         }
@@ -2036,8 +2069,7 @@ export default {
 
         // 5d. POST /v3/admin/att/migrate {gid, mode: status|copy|flip|rollback}  (admin only)
         if (url.pathname === "/v3/admin/att/migrate" && request.method === "POST") {
-          const isAdminCaller = Boolean(tokenPayload && tokenPayload.role === 'admin') ||
-            Boolean(env.ADMIN_BLIND_ID && userBlindId && userBlindId === env.ADMIN_BLIND_ID);
+          const isAdminCaller = await isAdminUser(env, verifiedUser, userBlindId, tokenPayload);
           if (!isAdminCaller) return d1Json(corsHeaders, 403, { error: "Forbidden: admin only" });
           if (!hasD1(env)) return d1Json(corsHeaders, 500, { error: "D1 binding DB is not configured" });
           let body;
@@ -2560,24 +2592,32 @@ export default {
       // 0b. Bug Report Bot Relay Endpoint (POST /report)
       if (url.pathname === "/report" && request.method === "POST") {
         const initDataStr = extractInitDataFromRequest(request);
-        if (!initDataStr) {
-          return new Response(JSON.stringify({ error: "Unauthorized: Missing Telegram initData" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
+        const authHeader = request.headers.get("Authorization") || "";
+        const staffTokenHeader = request.headers.get("X-Staff-Token") || (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "");
+
+        let user = null;
+        let userBlindId = null;
+
+        if (initDataStr) {
+          const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN);
+          if (verifyResult.ok && verifyResult.user?.id) {
+            user = verifyResult.user;
+            if (env && env.ID_PEPPER) {
+              userBlindId = await blindId(env, user.id);
+            }
+          }
         }
 
-        const verifyResult = await verifyTelegramInitData(initDataStr, TELEGRAM_BOT_TOKEN);
-        if (!verifyResult.ok) {
-          return new Response(JSON.stringify({ error: verifyResult.error || "Invalid Telegram initData" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
+        if (!user && staffTokenHeader && env?.ID_PEPPER) {
+          const tokenPayload = await verifyStaffToken(staffTokenHeader, env.ID_PEPPER);
+          if (tokenPayload) {
+            userBlindId = tokenPayload.sub;
+            user = { id: tokenPayload.sub, first_name: tokenPayload.role === 'admin' ? 'Admin' : `Starosta (${tokenPayload.gid})` };
+          }
         }
 
-        const user = verifyResult.user;
-        if (!user || !user.id) {
-          return new Response(JSON.stringify({ error: "Missing user in Telegram initData" }), {
+        if (!user || !userBlindId) {
+          return new Response(JSON.stringify({ error: "Unauthorized: Missing Telegram initData or valid X-Staff-Token" }), {
             status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -2590,7 +2630,6 @@ export default {
           });
         }
 
-        const userBlindId = await blindId(env, user.id);
         const rlKey = `rl:report:${userBlindId}`;
         const attemptsRaw = await env.APP_DATA.get(rlKey);
         const attempts = attemptsRaw ? parseInt(attemptsRaw, 10) : 0;
@@ -3103,8 +3142,14 @@ export default {
 
         const hasAppKey = await requireAppKey(request, APP_SECRET);
         const initDataHeader = extractInitDataFromRequest(request);
+        const authHeader = request.headers.get("Authorization") || "";
+        const staffTokenHeader = request.headers.get("X-Staff-Token") || (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "");
+
         let initVerified = false;
         let verifiedUserId = null;
+        let staffVerified = false;
+        let userBlindId = null;
+
         if (initDataHeader) {
           const verifyResult = await verifyTelegramInitData(initDataHeader, TELEGRAM_BOT_TOKEN);
           if (verifyResult.ok && verifyResult.user?.id) {
@@ -3113,16 +3158,23 @@ export default {
           }
         }
 
-        // P0-03: Origin check completely removed from authorization. Must have valid initData or X-App-Key.
-        if (!hasAppKey && !initVerified) {
-          return new Response(JSON.stringify({ error: "Unauthorized: upload requires valid initData or X-App-Key" }), {
+        if (!initVerified && staffTokenHeader && env?.ID_PEPPER) {
+          const tokenPayload = await verifyStaffToken(staffTokenHeader, env.ID_PEPPER);
+          if (tokenPayload) {
+            staffVerified = true;
+            userBlindId = tokenPayload.sub;
+          }
+        }
+
+        // P0-03: Origin check completely removed from authorization. Must have valid initData, X-Staff-Token, or X-App-Key.
+        if (!hasAppKey && !initVerified && !staffVerified) {
+          return new Response(JSON.stringify({ error: "Unauthorized: upload requires valid initData, X-Staff-Token or X-App-Key" }), {
             status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
 
         // P0-03: Rate limiting by blindId in KV with TTL
-        let userBlindId = null;
         if (verifiedUserId) {
           if (!env || !env.ID_PEPPER) {
             return new Response(JSON.stringify({ error: "Internal server error" }), {
@@ -3131,18 +3183,18 @@ export default {
             });
           }
           userBlindId = await blindId(env, verifiedUserId);
-          if (env.APP_DATA && userBlindId) {
-            const rlKey = `rl:up:${userBlindId}`;
-            const countRaw = await env.APP_DATA.get(rlKey);
-            const count = countRaw ? parseInt(countRaw, 10) : 0;
-            if (count >= 10) {
-              return new Response(JSON.stringify({ error: "Too many upload requests. Please wait a moment." }), {
-                status: 429,
-                headers: { ...corsHeaders, "Content-Type": "application/json" }
-              });
-            }
-            await env.APP_DATA.put(rlKey, String(count + 1), { expirationTtl: 600 });
+        }
+        if (env && env.APP_DATA && userBlindId) {
+          const rlKey = `rl:up:${userBlindId}`;
+          const countRaw = await env.APP_DATA.get(rlKey);
+          const count = countRaw ? parseInt(countRaw, 10) : 0;
+          if (count >= 10) {
+            return new Response(JSON.stringify({ error: "Too many upload requests. Please wait a moment." }), {
+              status: 429,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
           }
+          await env.APP_DATA.put(rlKey, String(count + 1), { expirationTtl: 600 });
         }
 
         let formData;
@@ -3282,17 +3334,36 @@ export default {
       // 2b. Private Document Export for Starosta (Word .docx reports)
       if (url.pathname === "/export-doc" && request.method === "POST") {
         const exportHasAppKey = await requireAppKey(request, APP_SECRET);
-        if (!exportHasAppKey) {
-          const exportInit = extractInitDataFromRequest(request);
-          const exportVerify = exportInit
-            ? await verifyTelegramInitData(exportInit, TELEGRAM_BOT_TOKEN)
-            : { ok: false };
-          if (!exportVerify.ok || !exportVerify.user || !exportVerify.user.id) {
-            return new Response(JSON.stringify({ error: "Unauthorized: Telegram initData required" }), {
-              status: 401,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
+        const exportInit = extractInitDataFromRequest(request);
+        const authHeader = request.headers.get("Authorization") || "";
+        const staffTokenHeader = request.headers.get("X-Staff-Token") || (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "");
+
+        let exportUser = null;
+        let exportUserBlindId = null;
+
+        if (exportInit) {
+          const exportVerify = await verifyTelegramInitData(exportInit, TELEGRAM_BOT_TOKEN);
+          if (exportVerify.ok && exportVerify.user && exportVerify.user.id) {
+            exportUser = exportVerify.user;
+            if (env && env.ID_PEPPER) {
+              exportUserBlindId = await blindId(env, exportUser.id);
+            }
           }
+        }
+
+        if (!exportUser && staffTokenHeader && env?.ID_PEPPER) {
+          const tokenPayload = await verifyStaffToken(staffTokenHeader, env.ID_PEPPER);
+          if (tokenPayload) {
+            exportUserBlindId = tokenPayload.sub;
+            exportUser = { id: tokenPayload.sub };
+          }
+        }
+
+        if (!exportHasAppKey && !exportUser) {
+          return new Response(JSON.stringify({ error: "Unauthorized: Telegram initData or X-Staff-Token required" }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
         }
 
         if (!BOT_TOKEN) {
@@ -3310,7 +3381,25 @@ export default {
           });
         }
 
-        const formData = await request.formData();
+        // In-memory rate limiting: 5 exports per 10 minutes per user/IP
+        const exportRlKey = `export:${exportUserBlindId || request.headers.get("CF-Connecting-IP") || "anon"}`;
+        const exportCount = rlBump(exportRlKey, 10 * 60 * 1000, now);
+        if (exportCount > 5) {
+          return new Response(JSON.stringify({ error: "Too many export requests. Rate limit exceeded (max 5 per 10 minutes)." }), {
+            status: 429,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        let formData;
+        try {
+          formData = await request.formData();
+        } catch {
+          return new Response(JSON.stringify({ error: "Invalid form data" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
         const file = formData.get("document");
         const rawFileName = formData.get("filename") || "Ведомость_посещаемости.docx";
         const caption = formData.get("caption") || "📄 Официальная ведомость пропусков";
