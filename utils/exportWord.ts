@@ -38,7 +38,7 @@ export interface ExportWordResult {
  * @returns Metadata object detailing execution result and delivery method
  */
 export const exportAttendanceToWord = async (
-  records: AttendanceRecord[],
+  records: AttendanceRecord[] | Record<string, AttendanceRecord>,
   students: Student[],
   groupConfig: GroupConfig,
   faculty: Faculty
@@ -99,8 +99,12 @@ export const exportAttendanceToWord = async (
   const semName = semConfig.semesterName || 'осеннем семестре 2026-2027 уч.г.';
 
   // Restrict records strictly within semester boundaries [semesterStart, semesterEnd]
-  const recordsList = Array.isArray(records) ? records : Object.values(records || {});
-  const validRecords = recordsList.filter(r => r && r.date >= semesterStart && r.date <= semesterEnd);
+  const recordsList: AttendanceRecord[] = Array.isArray(records)
+    ? records
+    : (Object.values(records || {}) as AttendanceRecord[]);
+  const validRecords: AttendanceRecord[] = recordsList.filter((r): r is AttendanceRecord =>
+    Boolean(r && typeof r === 'object' && r.date && r.date >= semesterStart && r.date <= semesterEnd)
+  );
 
   students.forEach((student, index) => {
     let cumulativeAbsences = 0;
@@ -110,7 +114,7 @@ export const exportAttendanceToWord = async (
       let blockAbsences = 0;
       let blockExcused = 0;
       
-      validRecords.forEach(record => {
+      validRecords.forEach((record: AttendanceRecord) => {
         if (record.isCancelled) return;
         if (isPhysicalEducationLessonId(record.lessonId, groupConfig.id)) return;
         if (record.date >= block.start && record.date <= block.end) {
