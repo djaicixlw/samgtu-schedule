@@ -18,8 +18,7 @@ const getEndpoints = () => {
   const base = getAttendanceApiBase();
   return {
     schedule: base ? `${base}/sync/schedule` : '/sync/schedule',
-    homework: base ? `${base}/sync/homework` : '/sync/homework',
-    attendance: base ? `${base}/sync/attendance` : '/sync/attendance'
+    homework: base ? `${base}/sync/homework` : '/sync/homework'
   };
 };
 
@@ -308,7 +307,12 @@ export const fetchJsonMeta = async (
     if (res.status === 304) {
       return { status: 'not-modified', etag: resEtagOf(res, etag) };
     }
-    if (!res.ok) return { status: 'error' };
+    if (!res.ok) {
+      if (res.status >= 400 && res.status !== 404 && res.status !== 304) {
+        logger.warn('SYNC', `fetchJsonMeta HTTP ${res.status} for ${url.split('?')[0]}`);
+      }
+      return { status: 'error' };
+    }
     const resEtag = resEtagOf(res);
     const text = await res.text();
     try {
@@ -322,8 +326,11 @@ export const fetchJsonMeta = async (
       // Non-JSON response (e.g. unrouted worker fallback)
       return { status: 'error' };
     }
-  } catch (e) {
+  } catch (e: any) {
     clearTimeout(id);
+    if (e?.name !== 'AbortError') {
+      logger.warn('SYNC', `fetchJsonMeta network failure for ${url.split('?')[0]}: ${e?.message || e}`);
+    }
     return { status: 'error' };
   } finally {
     clearTimeout(id);
@@ -469,7 +476,9 @@ const putJson = async (url: string, body: any, timeoutMs = 7000): Promise<{ ok: 
     return { ok: false };
   } catch (e: any) {
     clearTimeout(id);
-    logger.error('SYNC', `putJson network failure for ${url}: ${e?.message || e}`, e);
+    if (e?.name !== 'AbortError') {
+      logger.error('SYNC', `putJson network failure for ${url}: ${e?.message || e}`, e);
+    }
     return { ok: false };
   }
 };
@@ -823,7 +832,13 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
   if (promises.length === 0) return true;
 
   const results = await Promise.allSettled(promises);
-  return results.every(r => r.status === 'fulfilled' && r.value === true);
+  const success = results.every(r => r.status === 'fulfilled' && r.value === true);
+  if (success) {
+    logger.info('SYNC', `pushGroupCloudData successful for ${groupId} (sections: ${Object.keys(partialUpdate).join(', ')})`);
+  } else {
+    logger.error('SYNC', `pushGroupCloudData partially or fully failed for ${groupId} (sections: ${Object.keys(partialUpdate).join(', ')})`);
+  }
+  return success;
 };
 
 /**

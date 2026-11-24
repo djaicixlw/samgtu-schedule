@@ -24,6 +24,7 @@
  */
 
 import { sendCrashReport } from './telemetry';
+import { logger } from './logger';
 
 /** In-memory session fallback: key -> last value that failed to persist. */
 const memoryFallback = new Map<string, string>();
@@ -44,6 +45,51 @@ export interface SafeSetResult {
   fromMemory: boolean;
 }
 
+/**
+ * Prunes foreign schedule caches from localStorage when quota is exceeded,
+ * freeing up storage while strictly preserving:
+ * 1. Current user's group data (my_group_id / selected_group_id).
+ * 2. Any unsaved / dirty keys (containing 'dirty' or '_dirty_').
+ * 3. Base attendance maps and pending sync items.
+ */
+export function pruneForeignScheduleCache(): number {
+  if (typeof localStorage === 'undefined') return 0;
+  let currentGroup = '';
+  try {
+    currentGroup = (localStorage.getItem('my_group_id') || localStorage.getItem('selected_group_id') || '').trim().toLowerCase();
+  } catch {}
+
+  const keysToRemove: string[] = [];
+  try {
+    const len = localStorage.length;
+    for (let i = 0; i < len; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      const lower = k.toLowerCase();
+      // Never touch dirty keys
+      if (lower.includes('dirty')) continue;
+      // Never touch current group's keys if currentGroup is known
+      if (currentGroup && lower.includes(currentGroup)) continue;
+      // Check for foreign schedule cache prefixes
+      if (
+        lower.startsWith('sched_cache_') ||
+        lower.startsWith('schedule_cache_') ||
+        lower.startsWith('v1_schedule_cache_') ||
+        lower.startsWith('schedule_chunk_') ||
+        lower.startsWith('custom_schedule_')
+      ) {
+        keysToRemove.push(k);
+      }
+    }
+    for (const k of keysToRemove) {
+      localStorage.removeItem(k);
+    }
+  } catch (err) {
+    logger.warn('STORAGE', 'Failed during pruneForeignScheduleCache', err);
+  }
+  return keysToRemove.length;
+}
+
 export function safeSetItem(
   key: string,
   value: string,
@@ -61,6 +107,20 @@ export function safeSetItem(
     memoryFallback.delete(key);
     return { ok: true, fromMemory: false };
   } catch (e) {
+    logger.error('STORAGE', `QuotaExceededError writing key "${key}" (${value.length} chars)`, e);
+    // Attempt self-healing by pruning foreign schedule caches
+    const pruned = pruneForeignScheduleCache();
+    if (pruned > 0) {
+      try {
+        localStorage.setItem(key, value);
+        degradedKeys.delete(key);
+        memoryFallback.delete(key);
+        logger.info('STORAGE', `Recovered from QuotaExceededError by pruning ${pruned} foreign cache keys`);
+        return { ok: true, fromMemory: false };
+      } catch {
+        // Still failed after pruning
+      }
+    }
     memoryFallback.set(key, value);
     degradedKeys.add(key);
     safeStorageStats.quotaErrors++;

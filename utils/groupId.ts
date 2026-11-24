@@ -202,3 +202,5 @@ export function isValidGroupId(id: string): boolean {
   if (!id || typeof id !== 'string') return false;
   return /^[a-z0-9-]+$/.test(id);
 }
+
+export const normalizeGroupId = makeGroupId;

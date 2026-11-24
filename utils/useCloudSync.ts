@@ -104,16 +104,24 @@ export function useCloudSync<TRemote, TState>(
     };
     const handleOnline = () => engine.notifyOnline();
 
-    window.addEventListener('visibilitychange', handleActive);
-    window.addEventListener('focus', handleActive);
-    window.addEventListener('online', handleOnline);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleActive);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', handleActive);
+      window.addEventListener('online', handleOnline);
+    }
 
     return () => {
       engine.dispose();
       engineRef.current = null;
-      window.removeEventListener('visibilitychange', handleActive);
-      window.removeEventListener('focus', handleActive);
-      window.removeEventListener('online', handleOnline);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleActive);
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', handleActive);
+        window.removeEventListener('online', handleOnline);
+      }
     };
   }, [enabled, refreshKey]);
 

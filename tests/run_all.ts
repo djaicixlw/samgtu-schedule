@@ -147,6 +147,9 @@ const MANIFEST: Suite[] = [
 
   // Stage 3: Архив Блока 3, 17-я неделя декабря, сессия и синхронизация экзаменов
   { name: 'test_session_and_archive', load: () => import('./test_session_and_archive') },
+
+  // Stage 4: Наблюдаемость (DEF-10), WebView document visibility (DEF-12) и архиватор (DEF-14)
+  { name: 'test_stage4_observability_webview', load: () => import('./test_stage4_observability_webview') },
 ];
 
 /** Files in tests/ that are not suites (helpers/fixtures/analysis scripts). */

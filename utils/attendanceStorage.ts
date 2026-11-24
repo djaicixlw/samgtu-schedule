@@ -2,9 +2,10 @@ import { Student } from '../types';
 import { getAttendanceMode, refreshServerMirror, pushMonthOps } from './attendanceD1Client';
 import { safeSetItem, safeGetItem } from './safeStorage';
 import type { AttendanceRecord } from '../attendance';
-import { normalizeGroupId } from './groupAliases';
+import { normalizeGroupId } from './groupId';
 import { getSemesterWeek, getDayName } from './samaraDate';
 import { SCHEDULE_REGISTRY } from '../constants';
+import { logger } from './logger';
 
 const DEFAULT_PROD_WORKER_URL = 'https://floral-union-26d1.aghaskdbbb.workers.dev';
 
@@ -455,10 +456,14 @@ export async function registerSlotsWithServer(
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
+      logger.error('ATTENDANCE', `registerSlotsWithServer HTTP ${res.status} for ${groupId}`);
       return { ok: false, error: json.error || `HTTP ${res.status}` };
     }
     return { ok: true, registered: json.registered };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE', `registerSlotsWithServer network failure for ${groupId}`, err);
+    }
     return { ok: false, error: err?.message || 'Network error' };
   }
 }
@@ -480,10 +485,14 @@ export async function publishInvitesWithServer(
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
+      logger.error('ATTENDANCE', `publishInvitesWithServer HTTP ${res.status} for ${groupId}`);
       return { ok: false, error: json.error || `HTTP ${res.status}` };
     }
     return { ok: true, count: json.count };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE', `publishInvitesWithServer network failure for ${groupId}`, err);
+    }
     return { ok: false, error: err?.message || 'Network error' };
   }
 }
@@ -505,10 +514,16 @@ export async function fetchMonthAttendanceV3(
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (res.status >= 400 && res.status !== 404) {
+        logger.error('ATTENDANCE', `fetchMonthAttendanceV3 HTTP ${res.status} for ${groupId} (month ${month})`);
+      }
       return { ok: false, error: json.error || `HTTP ${res.status}`, status: res.status };
     }
     return { ok: true, data: json, status: res.status };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE', `fetchMonthAttendanceV3 network failure for ${groupId} (month ${month})`, err);
+    }
     return { ok: false, error: err?.message || 'Network error' };
   }
 }
@@ -550,10 +565,14 @@ export async function saveMonthAttendanceV3(
       };
     }
     if (!res.ok) {
+      logger.error('ATTENDANCE', `saveMonthAttendanceV3 HTTP ${res.status} for ${groupId} (month ${month})`);
       return { ok: false, error: json.error || `HTTP ${res.status}`, status: res.status };
     }
     return { ok: true, ver: json.ver, status: res.status };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE', `saveMonthAttendanceV3 network failure for ${groupId} (month ${month})`, err);
+    }
     return { ok: false, error: err?.message || 'Network error' };
   }
 }
@@ -781,9 +800,13 @@ export async function claimStaffRole(
     });
     const json = await res.json().catch(() => ({}));
     if (res.status === 429) {
+      logger.warn('AUTH', 'Rate limit exceeded on claimStaffRole (HTTP 429)');
       return { ok: false, error: 'Слишком много попыток ввода кода. Подождите 15 минут.' };
     }
     if (!res.ok) {
+      if (res.status >= 500) {
+        logger.error('AUTH', `claimStaffRole server error HTTP ${res.status}`);
+      }
       return { ok: false, error: json.error || 'Неверный код группы или администратора' };
     }
     const finalGid = json.gid || canonicalGid;
@@ -795,6 +818,9 @@ export async function claimStaffRole(
     }
     return { ok: true, role: json.role || 'starosta', gid: finalGid, token: json.token };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('AUTH', 'claimStaffRole network failure', err);
+    }
     return { ok: false, error: err?.message || 'Ошибка сети' };
   }
 }
@@ -1061,9 +1087,16 @@ export async function syncAttendanceRecordsToV3(
     }
 
     writeAttendanceBase(gid, newBase);
-    if (failure) return { ok: false, error: failure.error, status: failure.status };
+    if (failure) {
+      logger.error('ATTENDANCE', `syncAttendanceRecordsToV3 failed for ${gid}: ${failure.error}`, { status: failure.status });
+      return { ok: false, error: failure.error, status: failure.status };
+    }
+    logger.info('SYNC', `syncAttendanceRecordsToV3 successfully pushed for ${gid} (${deltas.size} months)`);
     return { ok: true };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE', `syncAttendanceRecordsToV3 uncaught exception for ${groupId}`, err);
+    }
     return { ok: false, error: err?.message || 'Sync failed' };
   }
 }
@@ -1523,9 +1556,12 @@ export async function pullAttendanceSnapshotFromV3(
       }
     }
 
+    logger.info('SYNC', `Attendance PULL success for ${gid} (${recordsByLesson.size} records, ${fetchedMonths.length} months)`);
     return { records: Array.from(recordsByLesson.values()), fetchedMonths };
-  } catch (err) {
-    console.warn('Failed to pull attendance from v3:', err);
+  } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE', `Failed to pull attendance from v3 for ${groupId}`, err);
+    }
     return { records: [], fetchedMonths: [] };
   }
 }

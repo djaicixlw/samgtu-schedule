@@ -247,14 +247,15 @@ export async function flushSyncNow(groupId?: string): Promise<void> {
   }
 }
 
-if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   const flushAll = () => { void flushSyncNow(); };
-  window.addEventListener('pagehide', flushAll);
-  document.addEventListener('visibilitychange', () => {
+  const onVisibilityChange = () => {
     if (document.visibilityState === 'hidden') {
       void flushSyncNow();
     }
-  });
+  };
+  window.addEventListener('pagehide', flushAll);
+  document.addEventListener('visibilitychange', onVisibilityChange);
 }
 
 export const useAttendance = (isAuthenticated: boolean, currentGroupId: string | null, refreshTrigger: number = 0) => {
@@ -385,15 +386,19 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
       }
     };
 
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
     if (typeof window !== 'undefined') {
-      window.addEventListener('visibilitychange', handleVisibilityChange);
       window.addEventListener('online', handleOnline);
     }
 
     return () => {
       isMounted = false;
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
       if (typeof window !== 'undefined') {
-        window.removeEventListener('visibilitychange', handleVisibilityChange);
         window.removeEventListener('online', handleOnline);
       }
     };

@@ -19,7 +19,7 @@ import { fetchGroupCloudData, pushGroupCloudData, sanitizeTeachers, sanitizeOver
 import { SEED_SCHEDULE_OVERRIDES, SEED_SUBJECT_TEACHERS, getSeedSubjectTeachers } from './defaultData';
 import { logger } from './utils/logger';
 import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuParser';
-import { normalizeGroupId } from './utils/groupAliases';
+import { normalizeGroupId } from './utils/groupId';
 import ScheduleState from './components/ScheduleState';
 import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason, isPhysicalEducationLesson } from './utils/scheduleLoader';
 import { getLocalStudentLink, claimStaffRole, getLocalStudents, restoreRosterFromCloud, syncAttendanceRecordsToV3, unlinkStudentV3, clearGroupAccessCodes, saveStaffToken, getAttendanceApiBase } from './utils/attendanceStorage';
@@ -1004,7 +1004,9 @@ const App: React.FC = () => {
       loadCloud(true);
     };
 
-    window.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    }
     window.addEventListener('focus', handleVisibilityOrFocus);
 
     return () => {
@@ -1014,7 +1016,9 @@ const App: React.FC = () => {
         clearTimeout(pollTimer);
         pollTimer = null;
       }
-      window.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      }
       window.removeEventListener('focus', handleVisibilityOrFocus);
     };
   }, [currentGroupId]);
@@ -1618,8 +1622,10 @@ const App: React.FC = () => {
       deletedExamIds: readDeletedExams(currentGroupId)
     }, currentGroupId);
     if (ok) {
+      logger.info('EXAMS', `Exam saved and synced for ${currentGroupId}: ${exam.subject}`);
       toast.success('Экзамен сохранён');
     } else {
+      logger.error('EXAMS', `Failed to sync exam to cloud for ${currentGroupId}: ${exam.subject}`);
       toast.error('Сохранено локально (ошибка облачной синхронизации)');
     }
   }, [canEdit, currentGroupId, exams]);
@@ -1638,8 +1644,10 @@ const App: React.FC = () => {
       deletedExamIds: readDeletedExams(currentGroupId)
     }, currentGroupId);
     if (ok) {
+      logger.info('EXAMS', `Exam deleted and synced for ${currentGroupId}: ${examId}`);
       toast.success('Экзамен удалён');
     } else {
+      logger.error('EXAMS', `Failed to sync exam deletion to cloud for ${currentGroupId}: ${examId}`);
       toast.error('Удалено локально (ошибка облачной синхронизации)');
     }
   }, [canEdit, currentGroupId, exams]);
