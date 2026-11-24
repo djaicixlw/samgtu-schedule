@@ -2,7 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, Susp
 import { ThemePref, getThemePref, setThemePref, syncTelegramTheme } from './utils/theme';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES, createEmptyWeek } from './constants';
 import { getSemesterWeek, getWeekDateRange, getDayISODate, useAttendance, getSamaraISODate } from './attendance';
-import { getSamaraDate, getSemesterConfig, getDayName, samaraISO } from './utils/samaraDate';
+import { getSamaraDate, getSemesterConfig, getDayName, samaraISO, isSessionPeriod } from './utils/samaraDate';
 import { useSamaraDayTick } from './utils/useNow';
 import { useOnlineStatus } from './utils/useOnlineStatus';
 import { deleteMyData, local_storage, session_storage } from './utils/personalData';
@@ -13,9 +13,9 @@ import BottomNav from './components/BottomNav';
 import TabErrorBoundary from './components/TabErrorBoundary';
 import { fetchPendingCount } from './utils/suggestionsClient';
 import { Toaster, toast } from 'sonner';
-import { UserRole, Lesson, GroupConfig, WeekData } from './types';
+import { UserRole, Lesson, GroupConfig, WeekData, ExamItem } from './types';
 import { TeacherAssignmentScope } from './components/EditLessonModal';
-import { fetchGroupCloudData, pushGroupCloudData, sanitizeTeachers, sanitizeOverrides, WORKER_BASE } from './utils/cloudSync';
+import { fetchGroupCloudData, pushGroupCloudData, sanitizeTeachers, sanitizeOverrides, WORKER_BASE, getSavedExams, saveLocalExams, recordDeletedExam, readDeletedExams } from './utils/cloudSync';
 import { SEED_SCHEDULE_OVERRIDES, SEED_SUBJECT_TEACHERS, getSeedSubjectTeachers } from './defaultData';
 import { logger } from './utils/logger';
 import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuParser';
@@ -70,6 +70,7 @@ const StudentLinkModal = lazyWithRetry(() => import('./components/StudentLinkMod
 const MyAbsencesModal = lazyWithRetry(() => import('./components/MyAbsencesModal'));
 const PrivacyPolicyModal = lazyWithRetry(() => import('./components/PrivacyPolicyModal'));
 const StarostaOnboardingModal = lazyWithRetry(() => import('./components/StarostaOnboardingModal'));
+const ExamScheduleView = lazyWithRetry(() => import('./components/ExamScheduleView'));
 
 interface UserProfile {
   displayName?: string | null;
@@ -678,6 +679,10 @@ const App: React.FC = () => {
     }
   });
 
+  // Schedule View Mode: 'lessons' vs 'exams'
+  const [scheduleViewMode, setScheduleViewMode] = useState<'lessons' | 'exams'>(() => isSessionPeriod() ? 'exams' : 'lessons');
+  const [exams, setExams] = useState<ExamItem[]>(() => getSavedExams(currentGroupId));
+
   const scheduleOverridesRef = useRef(scheduleOverrides);
   useEffect(() => {
     scheduleOverridesRef.current = scheduleOverrides;
@@ -713,6 +718,7 @@ const App: React.FC = () => {
     } catch {
       setSubjectTeachers(sanitizeTeachers({ ...getSeedSubjectTeachers(currentGroupId) }, currentGroupId));
     }
+    setExams(getSavedExams(currentGroupId));
 
     // On-demand load group schedule chunk if not loaded yet
     if (!isScheduleLoaded(currentGroupId)) {
@@ -956,6 +962,12 @@ const App: React.FC = () => {
               localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt));
             } catch (e) {}
           }
+          if (cloud.exams !== undefined) {
+            setExams(cloud.exams);
+            try {
+              saveLocalExams(currentGroupId, cloud.exams);
+            } catch (e) {}
+          }
         }
       } catch (err) {
         if (!controller.signal.aborted) {
@@ -1076,6 +1088,12 @@ const App: React.FC = () => {
             setSubjectTeachers(cleanSt);
             try {
               localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt));
+            } catch (e) {}
+          }
+          if (cloud.exams !== undefined) {
+            setExams(cloud.exams);
+            try {
+              saveLocalExams(currentGroupId, cloud.exams);
             } catch (e) {}
           }
         }
@@ -1587,6 +1605,45 @@ const App: React.FC = () => {
     }
   }, [canEdit, currentGroupId, subjectTeachers, attendanceRecords, selectedWeek, markAttendance]);
 
+  const handleSaveExam = useCallback(async (exam: ExamItem) => {
+    if (!canEdit) {
+      toast.error('Только староста группы или администратор могут редактировать экзамены');
+      return;
+    }
+    const updated = [...exams.filter(e => e.id !== exam.id), exam];
+    setExams(updated);
+    saveLocalExams(currentGroupId, updated);
+    const ok = await pushGroupCloudData({
+      exams: updated,
+      deletedExamIds: readDeletedExams(currentGroupId)
+    }, currentGroupId);
+    if (ok) {
+      toast.success('Экзамен сохранён');
+    } else {
+      toast.error('Сохранено локально (ошибка облачной синхронизации)');
+    }
+  }, [canEdit, currentGroupId, exams]);
+
+  const handleDeleteExam = useCallback(async (examId: string) => {
+    if (!canEdit) {
+      toast.error('Только староста группы или администратор могут удалять экзамены');
+      return;
+    }
+    const updated = exams.filter(e => e.id !== examId);
+    setExams(updated);
+    saveLocalExams(currentGroupId, updated);
+    recordDeletedExam(currentGroupId, examId);
+    const ok = await pushGroupCloudData({
+      exams: updated,
+      deletedExamIds: readDeletedExams(currentGroupId)
+    }, currentGroupId);
+    if (ok) {
+      toast.success('Экзамен удалён');
+    } else {
+      toast.error('Удалено локально (ошибка облачной синхронизации)');
+    }
+  }, [canEdit, currentGroupId, exams]);
+
   // Merge default schedule with subject teachers, attendance cancellations, overrides & custom lessons
   const currentSchedule = useMemo(() => {
     const rawSchedule = SCHEDULE_REGISTRY[currentGroupId]?.[selectedWeek];
@@ -2002,8 +2059,41 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* 4-Week Cycle Switcher - Grid of 4 equal buttons (Zero overflow!) */}
+            {/* Mode Switcher: Lessons vs Exams */}
             {activeTab === 'schedule' && (
+              <div className="flex items-center justify-between gap-2 mb-2 w-full">
+                <div className="flex p-0.5 bg-slate-200/80 dark:bg-slate-800/90 rounded-xl w-full border border-slate-200/60 dark:border-slate-700/60">
+                  <button
+                    onClick={() => setScheduleViewMode('lessons')}
+                    className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                      scheduleViewMode === 'lessons'
+                        ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    Расписание пар
+                  </button>
+                  <button
+                    onClick={() => setScheduleViewMode('exams')}
+                    className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                      scheduleViewMode === 'exams'
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <GraduationCap className="w-3.5 h-3.5" />
+                    Сессия / Экзамены
+                    {isSessionPeriod() && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 4-Week Cycle Switcher - Grid of 4 equal buttons (Zero overflow!) */}
+            {activeTab === 'schedule' && scheduleViewMode === 'lessons' && (
               <div className="space-y-1.5 w-full">
                 <div className="grid grid-cols-4 gap-1.5 bg-slate-200/60 dark:bg-slate-800/90 border border-slate-200/60 dark:border-transparent p-1 rounded-2xl w-full">
                   {[1, 2, 3, 4].map(w => (
@@ -2029,7 +2119,22 @@ const App: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto px-4 py-6 w-full max-w-full pb-28 sm:pb-24">
-        {activeTab === 'schedule' && (
+        {activeTab === 'schedule' && scheduleViewMode === 'exams' && (
+          <TabErrorBoundary tabName="Экзамены">
+            <Suspense fallback={<TabFallback />}>
+              <ExamScheduleView
+                currentGroupId={currentGroupId}
+                userRole={effectiveRole}
+                exams={exams}
+                onSaveExam={handleSaveExam}
+                onDeleteExam={handleDeleteExam}
+                isSessionActive={isSessionPeriod()}
+              />
+            </Suspense>
+          </TabErrorBoundary>
+        )}
+
+        {activeTab === 'schedule' && scheduleViewMode === 'lessons' && (
           <TabErrorBoundary tabName="Расписание">
             {isScheduleLoading ? (
               <ScheduleState

@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ClipboardCheck, Download, FileText, Table as TableIcon, Copy, Shield, Users } from 'lucide-react';
-import { STUDENTS_REGISTRY, useAttendance, BLOCKS, getSemesterWeek, getDayName, getSamaraISODate, TIME_SLOTS } from '../attendance';
+import { STUDENTS_REGISTRY, useAttendance, BLOCKS, getSemesterWeek, getDayName, getSamaraISODate, TIME_SLOTS, isSessionPeriod } from '../attendance';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS, FACULTIES } from '../constants';
-import { Lesson, Student, GroupConfig } from '../types';
+import { Lesson, Student, GroupConfig, WeekData } from '../types';
 import { toast } from 'sonner';
 import { getLocalStudents, syncAttendanceRecordsToV3 } from '../utils/attendanceStorage';
 import { AttendanceMatrix } from './AttendanceMatrix';
-import { isPhysicalEducationLessonId } from '../utils/scheduleLoader';
+import { isPhysicalEducationLessonId, loadBlockScheduleForDate, getArchiveScheduleSync } from '../utils/scheduleLoader';
 import { buildDayLessons } from '../utils/dayLessons';
 
 interface AttendanceTrackerProps {
@@ -102,7 +102,24 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   const week = getSemesterWeek(dateObj, currentGroupId);
   const dayName = getDayName(dateObj);
   
-  const scheduleForWeek = SCHEDULE_REGISTRY[currentGroupId]?.[week] || [];
+  const [blockSchedule, setBlockSchedule] = useState<WeekData | null>(() => {
+    return getArchiveScheduleSync(currentGroupId, selectedDate) || SCHEDULE_REGISTRY[currentGroupId] || null;
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    loadBlockScheduleForDate(currentGroupId, selectedDate).then(data => {
+      if (!cancelled && data) {
+        setBlockSchedule(data);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentGroupId, selectedDate, refreshTrigger]);
+
+  const effectiveSchedule = blockSchedule || SCHEDULE_REGISTRY[currentGroupId] || {};
+  const scheduleForWeek = effectiveSchedule[week] || [];
   const daySchedule = scheduleForWeek.find(d => d.dayName === dayName);
 
   // Load schedule overrides from localStorage
@@ -459,7 +476,18 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
             </div>
           </div>
 
-          {lessons.length === 0 ? (
+          {isSessionPeriod(selectedDate) ? (
+            <div className="p-8 text-center bg-indigo-50/60 dark:bg-indigo-950/30 rounded-3xl border border-indigo-200 dark:border-indigo-800/50 shadow-xs space-y-2">
+              <div className="text-3xl">🎓</div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                Идёт экзаменационная сессия
+              </h3>
+              <p className="text-xs text-slate-600 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
+                Во время сессии регулярные занятия не проводятся, учёт посещаемости закрыт.
+                Для сдачи итоговой рапортички в деканат вы можете просмотреть прошедшие месяцы или выгрузить готовую ведомость в Word.
+              </p>
+            </div>
+          ) : lessons.length === 0 ? (
             <div className="p-8 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/90 dark:border-slate-800 shadow-xs">
               В этот день по расписанию нет пар.
             </div>

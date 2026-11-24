@@ -1,6 +1,8 @@
 import { WeekData, DaySchedule } from '../types';
 import { SCHEDULE_REGISTRY, createEmptyWeek } from '../constants';
 import { getCanonicalGroupKey } from './samgtuParser';
+import { blockWindow, BlockConfig } from './officialSchedule';
+import { getSemesterConfig, samaraISO } from './samaraDate';
 import {
   LoadResult,
   LoadFailReason,
@@ -261,6 +263,202 @@ export function scheduleUrl(id: string, base?: string): string {
     cleanBase += '/';
   }
   return `${cleanBase}schedules/${canonicalId}.json`;
+}
+
+/**
+ * In-memory cache for historical block schedules.
+ * Key: `${windowStart}:${canonicalId}`
+ * Value: WeekData (if found) or null (if 404/not available).
+ */
+const ARCHIVE_CACHE = new Map<string, WeekData | null>();
+
+/**
+ * Clears the archive schedule cache (used in tests).
+ */
+export function clearArchiveCache(): void {
+  ARCHIVE_CACHE.clear();
+}
+
+export interface BlockWindowInfo {
+  start: number;
+  end: number;
+  weeks: number[];
+  blockId?: number;
+  isCurrentBlock: boolean;
+}
+
+/**
+ * Returns block window metadata for a given date in YYYY-MM-DD format.
+ */
+export function getBlockWindowForDate(dateISO: string, config?: BlockConfig): BlockWindowInfo {
+  const conf = config || getSemesterConfig();
+  const currentWindow = blockWindow(samaraISO(), conf);
+  const targetWindow = blockWindow(dateISO, conf);
+  return {
+    start: targetWindow.start,
+    end: targetWindow.start + 3,
+    weeks: targetWindow.weeks,
+    blockId: targetWindow.blockId,
+    isCurrentBlock: targetWindow.start === currentWindow.start
+  };
+}
+
+/**
+ * Returns candidate URLs for fetching an archived schedule chunk.
+ */
+export function getArchiveCandidateUrls(canonicalId: string, windowStart: number): string[] {
+  const relPath = `schedules/archive/block-from-week-${windowStart}/${canonicalId}.json`;
+  const urls: string[] = [`./${relPath}`];
+
+  if (typeof window !== 'undefined' && window.location) {
+    const origin = window.location.origin;
+    let path = window.location.pathname;
+    if (/\.[a-zA-Z0-9]+$/.test(path)) {
+      path = path.substring(0, path.lastIndexOf('/') + 1);
+    }
+    if (!path.endsWith('/')) {
+      path += '/';
+    }
+    urls.push(`${origin}${path}${relPath}`);
+    const basePath = (import.meta as any).env?.BASE_URL || './';
+    const cleanBase = basePath.endsWith('/') ? basePath : `${basePath}/`;
+    urls.push(`${cleanBase}${relPath}`);
+    urls.push(`/samgtu-schedule/${relPath}`);
+    urls.push(`/${relPath}`);
+  }
+  return [...new Set(urls)];
+}
+
+export function createEmptyWeekData(): WeekData {
+  return {
+    1: createEmptyWeek(),
+    2: createEmptyWeek(),
+    3: createEmptyWeek(),
+    4: createEmptyWeek()
+  };
+}
+
+/**
+ * Synchronous getter for an archived block schedule.
+ * Checks in-memory cache, and in Node.js reads directly from filesystem if present.
+ */
+export function getArchiveScheduleSync(groupId: string, dateISO: string): WeekData | null {
+  const canonicalId = getCanonicalScheduleId(groupId);
+  const { start, isCurrentBlock } = getBlockWindowForDate(dateISO);
+  if (isCurrentBlock) {
+    return SCHEDULE_REGISTRY[canonicalId] || null;
+  }
+
+  const cacheKey = `${start}:${canonicalId}`;
+  if (ARCHIVE_CACHE.has(cacheKey)) {
+    return ARCHIVE_CACHE.get(cacheKey) || null;
+  }
+
+  // Node.js test environment sync read
+  if (typeof process !== 'undefined' && (process as any).versions?.node) {
+    try {
+      const fs = (globalThis as any).require ? (globalThis as any).require('fs') : undefined;
+      const path = (globalThis as any).require ? (globalThis as any).require('path') : undefined;
+      if (fs && path) {
+        const localPath = path.resolve(__dirname, `../public/schedules/archive/block-from-week-${start}/${canonicalId}.json`);
+        if (fs.existsSync(localPath)) {
+          const content = fs.readFileSync(localPath, 'utf8');
+          const parsed = parseWeekData(JSON.parse(content));
+          if (parsed) {
+            ARCHIVE_CACHE.set(cacheKey, parsed);
+            return parsed;
+          }
+        } else {
+          ARCHIVE_CACHE.set(cacheKey, null);
+          return null;
+        }
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+/**
+ * Loads the appropriate block schedule for a specific date (current or archived).
+ * If the date belongs to the current block, returns the active schedule.
+ * If the date belongs to a past block, lazily fetches and caches the archive file.
+ * If no archive file exists (e.g. Block 1 404), caches null and safely falls back
+ * to the current schedule without throwing errors or console warnings.
+ */
+export async function loadBlockScheduleForDate(
+  groupId: string,
+  dateISO: string,
+  options?: LoadScheduleOptions
+): Promise<WeekData> {
+  const canonicalId = getCanonicalScheduleId(groupId);
+  const { start, isCurrentBlock } = getBlockWindowForDate(dateISO);
+
+  // 1. Current block: load current schedule
+  if (isCurrentBlock) {
+    const currentRes = await loadGroupSchedule(canonicalId, options);
+    return (currentRes.ok ? currentRes.data : undefined) || SCHEDULE_REGISTRY[canonicalId] || createEmptyWeekData();
+  }
+
+  // 2. Check in-memory archive cache
+  const cacheKey = `${start}:${canonicalId}`;
+  if (ARCHIVE_CACHE.has(cacheKey)) {
+    const cached = ARCHIVE_CACHE.get(cacheKey);
+    if (cached) return cached;
+    // Cached null means previous 404 fallback: return current schedule
+    return SCHEDULE_REGISTRY[canonicalId] || createEmptyWeekData();
+  }
+
+  // 3. In Node.js test environment, attempt synchronous fs read first
+  const syncLoaded = getArchiveScheduleSync(groupId, dateISO);
+  if (syncLoaded) {
+    return syncLoaded;
+  }
+  if (ARCHIVE_CACHE.has(cacheKey) && ARCHIVE_CACHE.get(cacheKey) === null) {
+    return SCHEDULE_REGISTRY[canonicalId] || createEmptyWeekData();
+  }
+
+  // 4. In Browser, fetch from candidate archive URLs
+  if (typeof fetch === 'function') {
+    const candidateUrls = getArchiveCandidateUrls(canonicalId, start);
+    for (const url of candidateUrls) {
+      try {
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timeoutMs = options?.timeoutMs ?? 5000;
+        let timeoutId: any;
+        if (controller) {
+          timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        }
+
+        let res: Response;
+        try {
+          res = await fetch(url, {
+            cache: 'no-cache',
+            ...(controller ? { signal: controller.signal } : {})
+          });
+        } finally {
+          if (timeoutId) clearTimeout(timeoutId);
+        }
+
+        if (res.status === 404) {
+          continue;
+        }
+
+        if (res.ok) {
+          const raw = await res.json();
+          const parsed = parseWeekData(raw);
+          if (parsed && hasAnyLessons(parsed)) {
+            ARCHIVE_CACHE.set(cacheKey, parsed);
+            return parsed;
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // If archive not found (404), cache null to prevent repeated fetches, and return current schedule
+  ARCHIVE_CACHE.set(cacheKey, null);
+  return SCHEDULE_REGISTRY[canonicalId] || createEmptyWeekData();
 }
 
 /**

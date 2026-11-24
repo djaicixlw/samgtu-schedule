@@ -4,7 +4,7 @@ import { syncAttendanceRecordsToV3, pullAttendanceRecordsFromV3, getSavedStaffTo
 import { merge3, snapshotBase, BaseMap } from './utils/attendanceMerge3';
 import { pullMergePush, markSnapshotPushed } from './utils/attendanceCloudSync';
 import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
-import { getSamaraISODate } from './utils/samaraDate';
+import { getSamaraISODate, getSemesterConfig } from './utils/samaraDate';
 import { SEED_ATTENDANCE } from './defaultData';
 import { isPhysicalEducationLesson, isPhysicalEducationLessonId } from './utils/scheduleLoader';
 
@@ -488,12 +488,36 @@ export const useAttendance = (isAuthenticated: boolean, currentGroupId: string |
   return { records, markAttendance, markBatchAttendance, getAttendance };
 };
 
-export const BLOCKS = [
-  { id: 1, name: "Блок 1 (31.08 - 27.09)", start: "2026-08-31", end: "2026-09-27" },
-  { id: 2, name: "Блок 2 (28.09 - 25.10)", start: "2026-09-28", end: "2026-10-25" },
-  { id: 3, name: "Блок 3 (26.10 - 22.11)", start: "2026-10-26", end: "2026-11-22" },
-  { id: 4, name: "Блок 4 (23.11 - 31.12)", start: "2026-11-23", end: "2026-12-31" }
-];
+export function getSemesterBlocks(): Array<{ id: number; name: string; start: string; end: string; weeks?: string }> {
+  const config = getSemesterConfig();
+  if (config.blocks && config.blocks.length > 0) {
+    return config.blocks.map(b => ({
+      id: b.id,
+      name: b.name,
+      start: b.start,
+      end: b.end,
+      weeks: (b as any).weeks || `${(b.id - 1) * 4 + 1}-${b.id * 4}`
+    }));
+  }
+  return [
+    { id: 1, name: "Блок 1 (31.08 - 27.09)", start: "2026-08-31", end: "2026-09-27", weeks: "1-4" },
+    { id: 2, name: "Блок 2 (28.09 - 25.10)", start: "2026-09-28", end: "2026-10-25", weeks: "5-8" },
+    { id: 3, name: "Блок 3 (26.10 - 22.11)", start: "2026-10-26", end: "2026-11-22", weeks: "9-12" },
+    { id: 4, name: "Блок 4 (23.11 - 31.12)", start: "2026-11-23", end: "2026-12-31", weeks: "13-16" }
+  ];
+}
+
+export const BLOCKS: Array<{ id: number; name: string; start: string; end: string; weeks?: string }> = new Proxy([], {
+  get(_target, prop) {
+    const blocks = getSemesterBlocks();
+    if (prop === 'length') return blocks.length;
+    if (typeof prop === 'string' && !isNaN(Number(prop))) {
+      return blocks[Number(prop)];
+    }
+    const val = (blocks as any)[prop];
+    return typeof val === 'function' ? val.bind(blocks) : val;
+  }
+}) as any;
 
 export const TIME_SLOTS: Record<string, { timeStart: string; timeEnd: string }> = {
   '1': { timeStart: '08:00', timeEnd: '09:35' },
@@ -512,7 +536,8 @@ export {
   getDayCalendarDate,
   getWeekDateRange,
   getDayISODate,
-  samaraISO
+  samaraISO,
+  isSessionPeriod
 } from './utils/samaraDate';
 
 export const getSamaraFutureISODate = (daysToAdd: number = 7): string => {

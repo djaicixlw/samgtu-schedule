@@ -1,5 +1,5 @@
 import { logger } from './logger';
-import { HomeworkItem, Lesson, Student } from '../types';
+import { HomeworkItem, Lesson, Student, ExamItem } from '../types';
 import { AttendanceRecord, STUDENTS_REGISTRY } from '../attendance';
 import { SAMGTU_GROUP_MAP } from './samgtuGroupMap';
 import { convertOfficialSamgtuToWeekData } from './samgtuParser';
@@ -31,10 +31,54 @@ export interface GroupCloudData {
   deletedOverrides?: Record<string, number> | string[];
   subjectTeachers: Record<string, string>;
   attendance: AttendanceRecord[];
+  exams?: ExamItem[];
+  deletedExamIds?: Record<string, number> | string[];
   lastUpdated?: number;
   fromNetwork?: boolean;
   ver?: number;
   stale?: boolean;
+}
+
+export function readDeletedExams(gid: string): Record<string, number> {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(`deleted_exams_${String(gid || '').trim().toLowerCase()}`);
+      if (raw) return JSON.parse(raw);
+    }
+  } catch {}
+  return {};
+}
+
+export function recordDeletedExam(gid: string, examId: string): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const key = `deleted_exams_${String(gid || '').trim().toLowerCase()}`;
+      const existing = readDeletedExams(gid);
+      existing[String(examId)] = Date.now();
+      localStorage.setItem(key, JSON.stringify(existing));
+    }
+  } catch {}
+}
+
+export function getSavedExams(gid: string): ExamItem[] {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(`exams_${String(gid || '').trim().toLowerCase()}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    }
+  } catch {}
+  return [];
+}
+
+export function saveLocalExams(gid: string, exams: ExamItem[]): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(`exams_${String(gid || '').trim().toLowerCase()}`, JSON.stringify(exams));
+    }
+  } catch {}
 }
 
 const SCHEDULE_STALE_WINDOW_MS = 120_000;
@@ -526,6 +570,17 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
             try { localStorage.setItem(`schedule_overrides_${groupId}`, JSON.stringify(cloudScheduleOverrides)); } catch (e) {}
             try { localStorage.setItem(`subject_teachers_${groupId}`, JSON.stringify(cloudSubjectTeachers)); } catch (e) {}
           }
+
+          let cloudExams: ExamItem[] = [];
+          if (d.byGroup && d.byGroup[groupId]) {
+            const gData = d.byGroup[groupId];
+            if (Array.isArray(gData.exams)) cloudExams = gData.exams;
+          } else if (Array.isArray(d.exams)) {
+            cloudExams = d.exams;
+          }
+          if (cloudExams.length > 0) {
+            saveLocalExams(groupId, cloudExams);
+          }
         }
       }
     }
@@ -604,6 +659,7 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
       scheduleOverrides: cloudScheduleOverrides,
       subjectTeachers: cloudSubjectTeachers,
       attendance: cloudAttendance,
+      exams: getSavedExams(groupId),
       lastUpdated: serverTimestamp,
       fromNetwork: isNetworkSuccess,
       ver: cloudVer,
@@ -735,6 +791,34 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
     })());
   }
 
+  // 3. Exams push
+  if (partialUpdate.exams !== undefined) {
+    const exams = partialUpdate.exams;
+    const deletedExamIds = partialUpdate.deletedExamIds || readDeletedExams(groupId);
+
+    saveLocalExams(groupId, exams);
+
+    if (lastFetchedDataMap[groupId]) {
+      lastFetchedDataMap[groupId].exams = exams;
+    }
+
+    promises.push((async () => {
+      const endpoints = getEndpoints();
+      const res = await putJson(`${endpoints.schedule}?groupId=${encodeURIComponent(groupId)}`, {
+        byGroup: {
+          [groupId]: {
+            exams,
+            deletedExamIds,
+            updatedAt: Date.now()
+          }
+        }
+      });
+      if (res.ok && res.ver) {
+        noteScheduleSeenVer(groupId, res.ver);
+      }
+      return res.ok;
+    })());
+  }
 
   if (promises.length === 0) return true;
 

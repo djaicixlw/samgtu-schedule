@@ -1,5 +1,5 @@
 // Cloudflare Worker: Telegram Unlimited File Storage & CORS Cloud Sync Proxy for SamGTU 3-INGT-110
-export const WORKER_VERSION = '2026-11-23-stage2';
+export const WORKER_VERSION = '2026-11-23-stage3';
 import {
   attStorage, readMonth, applyLegacyPatch, applyOps, normalizeOps, readChanges, readStudentMarks,
   deleteSlotMarks, migrateCopy, migrateVerify, migrateFlip, migrateRollback, hasD1, currentRev
@@ -240,6 +240,21 @@ export function sanitizeScheduleOverride(ov) {
   return res;
 }
 
+export function sanitizeExamItem(it) {
+  if (!it || typeof it !== 'object') return null;
+  const id = String(it.id || '').trim().slice(0, 100);
+  if (!id) return null;
+  const date = String(it.date || '').trim().slice(0, 10);
+  const time = String(it.time || '').trim().slice(0, 5);
+  const subject = String(it.subject || '').trim().slice(0, 200);
+  const type = String(it.type || 'Экзамен').trim().slice(0, 50);
+  const location = String(it.location || '').trim().slice(0, 100);
+  const teacher = it.teacher ? String(it.teacher).trim().slice(0, 150) : undefined;
+  const note = it.note ? String(it.note).trim().slice(0, 500) : undefined;
+  const updatedAt = Number(it.updatedAt) || Date.now();
+  return { id, date, time, subject, type, location, teacher, note, updatedAt };
+}
+
 export function sanitizeSyncPayload(type, rawData) {
   if (!rawData || typeof rawData !== 'object') return rawData;
   const now = Date.now();
@@ -334,6 +349,17 @@ export function sanitizeSyncPayload(type, rawData) {
           if (Array.isArray(grp.deletedKeys)) {
             cleanGrp.deletedKeys = grp.deletedKeys.map(String).slice(-500);
           }
+          if (Array.isArray(grp.exams)) {
+            cleanGrp.exams = grp.exams.slice(0, 200).map(sanitizeExamItem).filter(Boolean);
+          }
+          if (Array.isArray(grp.deletedExamIds)) {
+            cleanGrp.deletedExamIds = grp.deletedExamIds.map(String).slice(-500);
+          } else if (grp.deletedExamIds && typeof grp.deletedExamIds === 'object') {
+            cleanGrp.deletedExamIds = {};
+            for (const [dk, dv] of Object.entries(grp.deletedExamIds).slice(-500)) {
+              cleanGrp.deletedExamIds[String(dk).slice(0, 100)] = Number(dv) || now;
+            }
+          }
           res.byGroup[gid] = cleanGrp;
         }
       }
@@ -359,6 +385,17 @@ export function sanitizeSyncPayload(type, rawData) {
       res.subjectTeachers = {};
       for (const [k, v] of Object.entries(rawData.subjectTeachers)) {
         res.subjectTeachers[k] = String(v).slice(0, 150);
+      }
+    }
+    if (Array.isArray(rawData.exams)) {
+      res.exams = rawData.exams.slice(0, 200).map(sanitizeExamItem).filter(Boolean);
+    }
+    if (Array.isArray(rawData.deletedExamIds)) {
+      res.deletedExamIds = rawData.deletedExamIds.map(String).slice(-500);
+    } else if (rawData.deletedExamIds && typeof rawData.deletedExamIds === 'object') {
+      res.deletedExamIds = {};
+      for (const [dk, dv] of Object.entries(rawData.deletedExamIds).slice(-500)) {
+        res.deletedExamIds[String(dk).slice(0, 100)] = Number(dv) || now;
       }
     }
     return res;
@@ -583,6 +620,50 @@ export function mergeScheduleGroupSlice(existingGroup, incoming) {
   const incTeachers = (inc.teachers && typeof inc.teachers === 'object') ? inc.teachers
     : (inc.subjectTeachers && typeof inc.subjectTeachers === 'object') ? inc.subjectTeachers : {};
   result.teachers = { ...exTeachers, ...incTeachers };
+
+  // 3. Merge exams with deletedExamIds tombstones
+  const exExamDel = (ex.deletedExamIds && typeof ex.deletedExamIds === 'object' && !Array.isArray(ex.deletedExamIds)) ? ex.deletedExamIds : {};
+  const incExamDel = (inc.deletedExamIds && typeof inc.deletedExamIds === 'object' && !Array.isArray(inc.deletedExamIds)) ? inc.deletedExamIds : {};
+  const mergedExamDel = {};
+  for (const [k, ts] of Object.entries(exExamDel)) {
+    mergedExamDel[k] = syncTsMs(ts);
+  }
+  for (const [k, ts] of Object.entries(incExamDel)) {
+    const ms = syncTsMs(ts);
+    mergedExamDel[k] = Math.max(mergedExamDel[k] || 0, ms);
+  }
+  const incDeletedExamsList = Array.isArray(inc.deletedExamIds) ? inc.deletedExamIds : [];
+  for (const dk of incDeletedExamsList) {
+    mergedExamDel[String(dk)] = Math.max(mergedExamDel[String(dk)] || 0, nowTs);
+  }
+  const prunedExamDel = Object.fromEntries(
+    Object.entries(mergedExamDel).sort((a, b) => b[1] - a[1]).slice(0, 500)
+  );
+
+  const exExams = Array.isArray(ex.exams) ? ex.exams : [];
+  const incExams = Array.isArray(inc.exams) ? inc.exams : undefined;
+
+  let mergedExams;
+  if (incExams === undefined) {
+    // Incoming slice did NOT provide exams: preserve existing exams!
+    mergedExams = exExams.filter(it => it && (!prunedExamDel[it.id] || prunedExamDel[it.id] < syncTsMs(it.updatedAt)));
+  } else {
+    // Merge by exam.id taking newer updatedAt
+    const examMap = new Map();
+    for (const item of exExams) {
+      if (item && item.id) examMap.set(String(item.id), item);
+    }
+    for (const item of incExams) {
+      if (!item || !item.id) continue;
+      const prev = examMap.get(String(item.id));
+      if (!prev || syncTsMs(item.updatedAt) >= syncTsMs(prev.updatedAt)) {
+        examMap.set(String(item.id), item);
+      }
+    }
+    mergedExams = Array.from(examMap.values()).filter(it => !prunedExamDel[it.id] || prunedExamDel[it.id] < syncTsMs(it.updatedAt));
+  }
+  result.exams = mergedExams;
+  result.deletedExamIds = prunedExamDel;
 
   if (inc.updatedAt !== undefined) result.updatedAt = inc.updatedAt;
   return result;
@@ -2987,6 +3068,12 @@ export default {
           ));
 
           if (!hasAppKey && !isStaffAuthorized) {
+            if (tokenPayload) {
+              return new Response(JSON.stringify({ error: "Forbidden: Write permission requires verified starosta or admin role" }), {
+                status: 403,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
             if (!initDataHeader) {
               return new Response(JSON.stringify({ error: "Unauthorized: Missing X-App-Key, Telegram initData, or valid Staff Token" }), {
                 status: 401,

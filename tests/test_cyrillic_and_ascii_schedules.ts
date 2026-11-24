@@ -37,7 +37,7 @@ console.log(`  ✓ [PASS] All ${checkedFiles} schedule files in public/schedules
 console.log('2. Checking archive directories for Cyrillic files...');
 const archiveDirs = [
   path.resolve(SCHEDULES_DIR, 'archive/block-from-week-5'),
-  path.resolve(SCHEDULES_DIR, 'archive/block-from-week-13')
+  path.resolve(SCHEDULES_DIR, 'archive/block-from-week-9')
 ];
 
 for (const archDir of archiveDirs) {

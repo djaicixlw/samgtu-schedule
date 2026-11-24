@@ -73,6 +73,20 @@ export interface WeekData {
   [key: number]: DaySchedule[];
 }
 
+export type ExamType = 'Экзамен' | 'Консультация' | 'Зачёт' | 'Диф. зачёт';
+
+export interface ExamItem {
+  id: string;
+  date: string; // YYYY-MM-DD
+  time: string; // HH:MM
+  subject: string;
+  type: ExamType;
+  location: string;
+  teacher?: string;
+  note?: string;
+  updatedAt: number;
+}
+
 export interface HomeworkAttachment {
   id?: string;
   name: string;

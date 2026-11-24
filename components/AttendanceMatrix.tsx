@@ -15,7 +15,14 @@ import {
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { Lesson, Student, WeekData } from '../types';
 import { getLocalStudents } from '../utils/attendanceStorage';
-import { loadGroupSchedule, isPhysicalEducationLesson, isPhysicalEducationLessonId } from '../utils/scheduleLoader';
+import {
+  loadGroupSchedule,
+  isPhysicalEducationLesson,
+  isPhysicalEducationLessonId,
+  getBlockWindowForDate,
+  getArchiveScheduleSync,
+  loadBlockScheduleForDate
+} from '../utils/scheduleLoader';
 
 export interface AttendanceMatrixProps {
   currentGroupId: string;
@@ -142,24 +149,62 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
       .catch(() => {});
   }, [currentGroupId]);
 
-  // Map lessonId to Lesson object across all weeks
+  // Archive schedules for past blocks (Block 2: start=5, Block 3: start=9)
+  const [archiveBlocks, setArchiveBlocks] = useState<Record<number, WeekData>>(() => {
+    const initial: Record<number, WeekData> = {};
+    const b2 = getArchiveScheduleSync(currentGroupId, '2026-10-15');
+    if (b2) initial[5] = b2;
+    const b3 = getArchiveScheduleSync(currentGroupId, '2026-11-10');
+    if (b3) initial[9] = b3;
+    return initial;
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadArchives = async () => {
+      const datesToLoad = ['2026-10-15', '2026-11-10'];
+      const loaded: Record<number, WeekData> = {};
+      for (const d of datesToLoad) {
+        try {
+          const sched = await loadBlockScheduleForDate(currentGroupId, d);
+          if (sched) {
+            const { start } = getBlockWindowForDate(d);
+            loaded[start] = sched;
+          }
+        } catch {}
+      }
+      if (!cancelled && Object.keys(loaded).length > 0) {
+        setArchiveBlocks(prev => ({ ...prev, ...loaded }));
+      }
+    };
+    loadArchives();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentGroupId]);
+
+  // Map lessonId to Lesson object across all weeks (including archive blocks)
   const { lessonMap, groupSubjects } = useMemo(() => {
     const map = new Map<string, Lesson>();
     const subjects = new Set<string>();
 
-    const activeSchedule = (scheduleData && Object.keys(scheduleData).length > 0)
-      ? scheduleData
-      : (SCHEDULE_REGISTRY[currentGroupId] || {});
+    const allSchedules = [
+      (scheduleData && Object.keys(scheduleData).length > 0) ? scheduleData : (SCHEDULE_REGISTRY[currentGroupId] || {}),
+      ...Object.values(archiveBlocks)
+    ];
 
-    for (let w = 1; w <= 4; w++) {
-      const days = activeSchedule[w] || [];
-      for (const d of days) {
-        for (const l of d.lessons) {
-          if (l.id) {
-            map.set(l.id, l);
-          }
-          if (l.subject && l.subject.trim() && !isPhysicalEducationLesson(l)) {
-            subjects.add(l.subject.trim());
+    for (const sched of allSchedules) {
+      if (!sched) continue;
+      for (let w = 1; w <= 4; w++) {
+        const days = sched[w] || [];
+        for (const d of days) {
+          for (const l of d.lessons || []) {
+            if (l.id && !map.has(l.id)) {
+              map.set(l.id, l);
+            }
+            if (l.subject && l.subject.trim() && !isPhysicalEducationLesson(l)) {
+              subjects.add(l.subject.trim());
+            }
           }
         }
       }
@@ -169,7 +214,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
       lessonMap: map,
       groupSubjects: Array.from(subjects).sort((a, b) => a.localeCompare(b, 'ru'))
     };
-  }, [scheduleData, currentGroupId]);
+  }, [scheduleData, archiveBlocks, currentGroupId]);
 
   const activeStudents = useMemo(() => {
     return students
@@ -229,7 +274,27 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
 
       records.forEach(rec => {
         if (rec.isCancelled) return;
-        const lesson = lessonMap.get(rec.lessonId);
+
+        // Resolve lesson specifically by the record's date and archive block
+        let lesson: Lesson | undefined;
+        const { start } = getBlockWindowForDate(rec.date);
+        const blockSched = archiveBlocks[start];
+        if (blockSched) {
+          for (let w = 1; w <= 4; w++) {
+            for (const d of blockSched[w] || []) {
+              const found = d.lessons?.find(l => l.id === rec.lessonId);
+              if (found) {
+                lesson = found;
+                break;
+              }
+            }
+            if (lesson) break;
+          }
+        }
+        if (!lesson) {
+          lesson = lessonMap.get(rec.lessonId);
+        }
+
         if (lesson && isPhysicalEducationLesson(lesson)) return;
         if (!lesson && isPhysicalEducationLessonId(rec.lessonId, currentGroupId)) return;
 
@@ -301,7 +366,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
         subjectHours
       };
     });
-  }, [activeStudents, records, lessonMap, selectedSubject]);
+  }, [activeStudents, records, lessonMap, archiveBlocks, selectedSubject]);
 
   // Filtered stats for active search query
   const filteredCumulativeStats = useMemo(() => {
@@ -343,9 +408,15 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
 
         DAYS_OF_WEEK.forEach(dayName => {
           const dayISO = getDayISODate(dayName, selectedWeek, activeReferenceDate);
-          const activeSchedule = (scheduleData && Object.keys(scheduleData).length > 0)
+          let activeSchedule = (scheduleData && Object.keys(scheduleData).length > 0)
             ? scheduleData
             : (SCHEDULE_REGISTRY[currentGroupId] || {});
+          if (activeReferenceDate) {
+            const { start, isCurrentBlock } = getBlockWindowForDate(activeReferenceDate);
+            if (!isCurrentBlock && archiveBlocks[start]) {
+              activeSchedule = archiveBlocks[start];
+            }
+          }
           const daySchedule = activeSchedule[selectedWeek]?.find(d => d.dayName === dayName);
 
           PAIRS.forEach(pairNum => {
@@ -398,11 +469,18 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
 
   // Active weekly schedule for the selected week
   const activeWeekSchedule = useMemo(() => {
-    const active = (scheduleData && Object.keys(scheduleData).length > 0)
+    let active = (scheduleData && Object.keys(scheduleData).length > 0)
       ? scheduleData
       : (SCHEDULE_REGISTRY[currentGroupId] || {});
+
+    if (activeReferenceDate) {
+      const { start, isCurrentBlock } = getBlockWindowForDate(activeReferenceDate);
+      if (!isCurrentBlock && archiveBlocks[start]) {
+        active = archiveBlocks[start];
+      }
+    }
     return active[selectedWeek] || [];
-  }, [scheduleData, currentGroupId, selectedWeek]);
+  }, [scheduleData, archiveBlocks, activeReferenceDate, currentGroupId, selectedWeek]);
 
   return (
     <div className="space-y-5">

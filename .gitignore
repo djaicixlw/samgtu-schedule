@@ -42,8 +42,6 @@ android/app/google-services.json
 .dev.vars
 .wrangler/
 .scan-forbidden.local
-wrangler.toml
-!wrangler.toml.example
 
 # Obsidian workspace state
 **/.obsidian/workspace*.json

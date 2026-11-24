@@ -2,6 +2,8 @@
   "semesterName": "Осенний семестр 2026/2027",
   "semesterStart": "2026-08-31",
   "cycleWeeks": 4,
+  "sessionStart": "2027-01-01",
+  "sessionEnd": "2027-01-31",
   "blocks": [
     {
       "id": 1,

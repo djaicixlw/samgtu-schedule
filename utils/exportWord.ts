@@ -2,7 +2,7 @@ import { Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, Align
 import { AttendanceRecord, BLOCKS } from '../attendance';
 import { Student, GroupConfig, Faculty } from '../types';
 import { WORKER_BASE } from './cloudSync';
-import { samaraISO } from './samaraDate';
+import { samaraISO, getSemesterConfig } from './samaraDate';
 import { isPhysicalEducationLessonId } from './scheduleLoader';
 
 export interface ExportWordResult {
@@ -93,6 +93,14 @@ export const exportAttendanceToWord = async (
 
   // Data Rows
   const today = samaraISO();
+  const semConfig = getSemesterConfig();
+  const semesterStart = semConfig.semesterStart || '2026-08-31';
+  const semesterEnd = semConfig.blocks?.[semConfig.blocks.length - 1]?.end || '2026-12-31';
+  const semName = semConfig.semesterName || 'осеннем семестре 2026-2027 уч.г.';
+
+  // Restrict records strictly within semester boundaries [semesterStart, semesterEnd]
+  const recordsList = Array.isArray(records) ? records : Object.values(records || {});
+  const validRecords = recordsList.filter(r => r && r.date >= semesterStart && r.date <= semesterEnd);
 
   students.forEach((student, index) => {
     let cumulativeAbsences = 0;
@@ -102,12 +110,12 @@ export const exportAttendanceToWord = async (
       let blockAbsences = 0;
       let blockExcused = 0;
       
-      records.forEach(record => {
+      validRecords.forEach(record => {
         if (record.isCancelled) return;
         if (isPhysicalEducationLessonId(record.lessonId, groupConfig.id)) return;
         if (record.date >= block.start && record.date <= block.end) {
-          const isExcused = (record.excusedStudentIds || []).includes(student.id);
-          const isAbsent = !isExcused && record.absentStudentIds.includes(student.id);
+          const isExcused = ((record.excusedStudentIds || (record as any).excusedStudents) || []).includes(student.id);
+          const isAbsent = !isExcused && ((record.absentStudentIds || (record as any).absentStudents) || []).includes(student.id);
           const lessonHours = (record as any).hours ?? 2;
           if (isExcused) blockExcused += lessonHours;
           else if (isAbsent) blockAbsences += lessonHours;
@@ -196,7 +204,7 @@ export const exportAttendanceToWord = async (
           new Paragraph({
             children: [
               new TextRun({
-                text: "Количество пропусков занятий без уважительных причин в осеннем семестре 2026-2027 уч.г.",
+                text: `Количество пропусков занятий без уважительных причин в ${semName}`,
                 bold: true,
                 size: 24, // 12pt
               }),

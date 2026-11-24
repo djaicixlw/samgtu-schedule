@@ -144,6 +144,9 @@ const MANIFEST: Suite[] = [
 
   // DEF-05: 19 групп магистратуры и строгая ASCII-нормализация public/schedules/
   { name: 'test_cyrillic_and_ascii_schedules', load: () => import('./test_cyrillic_and_ascii_schedules') },
+
+  // Stage 3: Архив Блока 3, 17-я неделя декабря, сессия и синхронизация экзаменов
+  { name: 'test_session_and_archive', load: () => import('./test_session_and_archive') },
 ];
 
 /** Files in tests/ that are not suites (helpers/fixtures/analysis scripts). */

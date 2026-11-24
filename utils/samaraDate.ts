@@ -14,8 +14,11 @@ export interface SemesterBlock {
 }
 
 export interface SemesterConfig {
+  semesterName?: string;
   semesterStart: string; // YYYY-MM-DD
   cycleWeeks?: number;
+  sessionStart?: string; // YYYY-MM-DD
+  sessionEnd?: string;   // YYYY-MM-DD
   blocks: SemesterBlock[];
 }
 
@@ -45,8 +48,11 @@ export function generateDefaultSemesterConfig(now: Date = new Date()): SemesterC
   };
 
   return {
+    semesterName: `Осенний семестр ${academicYear}/${academicYear + 1}`,
     semesterStart: `${academicYear}-08-31`,
     cycleWeeks: 4,
+    sessionStart: `${academicYear + 1}-01-01`,
+    sessionEnd: `${academicYear + 1}-01-31`,
     blocks: [
       mkBlock(1, '2026-08-31', '2026-09-26'),
       mkBlock(2, '2026-09-28', '2026-10-24'),
@@ -184,6 +190,39 @@ export function getSemesterWeek(isoDateOrDate?: string | Date, groupId?: string)
 
   const config = getSemesterConfig();
   return cycleWeek(targetISO, config.semesterStart);
+}
+
+/**
+ * Returns true if the target date falls into an exam session period (January, June,
+ * or within config.sessionStart..config.sessionEnd).
+ * During session periods, regular attendance marking is suspended.
+ */
+export function isSessionPeriod(dateISOOrDate?: string | Date, config?: SemesterConfig): boolean {
+  let targetISO: string;
+  if (!dateISOOrDate) {
+    targetISO = samaraISO();
+  } else if (typeof dateISOOrDate === 'string') {
+    targetISO = /^\d{4}-\d{2}-\d{2}$/.test(dateISOOrDate) ? dateISOOrDate : samaraISO(dateISOOrDate);
+  } else if (dateISOOrDate instanceof Date) {
+    targetISO = samaraISO(dateISOOrDate);
+  } else {
+    targetISO = samaraISO();
+  }
+
+  const conf = config || getSemesterConfig();
+  if (conf.sessionStart && conf.sessionEnd) {
+    if (targetISO >= conf.sessionStart && targetISO <= conf.sessionEnd) {
+      return true;
+    }
+  }
+
+  // General university rule: January (month 01) and June (month 06) are exam sessions
+  const month = targetISO.slice(5, 7);
+  if (month === '01' || month === '06') {
+    return true;
+  }
+
+  return false;
 }
 
 /**
