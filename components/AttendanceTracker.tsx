@@ -146,6 +146,10 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
       toast.error('Только Староста или Админ могут изменять посещаемость');
       return;
     }
+    if (isSessionPeriod(selectedDate)) {
+      toast.info('В период сессии отметки посещаемости не ставятся');
+      return;
+    }
     if (!selectedLesson) return;
     const record = getAttendance(selectedDate, selectedLesson.id);
     let newAbsentIds = record.absentStudentIds.filter(id => id !== studentId);
@@ -164,6 +168,10 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   const handleSetFullDayStatus = (studentId: number, status: 'absent' | 'excused') => {
     if (!canEdit) {
       toast.error('Только Староста или Админ могут изменять посещаемость');
+      return;
+    }
+    if (isSessionPeriod(selectedDate)) {
+      toast.info('В период сессии отметки посещаемости не ставятся');
       return;
     }
     if (lessons.length === 0) return;
@@ -210,6 +218,10 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   const handleToggleLessonCancelled = (lessonId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!canEdit) return;
+    if (isSessionPeriod(selectedDate)) {
+      toast.info('В период сессии отметки посещаемости не ставятся');
+      return;
+    }
     const record = getAttendance(selectedDate, lessonId);
     const willBeCancelled = !record.isCancelled;
 

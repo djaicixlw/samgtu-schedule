@@ -18,6 +18,7 @@ import { TeacherAssignmentScope } from './components/EditLessonModal';
 import { fetchGroupCloudData, pushGroupCloudData, sanitizeTeachers, sanitizeOverrides, WORKER_BASE, getSavedExams, saveLocalExams, recordDeletedExam, readDeletedExams } from './utils/cloudSync';
 import { SEED_SCHEDULE_OVERRIDES, SEED_SUBJECT_TEACHERS, getSeedSubjectTeachers } from './defaultData';
 import { logger } from './utils/logger';
+import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
 import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuParser';
 import { normalizeGroupId } from './utils/groupId';
 import ScheduleState from './components/ScheduleState';
@@ -706,13 +707,13 @@ const App: React.FC = () => {
     } catch (e) {}
     logger.info('SCHEDULE', `Current group switched to: ${currentGroupId}`);
     try {
-      const savedOv = localStorage.getItem(`schedule_overrides_${currentGroupId}`);
+      const savedOv = safeGetItem(`schedule_overrides_${currentGroupId}`);
       setScheduleOverrides(savedOv ? sanitizeOverrides(JSON.parse(savedOv)) : sanitizeOverrides({ ...SEED_SCHEDULE_OVERRIDES }));
     } catch {
       setScheduleOverrides(sanitizeOverrides({ ...SEED_SCHEDULE_OVERRIDES }));
     }
     try {
-      const savedSt = localStorage.getItem(`subject_teachers_${currentGroupId}`);
+      const savedSt = safeGetItem(`subject_teachers_${currentGroupId}`);
       const defaultTeachers = getSeedSubjectTeachers(currentGroupId);
       setSubjectTeachers(savedSt ? sanitizeTeachers({ ...defaultTeachers, ...JSON.parse(savedSt) }, currentGroupId) : sanitizeTeachers({ ...defaultTeachers }, currentGroupId));
     } catch {
@@ -926,23 +927,27 @@ const App: React.FC = () => {
             SCHEDULE_REGISTRY[currentGroupId] = (cloud as any).schedule;
           }
 
-          const isDirty = localStorage.getItem(`schedule_dirty_${currentGroupId}`) === 'true';
+          const isDirty = safeGetItem(`schedule_dirty_${currentGroupId}`) === 'true';
           if (isDirty) {
             // Attempt retry push of unsaved overrides before loading!
-            const localOvRaw = localStorage.getItem(`schedule_overrides_${currentGroupId}`);
-            const localStRaw = localStorage.getItem(`subject_teachers_${currentGroupId}`);
+            const localOvRaw = safeGetItem(`schedule_overrides_${currentGroupId}`);
+            const localStRaw = safeGetItem(`subject_teachers_${currentGroupId}`);
             try {
               const localOv = localOvRaw ? JSON.parse(localOvRaw) : undefined;
               const localSt = localStRaw ? JSON.parse(localStRaw) : undefined;
               if (localOv || localSt) {
-                const retryOk = await pushGroupCloudData({ scheduleOverrides: localOv, subjectTeachers: localSt }, currentGroupId);
+                const retryOk = await pushGroupCloudData({
+                  scheduleOverrides: localOv,
+                  subjectTeachers: localSt,
+                  deletedOverrides: readDeletedOverrides(currentGroupId)
+                }, currentGroupId);
                 if (retryOk) {
-                  localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
+                  safeRemoveItem(`schedule_dirty_${currentGroupId}`);
                 }
               }
             } catch {}
           }
-          const stillDirty = localStorage.getItem(`schedule_dirty_${currentGroupId}`) === 'true';
+          const stillDirty = safeGetItem(`schedule_dirty_${currentGroupId}`) === 'true';
           const lastLocalEdit = Number(localStorage.getItem(`last_local_edit_${currentGroupId}`) || 0);
           const isRecentLocalEdit = Date.now() - lastLocalEdit < 30000;
           const cloudTimestamp = (cloud as any).lastUpdated ? new Date((cloud as any).lastUpdated).getTime() : 0;
@@ -951,16 +956,12 @@ const App: React.FC = () => {
           if (cloud.scheduleOverrides !== undefined && !shouldSkipOverrides) {
             const cleanOv = normalizeScheduleOverridesKeys(currentGroupId, sanitizeOverrides(cloud.scheduleOverrides, currentGroupId));
             setScheduleOverrides(cleanOv);
-            try {
-              localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(cleanOv));
-            } catch (e) {}
+            safeSetItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(cleanOv), { component: 'schedule' });
           }
           if (cloud.subjectTeachers !== undefined && !shouldSkipOverrides) {
             const cleanSt = sanitizeTeachers(cloud.subjectTeachers, currentGroupId);
             setSubjectTeachers(cleanSt);
-            try {
-              localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt));
-            } catch (e) {}
+            safeSetItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt), { component: 'schedule' });
           }
           if (cloud.exams !== undefined) {
             setExams(cloud.exams);
@@ -1047,7 +1048,7 @@ const App: React.FC = () => {
       }
 
       // If there are unsaved local schedule changes, push them before refreshing
-      const scheduleDirty = typeof localStorage !== 'undefined' && localStorage.getItem(`schedule_dirty_${currentGroupId}`) === 'true';
+      const scheduleDirty = safeGetItem(`schedule_dirty_${currentGroupId}`) === 'true';
       if (scheduleDirty) {
         try {
           await pushGroupCloudData({
@@ -1082,17 +1083,13 @@ const App: React.FC = () => {
             const cleanOv = sanitizeOverrides(cloud.scheduleOverrides);
             scheduleOverridesRef.current = cleanOv;
             setScheduleOverrides(cleanOv);
-            try {
-              localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(cleanOv));
-            } catch (e) {}
+            safeSetItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(cleanOv), { component: 'schedule' });
           }
           if (cloud.subjectTeachers !== undefined) {
             const cleanSt = sanitizeTeachers(cloud.subjectTeachers, currentGroupId);
             subjectTeachersRef.current = cleanSt;
             setSubjectTeachers(cleanSt);
-            try {
-              localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt));
-            } catch (e) {}
+            safeSetItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt), { component: 'schedule' });
           }
           if (cloud.exams !== undefined) {
             setExams(cloud.exams);
@@ -1252,8 +1249,8 @@ const App: React.FC = () => {
 
     try {
       localStorage.setItem('last_local_edit_' + currentGroupId, String(Date.now()));
-      localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
     } catch (e) {}
+    safeSetItem(`schedule_dirty_${currentGroupId}`, 'true', { component: 'schedule' });
 
     const currentOverride = scheduleOverridesRef.current[targetLessonId] || scheduleOverridesRef.current[lessonId] || {};
 
@@ -1353,9 +1350,7 @@ const App: React.FC = () => {
     });
 
     if (changed.length === 0 && !cancelChanged) {
-      try {
-        localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
-      } catch (e) {}
+      safeRemoveItem(`schedule_dirty_${currentGroupId}`);
       toast.info(summary.text);
       return;
     }
@@ -1371,9 +1366,7 @@ const App: React.FC = () => {
       }
       updated = normalizeScheduleOverridesKeys(currentGroupId, updated);
       scheduleOverridesRef.current = updated;
-      try {
-        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
-      } catch (e) {}
+      safeSetItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated), { component: 'schedule' });
       updatedSnapshot = updated;
       return updated;
     });
@@ -1418,10 +1411,8 @@ const App: React.FC = () => {
       setScheduleOverrides(normalizedOverrides as any);
       setSubjectTeachers(updatedTeachers);
       subjectTeachersRef.current = updatedTeachers;
-      try {
-        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(normalizedOverrides));
-        localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updatedTeachers));
-      } catch (e) {}
+      safeSetItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(normalizedOverrides), { component: 'schedule' });
+      safeSetItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updatedTeachers), { component: 'schedule' });
       pushPromise = pushGroupCloudData({ scheduleOverrides: normalizedOverrides as any, subjectTeachers: updatedTeachers, deletedOverrides: readDeletedOverrides(currentGroupId) }, currentGroupId);
     } else {
       pushPromise = pushGroupCloudData({ scheduleOverrides: updatedSnapshot, deletedOverrides: readDeletedOverrides(currentGroupId) }, currentGroupId);
@@ -1430,65 +1421,67 @@ const App: React.FC = () => {
     const pushSuccess = await pushPromise;
     if (pushSuccess) {
       if (scheduleMutationSeqRef.current === seq) {
-        try {
-          localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
-        } catch (e) {}
+        safeRemoveItem(`schedule_dirty_${currentGroupId}`);
       }
       if (summary.kind === 'warning') toast.warning(summary.text);
       else if (summary.kind === 'info') toast.info(summary.text);
       else toast.success(summary.text);
     } else {
-      try {
-        localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
-      } catch (e) {}
+      safeSetItem(`schedule_dirty_${currentGroupId}`, 'true', { component: 'schedule' });
       toast.error('Не удалось сохранить в облако (ошибка доступа или сети). Заметка видна только локально.');
       return;
     }
   }, [canEdit, currentGroupId, scheduleOverrides, subjectTeachers, attendanceRecords, selectedWeek, markAttendance]);
 
   const handleSaveSubjectTeachers = async (updated: Record<string, string>) => {
+    const seq = ++scheduleMutationSeqRef.current;
     try {
       localStorage.setItem('last_local_edit_' + currentGroupId, String(Date.now()));
-      localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
     } catch (e) {}
+    safeSetItem(`schedule_dirty_${currentGroupId}`, 'true', { component: 'schedule' });
 
+    const baseOverrides = scheduleOverridesRef.current;
     // A group-wide assignment must win over older per-lesson teacher snapshots for the lessons it covers.
     const { overrides: cleanedOverrides, cleared } = clearTeacherOverridesForChangedKeys(
-      scheduleOverrides as any,
+      baseOverrides as any,
       (SCHEDULE_REGISTRY[currentGroupId] || {}) as any,
       subjectTeachers,
       updated
     );
 
     const cleaned = clearFrozenTeachers(cleanedOverrides, buildLessonIndex(SCHEDULE_REGISTRY[currentGroupId]), subjectTeachers, updated);
-    const finalOverrides = normalizeScheduleOverridesKeys(currentGroupId, cleaned.overrides);
+    const finalOverrides = normalizeScheduleOverridesKeys(currentGroupId, sanitizeOverrides(cleaned.overrides, currentGroupId));
 
+    const nowTs = Date.now();
+    for (const oldId of Object.keys(baseOverrides || {})) {
+      if (!finalOverrides[oldId]) {
+        recordDeletedOverride(currentGroupId, oldId, nowTs);
+      }
+    }
+
+    subjectTeachersRef.current = updated;
     setSubjectTeachers(updated);
-    try {
-      localStorage.setItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updated));
-    } catch (e) {}
+    safeSetItem(`subject_teachers_${currentGroupId}`, JSON.stringify(updated), { component: 'schedule' });
 
     let pushPromise: Promise<boolean>;
+    const deletedOverrides = readDeletedOverrides(currentGroupId);
     if (cleared > 0 || cleaned.cleared.length > 0) {
+      scheduleOverridesRef.current = finalOverrides as any;
       setScheduleOverrides(finalOverrides as any);
-      try {
-        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(finalOverrides));
-      } catch (e) {}
-      pushPromise = pushGroupCloudData({ scheduleOverrides: finalOverrides as any, subjectTeachers: updated }, currentGroupId);
+      safeSetItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(finalOverrides), { component: 'schedule' });
+      pushPromise = pushGroupCloudData({ scheduleOverrides: finalOverrides as any, subjectTeachers: updated, deletedOverrides }, currentGroupId);
     } else {
-      pushPromise = pushGroupCloudData({ subjectTeachers: updated }, currentGroupId);
+      pushPromise = pushGroupCloudData({ subjectTeachers: updated, deletedOverrides }, currentGroupId);
     }
 
     const pushSuccess = await pushPromise;
     if (pushSuccess) {
-      try {
-        localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
-      } catch (e) {}
+      if (scheduleMutationSeqRef.current === seq) {
+        safeRemoveItem(`schedule_dirty_${currentGroupId}`);
+      }
       toast.success('Список преподавателей сохранен для всех 4 недель расписания');
     } else {
-      try {
-        localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
-      } catch (e) {}
+      safeSetItem(`schedule_dirty_${currentGroupId}`, 'true', { component: 'schedule' });
       toast.error('Не удалось сохранить в облако (ошибка доступа или сети)');
       return;
     }
@@ -1500,25 +1493,32 @@ const App: React.FC = () => {
   );
 
   const handleUnpinTeachers = async (key: string) => {
-    const result = unpinTeachers(scheduleOverrides, buildLessonIndex(SCHEDULE_REGISTRY[currentGroupId]), key);
+    const baseOverrides = scheduleOverridesRef.current;
+    const result = unpinTeachers(baseOverrides, buildLessonIndex(SCHEDULE_REGISTRY[currentGroupId]), key);
     if (result.cleared.length === 0) return;
-    const finalOverrides = normalizeScheduleOverridesKeys(currentGroupId, result.overrides);
+    const seq = ++scheduleMutationSeqRef.current;
+    const finalOverrides = normalizeScheduleOverridesKeys(currentGroupId, sanitizeOverrides(result.overrides, currentGroupId));
+    const nowTs = Date.now();
+    for (const oldId of Object.keys(baseOverrides || {})) {
+      if (!finalOverrides[oldId]) {
+        recordDeletedOverride(currentGroupId, oldId, nowTs);
+      }
+    }
     try {
       localStorage.setItem('last_local_edit_' + currentGroupId, String(Date.now()));
-      localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
-      localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(finalOverrides));
     } catch (e) {}
+    safeSetItem(`schedule_dirty_${currentGroupId}`, 'true', { component: 'schedule' });
+    safeSetItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(finalOverrides), { component: 'schedule' });
+    scheduleOverridesRef.current = finalOverrides;
     setScheduleOverrides(finalOverrides);
-    const ok = await pushGroupCloudData({ scheduleOverrides: finalOverrides }, currentGroupId);
+    const ok = await pushGroupCloudData({ scheduleOverrides: finalOverrides, deletedOverrides: readDeletedOverrides(currentGroupId) }, currentGroupId);
     if (ok) {
-      try {
-        localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
-      } catch (e) {}
+      if (scheduleMutationSeqRef.current === seq) {
+        safeRemoveItem(`schedule_dirty_${currentGroupId}`);
+      }
       toast.success(`Преподаватель теперь берётся из настройки у ${result.cleared.length} пар`);
     } else {
-      try {
-        localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
-      } catch (e) {}
+      safeSetItem(`schedule_dirty_${currentGroupId}`, 'true', { component: 'schedule' });
       toast.error('Не удалось сохранить в облако (ошибка доступа или сети)');
       return;
     }
@@ -1538,8 +1538,8 @@ const App: React.FC = () => {
 
     try {
       localStorage.setItem('last_local_edit_' + currentGroupId, String(Date.now()));
-      localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
     } catch (e) {}
+    safeSetItem(`schedule_dirty_${currentGroupId}`, 'true', { component: 'schedule' });
 
     // Find original lesson
     let originalLesson: Lesson | undefined;
@@ -1574,9 +1574,7 @@ const App: React.FC = () => {
       }
       updated = normalizeScheduleOverridesKeys(currentGroupId, updated);
       scheduleOverridesRef.current = updated;
-      try {
-        localStorage.setItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated));
-      } catch (e) {}
+      safeSetItem(`schedule_overrides_${currentGroupId}`, JSON.stringify(updated), { component: 'schedule' });
       updatedSnapshot = updated;
       return updated;
     });
@@ -1595,15 +1593,11 @@ const App: React.FC = () => {
     const ok = await pushGroupCloudData({ scheduleOverrides: updatedSnapshot, deletedOverrides: readDeletedOverrides(currentGroupId) }, currentGroupId);
     if (ok) {
       if (scheduleMutationSeqRef.current === seq) {
-        try {
-          localStorage.removeItem(`schedule_dirty_${currentGroupId}`);
-        } catch (e) {}
+        safeRemoveItem(`schedule_dirty_${currentGroupId}`);
       }
       toast.info('Пара сброшена до исходного расписания');
     } else {
-      try {
-        localStorage.setItem(`schedule_dirty_${currentGroupId}`, 'true');
-      } catch (e) {}
+      safeSetItem(`schedule_dirty_${currentGroupId}`, 'true', { component: 'schedule' });
       toast.error('Не удалось сохранить сброс в облако (ошибка доступа или сети)');
       return;
     }

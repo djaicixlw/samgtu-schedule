@@ -5,7 +5,7 @@ import {
   rebaseAttendanceBaseFromServer
 } from './attendanceStorage';
 import { merge3, snapshotBase, BaseMap } from './attendanceMerge3';
-import { safeSetItem } from './safeStorage';
+import { safeSetItem, safeGetItem, safeRemoveItem } from './safeStorage';
 
 /**
  * Cloud synchronisation of attendance, extracted from the React hook so it can be tested
@@ -30,9 +30,7 @@ export interface PullMergePushResult {
 /** After a tap push succeeded: the pushed snapshot is now what the server knows about this device. */
 export function markSnapshotPushed(groupId: string, snapshot: AttendanceRecord[]): void {
   try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(baseMapKey(groupId), JSON.stringify(snapshotBase(snapshot as any)));
-    }
+    safeSetItem(baseMapKey(groupId), JSON.stringify(snapshotBase(snapshot as any)), { component: 'attendanceCloudSync' });
   } catch {}
 }
 
@@ -40,9 +38,8 @@ export async function pullMergePush(
   groupId: string,
   local: AttendanceRecord[]
 ): Promise<PullMergePushResult> {
-  const store = typeof localStorage !== 'undefined' ? localStorage : null;
   const snapshot = await pullAttendanceSnapshotFromV3(groupId);
-  const dirty = store ? store.getItem(dirtyKey(groupId)) === 'true' : false;
+  const dirty = safeGetItem(dirtyKey(groupId)) === 'true';
 
   let merged = local;
   let mergedWithRemote = false;
@@ -52,7 +49,7 @@ export async function pullMergePush(
   if (snapshot.fetchedMonths.length > 0) {
     let baseMap: BaseMap | null = null;
     try {
-      const raw = store ? store.getItem(baseMapKey(groupId)) : null;
+      const raw = safeGetItem(baseMapKey(groupId));
       if (raw) baseMap = JSON.parse(raw);
     } catch {}
 
@@ -60,9 +57,7 @@ export async function pullMergePush(
     merged = res3.merged as AttendanceRecord[];
     mergedWithRemote = true;
     safeSetItem(attKey(groupId), JSON.stringify(merged), { component: 'attendanceCloudSync' });
-    try {
-      store?.setItem(baseMapKey(groupId), JSON.stringify(res3.base));
-    } catch {}
+    safeSetItem(baseMapKey(groupId), JSON.stringify(res3.base), { component: 'attendanceCloudSync' });
     // The push base mirrors the server (not the merged state): pending local edits stay visible to the
     // next push as differences, and nothing this device has never uploaded is declared "synced".
     rebaseAttendanceBaseFromServer(groupId, snapshot.records, snapshot.fetchedMonths);
@@ -73,7 +68,7 @@ export async function pullMergePush(
   if (dirty || (local.length > 0 && snapshot.records.length === 0)) {
     const pushRes = await syncAttendanceRecordsToV3(groupId, merged);
     if (pushRes && pushRes.ok) {
-      store?.removeItem(dirtyKey(groupId));
+      safeRemoveItem(dirtyKey(groupId));
       markSnapshotPushed(groupId, merged);
       pushed = true;
     } else if (pushRes && pushRes.status === 401) {

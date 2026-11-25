@@ -1,6 +1,7 @@
 import { UsefulItem, UsefulLink, HomeworkAttachment } from '../types';
 import { WORKER_BASE } from './cloudSync';
 import { logger } from './logger';
+import { safeSetItem, safeGetItem } from './safeStorage';
 
 const MAX_TITLE_LEN = 100;
 const MAX_TEXT_LEN = 2000;
@@ -142,7 +143,7 @@ export function recordUsefulSubmission(): void {
 export function getLocalUsefulItems(groupId: string): UsefulItem[] {
   if (!groupId) return [];
   try {
-    const raw = localStorage.getItem(getUsefulStorageKey(groupId));
+    const raw = safeGetItem(getUsefulStorageKey(groupId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -175,7 +176,10 @@ export function saveLocalUsefulItems(groupId: string, items: UsefulItem[]): void
     const sanitized = items
       .map(item => sanitizeUsefulItem(item, groupId))
       .filter((item): item is UsefulItem => item !== null);
-    localStorage.setItem(getUsefulStorageKey(groupId), JSON.stringify(sanitized));
+    const res = safeSetItem(getUsefulStorageKey(groupId), JSON.stringify(sanitized), { component: 'usefulStorage' });
+    if (!res.ok) {
+      logger.warn('USEFUL', `Local useful items for ${groupId} kept in memory fallback`);
+    }
   } catch (e) {
     logger.error('USEFUL', `Failed to save local useful items for ${groupId}`, e);
   }
@@ -234,7 +238,7 @@ function parseUsefulItemTs(item: any): number {
 
 export function getDeletedUsefulIds(groupId: string): string[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(getDeletedUsefulKey(groupId)) || '[]');
+    const parsed = JSON.parse(safeGetItem(getDeletedUsefulKey(groupId)) || '[]');
     return Array.isArray(parsed) ? parsed.map(String) : [];
   } catch {
     return [];
@@ -243,7 +247,7 @@ export function getDeletedUsefulIds(groupId: string): string[] {
 
 function saveDeletedUsefulIds(groupId: string, ids: string[]): void {
   try {
-    localStorage.setItem(getDeletedUsefulKey(groupId), JSON.stringify(ids.slice(-MAX_USEFUL_TOMBSTONES)));
+    safeSetItem(getDeletedUsefulKey(groupId), JSON.stringify(ids.slice(-MAX_USEFUL_TOMBSTONES)), { component: 'usefulStorage' });
   } catch {}
 }
 
@@ -268,6 +272,11 @@ export async function fetchGroupUsefulData(
     const url = `${base}/sync/useful?groupId=${encodeURIComponent(groupId.toLowerCase())}`;
     const res = await fetch(url, { signal, cache: 'no-store' });
     if (!res.ok) {
+      if (res.status >= 500 || res.status === 401 || res.status === 403) {
+        logger.error('USEFUL', `fetchGroupUsefulData HTTP ${res.status} for ${groupId}`);
+      } else if (res.status !== 404 && res.status !== 304) {
+        logger.warn('USEFUL', `fetchGroupUsefulData HTTP ${res.status} for ${groupId}`);
+      }
       return { items: local, fromNetwork: false };
     }
     const data = await res.json();
@@ -307,8 +316,12 @@ export async function fetchGroupUsefulData(
     });
 
     saveLocalUsefulItems(groupId, merged);
+    logger.info('USEFUL', `fetchGroupUsefulData synced ${merged.length} items for ${groupId}`);
     return { items: merged, fromNetwork: true };
-  } catch {
+  } catch (e: any) {
+    if (e?.name !== 'AbortError') {
+      logger.error('USEFUL', `fetchGroupUsefulData network failure for ${groupId}`, e);
+    }
     return { items: local, fromNetwork: false };
   }
 }
@@ -344,12 +357,19 @@ export async function fetchUsefulState(groupId: string, etag?: string): Promise<
     if (res.status === 304) {
       return { status: 'not-modified', etag: resEtag || etag };
     }
-    if (!res.ok) return { status: 'error' };
+    if (!res.ok) {
+      if (res.status >= 500 || res.status === 401 || res.status === 403) {
+        logger.error('USEFUL', `fetchUsefulState HTTP ${res.status} for ${groupId}`);
+      } else if (res.status !== 404) {
+        logger.warn('USEFUL', `fetchUsefulState HTTP ${res.status} for ${groupId}`);
+      }
+      return { status: 'error' };
+    }
     const data = await res.json();
     const groupPayload = data?.byGroup?.[groupId.toLowerCase()] || data;
     const cloudVer = Number(data?.ver ?? groupPayload?.ver ?? 0);
     if (isUsefulStaleRead(groupId, cloudVer)) {
-      console.warn(`[UsefulStorage] Stale useful read detected for ${groupId}: server ver ${cloudVer} < seen ver.`);
+      logger.warn('USEFUL', `Stale useful read detected for ${groupId}: server ver ${cloudVer} < seen ver`);
       return { status: 'error' };
     }
     if (cloudVer > 0) {
@@ -360,7 +380,10 @@ export async function fetchUsefulState(groupId: string, etag?: string): Promise<
       ? groupPayload.deletedIds.map(String)
       : [];
     return { status: 'ok', etag: resEtag, data: { rawItems, serverDeletedIds } };
-  } catch {
+  } catch (e: any) {
+    if (e?.name !== 'AbortError') {
+      logger.error('USEFUL', `fetchUsefulState network failure for ${groupId}`, e);
+    }
     return { status: 'error' };
   }
 }
@@ -396,9 +419,7 @@ export function mergeUsefulState(
   // AUD-011: absorb server tombstones so deletions propagate between devices.
   if (remote.serverDeletedIds && remote.serverDeletedIds.length > 0) {
     const mergedTombstones = Array.from(new Set([...deletedSet, ...remote.serverDeletedIds])).slice(-MAX_USEFUL_TOMBSTONES);
-    try {
-      localStorage.setItem(getDeletedUsefulKey(groupId), JSON.stringify(mergedTombstones));
-    } catch {}
+    safeSetItem(getDeletedUsefulKey(groupId), JSON.stringify(mergedTombstones), { component: 'usefulStorage' });
     deletedSet = new Set(mergedTombstones);
   }
 
@@ -465,7 +486,9 @@ export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]):
       }))
     }));
 
-    const tgInitData = (window as any).Telegram?.WebApp?.initData || '';
+    const tgInitData = (typeof window !== 'undefined' && (window as any).Telegram?.WebApp?.initData)
+      || (typeof globalThis !== 'undefined' && (globalThis as any).Telegram?.WebApp?.initData)
+      || '';
     const staffToken = typeof localStorage !== 'undefined'
       ? (localStorage.getItem(`staff_token_${groupId.toLowerCase()}`) || localStorage.getItem('staff_token') || '')
       : '';
@@ -498,10 +521,16 @@ export async function pushGroupUsefulData(groupId: string, items: UsefulItem[]):
           noteUsefulSeenVer(groupId, json.ver);
         }
       } catch {}
+      logger.info('USEFUL', `pushGroupUsefulData succeeded for ${groupId} (${sanitizedItems.length} items)`);
+    } else {
+      logger.error('USEFUL', `pushGroupUsefulData failed for ${groupId}: HTTP ${res.status}`);
     }
 
     return res.ok;
-  } catch {
+  } catch (e: any) {
+    if (e?.name !== 'AbortError') {
+      logger.error('USEFUL', `pushGroupUsefulData network failure for ${groupId}`, e);
+    }
     return false;
   }
 }

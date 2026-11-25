@@ -143,7 +143,9 @@ export async function runNightlySync(): Promise<SyncResult> {
   const todayISO = process.env.SYNC_TODAY || samaraISO();
   const window = blockWindow(todayISO, semester);
   const schedulesDirForMeta = path.resolve(__dirname, '../public/schedules');
-  const metaPath = path.join(schedulesDirForMeta, '_sync-state.txt'); // not *.json: loaders read every *.json in this folder as a schedule
+  const metaPath = process.env.SYNC_STATE_PATH
+    ? path.resolve(process.env.SYNC_STATE_PATH)
+    : path.join(schedulesDirForMeta, '_sync-state.txt'); // not *.json: loaders read every *.json in this folder as a schedule
   let previousWindowStart: number | null = null;
   try { previousWindowStart = JSON.parse(fs.readFileSync(metaPath, 'utf8')).windowStart ?? null; } catch {}
   const blockChanged = previousWindowStart !== null && previousWindowStart !== window.start;

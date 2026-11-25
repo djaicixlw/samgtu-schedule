@@ -8,6 +8,8 @@ import {
   loadBlockScheduleForDate,
   clearArchiveCache
 } from '../utils/scheduleLoader';
+import { preloadAllSchedulesSync } from '../utils/scheduleNodeLoader';
+preloadAllSchedulesSync();
 import {
   getSemesterWeek,
   getWeekDateRange,
@@ -117,6 +119,39 @@ async function runSuite() {
     clearArchiveCache();
     const schedule = await loadBlockScheduleForDate('3-ИНГТ-110', '2026-11-10');
     assert(schedule, 'Cyrillic group alias must resolve correctly to Block 3 archive');
+  });
+
+  await check('Block 3 archive for ingt-310 differs from Block 2 and Block 4 (real Block 3 snapshot)', async () => {
+    clearArchiveCache();
+    const b2 = await loadBlockScheduleForDate('ingt-310', '2026-10-15');
+    const b3 = await loadBlockScheduleForDate('ingt-310', '2026-11-10');
+    const b4 = JSON.parse(fs.readFileSync(path.join(ROOT, 'public/schedules/ingt-310.json'), 'utf-8'));
+    assert(b2 && b3 && b4, 'All blocks for ingt-310 must load');
+    assert.notStrictEqual(JSON.stringify(b3), JSON.stringify(b4), 'Block 3 archive must NOT be a copy of Block 4');
+    assert.notStrictEqual(JSON.stringify(b3), JSON.stringify(b2), 'Block 3 archive must NOT be a copy of Block 2');
+    const collectSubjects = (sched: any) => {
+      const s = new Set<string>();
+      for (const days of Object.values(sched) as any[]) {
+        for (const d of days || []) for (const l of d.lessons || []) s.add(l.subject);
+      }
+      return s;
+    };
+    const b3Subjects = collectSubjects(b3);
+    const b4Subjects = collectSubjects(b4);
+    assert(
+      b3Subjects.has('Актуальные вопросы профессиональной деятельности и построение карьеры'),
+      'Block 3 ingt-310 archive must retain Block 3 subject'
+    );
+    assert(
+      !b4Subjects.has('Актуальные вопросы профессиональной деятельности и построение карьеры'),
+      'Block 4 ingt-310 schedule does not contain Block 3-only subject'
+    );
+  });
+
+  check('AttendanceMatrix guards handleCellToggle with isSessionPeriod and excludes 2027-01', () => {
+    const matrixSrc = fs.readFileSync(path.join(ROOT, 'components/AttendanceMatrix.tsx'), 'utf-8');
+    assert(matrixSrc.includes('isSessionPeriod(dayISO)'), 'AttendanceMatrix must guard marking with isSessionPeriod(dayISO)');
+    assert(!matrixSrc.includes("id: '2027-01'"), 'AttendanceMatrix SEMESTER_MONTHS must not allow January 2027 marking');
   });
 
   // ============================================================
@@ -363,7 +398,7 @@ async function runSuite() {
   }
 }
 
-runSuite().catch(err => {
+await runSuite().catch(err => {
   console.error('Test suite uncaught error:', err);
   process.exit(1);
 });

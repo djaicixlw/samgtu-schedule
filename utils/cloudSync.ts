@@ -1,4 +1,5 @@
 import { logger } from './logger';
+import { safeSetItem, safeGetItem } from './safeStorage';
 import { HomeworkItem, Lesson, Student, ExamItem } from '../types';
 import { AttendanceRecord, STUDENTS_REGISTRY } from '../attendance';
 import { SAMGTU_GROUP_MAP } from './samgtuGroupMap';
@@ -40,33 +41,27 @@ export interface GroupCloudData {
 
 export function readDeletedExams(gid: string): Record<string, number> {
   try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(`deleted_exams_${String(gid || '').trim().toLowerCase()}`);
-      if (raw) return JSON.parse(raw);
-    }
+    const raw = safeGetItem(`deleted_exams_${String(gid || '').trim().toLowerCase()}`);
+    if (raw) return JSON.parse(raw);
   } catch {}
   return {};
 }
 
 export function recordDeletedExam(gid: string, examId: string): void {
   try {
-    if (typeof localStorage !== 'undefined') {
-      const key = `deleted_exams_${String(gid || '').trim().toLowerCase()}`;
-      const existing = readDeletedExams(gid);
-      existing[String(examId)] = Date.now();
-      localStorage.setItem(key, JSON.stringify(existing));
-    }
+    const key = `deleted_exams_${String(gid || '').trim().toLowerCase()}`;
+    const existing = readDeletedExams(gid);
+    existing[String(examId)] = Date.now();
+    safeSetItem(key, JSON.stringify(existing), { component: 'cloudSync' });
   } catch {}
 }
 
 export function getSavedExams(gid: string): ExamItem[] {
   try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(`exams_${String(gid || '').trim().toLowerCase()}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
-      }
+    const raw = safeGetItem(`exams_${String(gid || '').trim().toLowerCase()}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
     }
   } catch {}
   return [];
@@ -74,9 +69,7 @@ export function getSavedExams(gid: string): ExamItem[] {
 
 export function saveLocalExams(gid: string, exams: ExamItem[]): void {
   try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(`exams_${String(gid || '').trim().toLowerCase()}`, JSON.stringify(exams));
-    }
+    safeSetItem(`exams_${String(gid || '').trim().toLowerCase()}`, JSON.stringify(exams), { component: 'cloudSync' });
   } catch {}
 }
 
@@ -204,17 +197,17 @@ export const sanitizeOverrides = (overrides: Record<string, Partial<Lesson>>, gr
 
 export const getLocalBackup = (groupId = 'ingt-310'): GroupCloudData => {
   try {
-    const hw = localStorage.getItem(`homework_${groupId}`);
-    const ov = localStorage.getItem(`schedule_overrides_${groupId}`);
-    const st = localStorage.getItem(`subject_teachers_${groupId}`);
-    const att = localStorage.getItem(`attendance_${groupId}`);
+    const hw = safeGetItem(`homework_${groupId}`);
+    const ov = safeGetItem(`schedule_overrides_${groupId}`);
+    const st = safeGetItem(`subject_teachers_${groupId}`);
+    const att = safeGetItem(`attendance_${groupId}`);
 
     const defaultHw = (hw === null && groupId === 'ingt-310') ? SEED_HOMEWORK : [];
     const defaultOv = (ov === null && groupId === 'ingt-310') ? SEED_SCHEDULE_OVERRIDES : {};
     const defaultSt = (st === null) ? getSeedSubjectTeachers(groupId) : {};
     const defaultAtt = (att === null && groupId === 'ingt-310') ? SEED_ATTENDANCE : [];
 
-    const deletedHw: string[] = JSON.parse(localStorage.getItem(`deleted_hw_${groupId}`) || '[]');
+    const deletedHw: string[] = JSON.parse(safeGetItem(`deleted_hw_${groupId}`) || '[]');
     const deletedSet = new Set(deletedHw);
 
     const rawLocalHw: HomeworkItem[] = hw ? JSON.parse(hw) : [];
@@ -289,18 +282,12 @@ export const fetchJsonMeta = async (
     signal.addEventListener('abort', onExternalAbort, { once: true });
   }
   try {
-    const isAttendance = url.includes('/sync/attendance');
-    const initData = (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData)
-      || (typeof globalThis !== 'undefined' && (globalThis as any).Telegram?.WebApp?.initData)
-      || '';
-
     const res = await fetch(url, {
       signal: controller.signal,
       cache: forceFresh ? 'no-store' : 'default',
       headers: {
         'Accept': 'application/json',
-        ...(etag ? { 'If-None-Match': etag } : {}),
-        ...(isAttendance ? { 'X-Telegram-Init-Data': initData } : {})
+        ...(etag ? { 'If-None-Match': etag } : {})
       }
     });
     clearTimeout(id);
@@ -308,7 +295,9 @@ export const fetchJsonMeta = async (
       return { status: 'not-modified', etag: resEtagOf(res, etag) };
     }
     if (!res.ok) {
-      if (res.status >= 400 && res.status !== 404 && res.status !== 304) {
+      if (res.status >= 500 || res.status === 401 || res.status === 403) {
+        logger.error('SYNC', `fetchJsonMeta HTTP ${res.status} for ${url.split('?')[0]}`);
+      } else if (res.status >= 400 && res.status !== 404) {
         logger.warn('SYNC', `fetchJsonMeta HTTP ${res.status} for ${url.split('?')[0]}`);
       }
       return { status: 'error' };
@@ -318,7 +307,7 @@ export const fetchJsonMeta = async (
     try {
       const json = JSON.parse(text);
       if (json && json.error) {
-        console.warn('Cloud API rate limit or error:', json.error);
+        logger.warn('SYNC', `Cloud API rate limit or error for ${url.split('?')[0]}: ${json.error}`);
         return { status: 'error' };
       }
       return { status: 'ok', json, data: json, etag: resEtag };
@@ -329,7 +318,7 @@ export const fetchJsonMeta = async (
   } catch (e: any) {
     clearTimeout(id);
     if (e?.name !== 'AbortError') {
-      logger.warn('SYNC', `fetchJsonMeta network failure for ${url.split('?')[0]}: ${e?.message || e}`);
+      logger.error('SYNC', `fetchJsonMeta network failure for ${url.split('?')[0]}: ${e?.message || e}`, e);
     }
     return { status: 'error' };
   } finally {
@@ -534,7 +523,7 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
         cloudVer = Number(d.ver ?? d.byGroup?.[groupId]?.ver ?? 0);
         if (isScheduleStaleRead(groupId, cloudVer)) {
           isStale = true;
-          console.warn(`[CloudSync] Stale schedule read detected for ${groupId}: server ver ${cloudVer} < seen ver. Preserving local state.`);
+          logger.warn('SYNC', `Stale schedule read detected for ${groupId}: server ver ${cloudVer} < seen ver. Preserving local state.`);
         } else {
           if (cloudVer > 0) {
             noteScheduleSeenVer(groupId, cloudVer);
@@ -556,7 +545,7 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
           cloudScheduleOverrides = normalizeScheduleOverridesKeys(groupId, sanitizeOverrides(cloudScheduleOverrides, groupId));
           cloudSubjectTeachers = sanitizeTeachers(cloudSubjectTeachers, groupId);
 
-          const isDirty = typeof localStorage !== 'undefined' && localStorage.getItem(`schedule_dirty_${groupId}`) === 'true';
+          const isDirty = safeGetItem(`schedule_dirty_${groupId}`) === 'true';
 
           // Preserve local attachments during sync if this device has unsynced local edits
           if (isDirty && localBackup.scheduleOverrides) {
@@ -576,8 +565,8 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
               ...localBackup.scheduleOverrides
             });
           } else {
-            try { localStorage.setItem(`schedule_overrides_${groupId}`, JSON.stringify(cloudScheduleOverrides)); } catch (e) {}
-            try { localStorage.setItem(`subject_teachers_${groupId}`, JSON.stringify(cloudSubjectTeachers)); } catch (e) {}
+            safeSetItem(`schedule_overrides_${groupId}`, JSON.stringify(cloudScheduleOverrides), { component: 'cloudSync' });
+            safeSetItem(`subject_teachers_${groupId}`, JSON.stringify(cloudSubjectTeachers), { component: 'cloudSync' });
           }
 
           let cloudExams: ExamItem[] = [];
@@ -597,7 +586,7 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
     let cloudHomework: HomeworkItem[] = localBackup.homework || [];
     let deletedSet = new Set<string>();
     try {
-      deletedSet = new Set(JSON.parse(localStorage.getItem(`deleted_hw_${groupId}`) || '[]'));
+      deletedSet = new Set(JSON.parse(safeGetItem(`deleted_hw_${groupId}`) || '[]'));
     } catch (e) {}
 
     if (hwRes.status === 'fulfilled' && hwRes.value) {
@@ -617,9 +606,7 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
         rawDeletedIds.forEach((id: any) => {
           if (id) deletedSet.add(String(id));
         });
-        try {
-          localStorage.setItem(`deleted_hw_${groupId}`, JSON.stringify(Array.from(deletedSet)));
-        } catch (e) {}
+        safeSetItem(`deleted_hw_${groupId}`, JSON.stringify(Array.from(deletedSet)), { component: 'cloudSync' });
 
         cloudHomework = rawItems
           .filter((h: any) => h && h.id && !deletedSet.has(String(h.id)))
@@ -639,7 +626,7 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
         // Protect local items: merge cloud homework with existing non-deleted local items so unsaved items are never wiped
         let existingLocal: HomeworkItem[] = [];
         try {
-          const stored = localStorage.getItem(`homework_${groupId}`);
+          const stored = safeGetItem(`homework_${groupId}`);
           if (stored) existingLocal = JSON.parse(stored);
         } catch (e) {}
 
@@ -654,11 +641,16 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
           .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
         cloudHomework = safeMergedHomework;
 
-        try { localStorage.setItem(`homework_${groupId}`, JSON.stringify(safeMergedHomework)); } catch (e) {}
+        safeSetItem(`homework_${groupId}`, JSON.stringify(safeMergedHomework), { component: 'cloudSync' });
       }
     }
 
     const isNetworkSuccess = (schedRes.status === 'fulfilled' && Boolean(schedRes.value)) || (hwRes.status === 'fulfilled' && Boolean(hwRes.value));
+    if (isNetworkSuccess) {
+      logger.info('SYNC', `fetchGroupCloudData completed for ${groupId} (ver=${cloudVer}, stale=${isStale})`);
+    } else {
+      logger.warn('SYNC', `fetchGroupCloudData fell back to local backup for ${groupId}`);
+    }
 
     const cloudAttendance: AttendanceRecord[] = localBackup.attendance || [];
 
@@ -678,9 +670,9 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
     lastFetchedDataMap[groupId] = result;
     lastFetchTimeMap[groupId] = now;
     return result;
-  } catch (e) {
+  } catch (e: any) {
     if (signal?.aborted) return null;
-    console.warn('Cloud sync parallel fetch error:', e);
+    logger.error('SYNC', `fetchGroupCloudData failed for ${groupId}: ${e?.message || e}`, e);
     const fallback = lastFetchedDataMap[groupId] || localBackup;
     return { ...fallback, fromNetwork: false };
   }
@@ -743,7 +735,7 @@ export const pushGroupCloudData = async (partialUpdate: Partial<GroupCloudData>,
   if (partialUpdate.homework !== undefined) {
     let localDeleted: string[] = [];
     try {
-      localDeleted = JSON.parse(localStorage.getItem(`deleted_hw_${groupId}`) || '[]');
+      localDeleted = JSON.parse(safeGetItem(`deleted_hw_${groupId}`) || '[]');
     } catch (e) {}
 
     const passedDeleted = partialUpdate.deletedIds || [];

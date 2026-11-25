@@ -6,6 +6,11 @@
 import { logger, getSystemDiagnostics } from '../utils/logger';
 import { safeSetItem, safeGetItem, pruneForeignScheduleCache, resetSafeStorageForTests } from '../utils/safeStorage';
 import { loadBlockScheduleForDate } from '../utils/scheduleLoader';
+import { fetchJsonMeta } from '../utils/cloudSync';
+import { pushGroupUsefulData } from '../utils/usefulStorage';
+import { submitSuggestion } from '../utils/suggestionsClient';
+import { refreshServerMirror, resetAttendanceModeCache } from '../utils/attendanceD1Client';
+import { pullAttendanceSnapshotFromV3, setAttendanceApiBase } from '../utils/attendanceStorage';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -27,45 +32,88 @@ function assert(cond: boolean, msg: string) {
 console.log('=== Running Stage 4 Tests: Observability, WebView & Archive Guard ===');
 
 // ---------------------------------------------------------------------------
-// 1. DEF-10 Observability: errorLogsCount increments vs silent exemptions
+// 1. DEF-10 Observability: real client calls increment errorLogsCount vs exemptions
 // ---------------------------------------------------------------------------
-console.log('\n--- 1. Observability: selective error logging ---');
+console.log('\n--- 1. Observability: selective error logging (real client modules) ---');
 
 logger.clearLogs();
 const initialDiag = getSystemDiagnostics();
 assert(initialDiag.errorLogsCount === 0, 'Initial errorLogsCount is 0');
 
-// A: 500 / 403 / QuotaExceededError must increment errorLogsCount
-logger.error('SYNC', 'HTTP 500 Internal Server Error from worker');
-logger.error('AUTH', 'HTTP 403 Forbidden: invalid credentials');
-logger.error('STORAGE', 'QuotaExceededError writing key "attendance_base_ingt-310"');
+const origFetchForObs = (globalThis as any).fetch;
+const origLsForObs = (globalThis as any).localStorage;
+const obsLsMap = new Map<string, string>();
+(globalThis as any).localStorage = {
+  getItem: (k: string) => obsLsMap.get(k) ?? null,
+  setItem: (k: string, v: string) => { obsLsMap.set(k, String(v)); },
+  removeItem: (k: string) => { obsLsMap.delete(k); },
+  key: (i: number) => Array.from(obsLsMap.keys())[i] ?? null,
+  get length() { return obsLsMap.size; },
+  clear: () => obsLsMap.clear()
+};
+setAttendanceApiBase('http://obs.test');
 
-const afterErrorsDiag = getSystemDiagnostics();
-assert(afterErrorsDiag.errorLogsCount === 3, `errorLogsCount increments to 3 on real errors (got ${afterErrorsDiag.errorLogsCount})`);
-
-// B: AbortError and expected 404 must NOT log as ERROR
-const abortErr = new Error('The user aborted a request');
-abortErr.name = 'AbortError';
-
-// Simulate handler logic in network calls: AbortError is ignored
-if (abortErr.name !== 'AbortError') {
-  logger.error('SYNC', 'Unexpected abort error', abortErr);
-}
-// Info/warn level diagnostics do not increase errorLogsCount
-logger.info('SYNC', 'syncAttendanceRecordsToV3 successfully pushed for ingt-310 (2 months)');
-logger.warn('SYNC', 'Transient 304 / retryable condition');
-
-const afterMutedDiag = getSystemDiagnostics();
-assert(afterMutedDiag.errorLogsCount === 3, `errorLogsCount remains 3 after AbortError check and info/warn logs (got ${afterMutedDiag.errorLogsCount})`);
-
-// C: Verify loadBlockScheduleForDate on missing historical Block 1 does NOT increment errorLogsCount
-const mockDateBlock1 = '2026-09-10'; // Block 1
 try {
-  await loadBlockScheduleForDate('ingt-310', mockDateBlock1);
-} catch {}
+  // A: Real 500 / 403 / D1 failure across client modules MUST increment errorLogsCount
+  (globalThis as any).fetch = async () => new Response(JSON.stringify({ error: 'Internal Server Error' }), {
+    status: 500,
+    headers: { 'Content-Type': 'application/json' }
+  });
+  await fetchJsonMeta('http://obs.test/sync/schedule?groupId=ingt-310');
+  await pushGroupUsefulData('ingt-310', []);
+  await submitSuggestion({ gid: 'ingt-310', title: 'T', text: 'B' });
 
-const afterBlock1Diag = getSystemDiagnostics();
-assert(afterBlock1Diag.errorLogsCount === 3, `errorLogsCount still 3 after loading missing Block 1 archive (got ${afterBlock1Diag.errorLogsCount})`);
+  resetAttendanceModeCache();
+  await refreshServerMirror({ base: 'http://obs.test', headers: {} }, 'ingt-310');
+
+  resetAttendanceModeCache();
+  await pullAttendanceSnapshotFromV3('ingt-310');
+
+  const afterErrorsDiag = getSystemDiagnostics();
+  assert(
+    afterErrorsDiag.errorLogsCount >= 5,
+    `errorLogsCount increments across real 500 responses (got ${afterErrorsDiag.errorLogsCount})`
+  );
+  const countBeforeMuted = afterErrorsDiag.errorLogsCount;
+
+  // B: AbortError must NOT increment errorLogsCount
+  (globalThis as any).fetch = async () => {
+    const e = new Error('The user aborted a request');
+    e.name = 'AbortError';
+    throw e;
+  };
+  await fetchJsonMeta('http://obs.test/sync/schedule?groupId=ingt-310');
+  await pushGroupUsefulData('ingt-310', []);
+  await submitSuggestion({ gid: 'ingt-310', title: 'T', text: 'B' });
+  resetAttendanceModeCache();
+  await refreshServerMirror({ base: 'http://obs.test', headers: {} }, 'ingt-310');
+
+  // C: Expected 404 / D1 409 NOT_D1 fallback must NOT increment errorLogsCount
+  (globalThis as any).fetch = async () => new Response(JSON.stringify({ error: 'Not Found' }), { status: 404 });
+  await fetchJsonMeta('http://obs.test/sync/schedule?groupId=ingt-310');
+
+  (globalThis as any).fetch = async () => new Response(JSON.stringify({ code: 'NOT_D1' }), { status: 409 });
+  resetAttendanceModeCache();
+  const d1Fallback = await refreshServerMirror({ base: 'http://obs.test', headers: {} }, 'ingt-310');
+  assert(d1Fallback.ok && d1Fallback.mode === 'kv', '409 NOT_D1 cleanly falls back to kv mode');
+
+  // D: loadBlockScheduleForDate on missing historical Block 1 must NOT increment errorLogsCount
+  try {
+    await loadBlockScheduleForDate('ingt-310', '2026-09-10');
+  } catch {}
+
+  const afterMutedDiag = getSystemDiagnostics();
+  assert(
+    afterMutedDiag.errorLogsCount === countBeforeMuted,
+    `errorLogsCount stays ${countBeforeMuted} after AbortError, 404, and 409 NOT_D1 (got ${afterMutedDiag.errorLogsCount})`
+  );
+} finally {
+  (globalThis as any).fetch = origFetchForObs;
+  if (origLsForObs) (globalThis as any).localStorage = origLsForObs;
+  else delete (globalThis as any).localStorage;
+  setAttendanceApiBase(null);
+  resetAttendanceModeCache();
+}
 
 // ---------------------------------------------------------------------------
 // 2. DEF-10 Storage self-healing: pruneForeignScheduleCache
@@ -93,24 +141,44 @@ mockStorage.set('my_group_id', 'ingt-310');
 
 // Set keys: current group, foreign group, and dirty keys
 mockStorage.set('sched_cache_v1:ingt-310', '{"data":"current"}');
+mockStorage.set('cached_schedule_ingt-310', '{"data":"current_legacy"}');
 mockStorage.set('schedule_overrides_ingt-310', '{"1::0":{"teacher":"Ivanov"}}');
 mockStorage.set('schedule_dirty_faid-310', 'true');
 mockStorage.set('attendance_dirty_foreign', '{"unsaved":1}');
 mockStorage.set('sched_cache_v1:faid-310', '{"data":"foreign_faid"}');
 mockStorage.set('schedule_cache_htf-215', '{"data":"foreign_htf"}');
+mockStorage.set('cached_schedule_htf-215', '{"data":"foreign_legacy"}');
 mockStorage.set('custom_schedule_25ingt-101', '{"data":"foreign_custom"}');
 
-assert(mockStorage.size === 8, 'Set up 8 keys in mock localStorage');
+assert(mockStorage.size === 10, 'Set up 10 keys in mock localStorage');
 
 const prunedCount = pruneForeignScheduleCache();
-assert(prunedCount === 3, `Pruned exactly 3 foreign cache keys (got ${prunedCount})`);
+assert(prunedCount === 4, `Pruned exactly 4 foreign cache keys including cached_schedule_ (got ${prunedCount})`);
 assert(mockStorage.has('sched_cache_v1:ingt-310'), 'Preserved current group schedule cache');
+assert(mockStorage.has('cached_schedule_ingt-310'), 'Preserved current group legacy cache');
 assert(mockStorage.has('schedule_overrides_ingt-310'), 'Preserved current group overrides');
 assert(mockStorage.has('schedule_dirty_faid-310'), 'Preserved dirty schedule flag');
 assert(mockStorage.has('attendance_dirty_foreign'), 'Preserved dirty attendance flag');
 assert(!mockStorage.has('sched_cache_v1:faid-310'), 'Evicted foreign faid-310 cache');
 assert(!mockStorage.has('schedule_cache_htf-215'), 'Evicted foreign htf-215 cache');
+assert(!mockStorage.has('cached_schedule_htf-215'), 'Evicted foreign cached_schedule_htf-215 cache');
 assert(!mockStorage.has('custom_schedule_25ingt-101'), 'Evicted foreign 25ingt-101 cache');
+
+// Test end-to-end quota recovery in safeSetItem
+mockStorage.set('cached_schedule_other-grp', '{"data":"heavy"}');
+const realMockSetItem = (globalThis as any).localStorage.setItem;
+(globalThis as any).localStorage.setItem = (k: string, v: string) => {
+  if (mockStorage.has('cached_schedule_other-grp')) {
+    const qErr = new Error('QuotaExceededError');
+    qErr.name = 'QuotaExceededError';
+    throw qErr;
+  }
+  realMockSetItem(k, v);
+};
+const recovered = safeSetItem('attendance_ingt-310', '{"ok":1}', { component: 'test' });
+assert(recovered.ok === true && recovered.fromMemory === false, 'safeSetItem recovers after pruning cached_schedule_ foreign cache');
+assert(!mockStorage.has('cached_schedule_other-grp'), 'safeSetItem evicted cached_schedule_other-grp during recovery');
+assert(safeGetItem('attendance_ingt-310') === '{"ok":1}', 'safeGetItem reads recovered value');
 
 // Clean up mock localStorage
 if (origLocalStorage) {

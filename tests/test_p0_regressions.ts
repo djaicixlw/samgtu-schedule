@@ -17,7 +17,8 @@ import {
   pullAttendanceRecordsFromV3
 } from '../utils/attendanceStorage';
 import { mergeAttendance, STUDENTS_REGISTRY } from '../attendance';
-import { noteScheduleSeenVer, isScheduleStaleRead } from '../utils/cloudSync';
+import { noteScheduleSeenVer, isScheduleStaleRead, pushGroupCloudData } from '../utils/cloudSync';
+import { recordDeletedOverride, readDeletedOverrides } from '../utils/lessonOverrides';
 import { mergeUsefulState } from '../utils/usefulStorage';
 import { blockWindow } from '../utils/officialSchedule';
 
@@ -519,6 +520,73 @@ console.log('\n12. 3-way merge (merge3) tests');
 
     const b4 = blockWindow('2026-11-23', config); // First day of Block 4
     assert(b4.start === 13 && b4.weeks[3] === 16, '2026-11-23 resolves to Block 4 (weeks 13..16)');
+  }
+
+  // 13.5. Two rapid consecutive saves (scheduleMutationSeqRef + cumulative push + deletedOverrides)
+  {
+    const rapidStore = new MemoryStorage();
+    (globalThis as any).localStorage = rapidStore;
+    const RAPID_GID = 'ingt-310';
+    saveStaffToken(staffToken, RAPID_GID);
+
+    let mutationSeq = 0;
+    const seq1 = ++mutationSeq;
+    rapidStore.setItem(`schedule_dirty_${RAPID_GID}`, 'true');
+
+    const save1Overrides = {
+      '310-w1-tu-1': { note: 'Первое быстрое сохранение', updatedAt: Date.now() }
+    };
+    const p1 = pushGroupCloudData(
+      { scheduleOverrides: save1Overrides, deletedOverrides: readDeletedOverrides(RAPID_GID) },
+      RAPID_GID
+    ).then(ok => {
+      if (ok && mutationSeq === seq1) rapidStore.removeItem(`schedule_dirty_${RAPID_GID}`);
+      return ok;
+    });
+
+    // Immediately fire second save before first push resolves (using cumulative snapshot + new note)
+    const seq2 = ++mutationSeq;
+    const save2Overrides = {
+      ...save1Overrides,
+      '310-w1-tu-2': { note: 'Второе быстрое сохранение', updatedAt: Date.now() + 10 }
+    };
+    const p2 = pushGroupCloudData(
+      { scheduleOverrides: save2Overrides, deletedOverrides: readDeletedOverrides(RAPID_GID) },
+      RAPID_GID
+    ).then(ok => {
+      if (ok && mutationSeq === seq2) rapidStore.removeItem(`schedule_dirty_${RAPID_GID}`);
+      return ok;
+    });
+
+    const ok1 = await p1;
+    assert(ok1, 'First rapid save succeeds');
+    assert(rapidStore.getItem(`schedule_dirty_${RAPID_GID}`) === 'true', 'Dirty flag is NOT cleared by superseded first rapid save');
+
+    const ok2 = await p2;
+    assert(ok2, 'Second rapid save succeeds');
+    assert(rapidStore.getItem(`schedule_dirty_${RAPID_GID}`) === null, 'Dirty flag IS cleared when latest rapid save finishes');
+
+    const getAfterRapid = await worker.fetch(new Request(`${BASE}/sync/schedule?groupId=${RAPID_GID}`, { method: 'GET' }), env);
+    const rapidJson = await getAfterRapid.json();
+    const rapidSlice = rapidJson.byGroup[RAPID_GID];
+    assert(Boolean(rapidSlice?.overrides?.['310-w1-tu-1']), 'First rapid save override survived in KV');
+    assert(Boolean(rapidSlice?.overrides?.['310-w1-tu-2']), 'Second rapid save override survived in KV');
+
+    // Verify subjectTeachers + deletedOverrides push does not resurrect tombstoned override
+    recordDeletedOverride(RAPID_GID, '310-w1-tu-1', Date.now() + 100);
+    const { ['310-w1-tu-1']: _dropped, ...remainingOv } = save2Overrides;
+    const okTeachers = await pushGroupCloudData({
+      scheduleOverrides: remainingOv,
+      subjectTeachers: { 'Физика': 'Иванов И.И.' },
+      deletedOverrides: readDeletedOverrides(RAPID_GID)
+    }, RAPID_GID);
+    assert(okTeachers, 'Subject teachers push with deletedOverrides succeeds');
+
+    const getAfterTeacher = await worker.fetch(new Request(`${BASE}/sync/schedule?groupId=${RAPID_GID}`, { method: 'GET' }), env);
+    const teacherJson = await getAfterTeacher.json();
+    const teacherSlice = teacherJson.byGroup[RAPID_GID];
+    assert(!teacherSlice?.overrides?.['310-w1-tu-1'], 'Tombstoned override does NOT resurrect after teacher push');
+    assert(Boolean(teacherSlice?.overrides?.['310-w1-tu-2']), 'Remaining override is preserved after teacher push');
   }
 }
 

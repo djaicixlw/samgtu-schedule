@@ -3,6 +3,7 @@
  * Every call returns a result object and never throws: the UI shows `error` (already in Russian) to the user.
  */
 import { getAttendanceApiBase, getAuthHeaders } from './attendanceStorage';
+import { logger } from './logger';
 import type { UsefulItem, UsefulLink, HomeworkAttachment } from '../types';
 
 export interface SuggestionInput {
@@ -35,7 +36,20 @@ async function request(method: 'GET' | 'POST', path: string, gid: string, body?:
       signal: controller.signal
     });
     const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const cleanPath = path.split('?')[0];
+      if (res.status >= 500 || res.status === 403) {
+        logger.error('SUGGESTIONS', `${method} ${cleanPath} failed for ${gid}: HTTP ${res.status}`, { error: json?.error });
+      } else if (res.status === 400 || res.status === 401 || res.status === 429) {
+        logger.warn('SUGGESTIONS', `${method} ${cleanPath} rejected for ${gid}: HTTP ${res.status}`, { code: json?.code });
+      }
+    }
     return { status: res.status, json };
+  } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('SUGGESTIONS', `${method} ${path.split('?')[0]} network failure for ${gid}`, err);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -62,7 +76,10 @@ export function toPendingItem(rec: any, gid: string): UsefulItem {
 export async function submitSuggestion(input: SuggestionInput): Promise<SubmitResult> {
   try {
     const { status, json } = await request('POST', '/v3/useful/suggest', input.gid, input);
-    if (status === 200 && json.ok) return { ok: true, id: json.id, remaining: json.remaining, status };
+    if (status === 200 && json.ok) {
+      logger.info('SUGGESTIONS', `Suggestion submitted for ${input.gid} (id=${json.id})`);
+      return { ok: true, id: json.id, remaining: json.remaining, status };
+    }
     if (status === 401) return { ok: false, status, code: 'NO_INITDATA', error: 'Откройте приложение из Telegram, чтобы предложить материал' };
     return { ok: false, status, code: json.code, error: json.error || `Не удалось отправить (код ${status})` };
   } catch {
@@ -92,7 +109,11 @@ export async function fetchPendingSuggestions(gid: string): Promise<PendingResul
 export async function decideSuggestion(gid: string, id: string, action: 'approve' | 'reject' | 'block' | 'unblock_all'): Promise<SimpleResult> {
   try {
     const { status, json } = await request('POST', '/v3/useful/decision', gid, { gid, id, action });
-    return status === 200 && json.ok ? { ok: true, status } : { ok: false, status, error: json.error || `Не удалось выполнить (код ${status})` };
+    if (status === 200 && json.ok) {
+      logger.info('SUGGESTIONS', `Suggestion decision '${action}' applied for ${gid} (id=${id})`);
+      return { ok: true, status };
+    }
+    return { ok: false, status, error: json.error || `Не удалось выполнить (код ${status})` };
   } catch {
     return { ok: false, error: NETWORK_ERROR };
   }
@@ -101,7 +122,11 @@ export async function decideSuggestion(gid: string, id: string, action: 'approve
 export async function setNotifications(gid: string, enable: boolean): Promise<SimpleResult & { subscribed?: boolean }> {
   try {
     const { status, json } = await request('POST', '/v3/notify/subscribe', gid, { gid, enable });
-    return status === 200 && json.ok ? { ok: true, subscribed: Boolean(json.subscribed), status } : { ok: false, status, error: json.error || `Не удалось выполнить (код ${status})` };
+    if (status === 200 && json.ok) {
+      logger.info('SUGGESTIONS', `Notifications ${enable ? 'enabled' : 'disabled'} for ${gid}`);
+      return { ok: true, subscribed: Boolean(json.subscribed), status };
+    }
+    return { ok: false, status, error: json.error || `Не удалось выполнить (код ${status})` };
   } catch {
     return { ok: false, error: NETWORK_ERROR };
   }

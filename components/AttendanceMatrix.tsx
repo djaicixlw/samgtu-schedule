@@ -10,7 +10,8 @@ import {
   getDayISODate,
   getDayCalendarDate,
   getWeekDateRange,
-  STUDENTS_REGISTRY
+  STUDENTS_REGISTRY,
+  isSessionPeriod
 } from '../attendance';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { Lesson, Student, WeekData } from '../types';
@@ -67,8 +68,7 @@ const SEMESTER_MONTHS = [
   { id: '2026-09', name: 'Сентябрь', refDate: '2026-09-15' },
   { id: '2026-10', name: 'Октябрь', refDate: '2026-10-15' },
   { id: '2026-11', name: 'Ноябрь', refDate: '2026-11-15' },
-  { id: '2026-12', name: 'Декабрь', refDate: '2026-12-15' },
-  { id: '2027-01', name: 'Январь', refDate: '2027-01-15' }
+  { id: '2026-12', name: 'Декабрь', refDate: '2026-12-15' }
 ] as const;
 
 export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
@@ -100,6 +100,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
     const m = String(now.getMonth() + 1).padStart(2, '0');
     const y = now.getFullYear();
     const currentKey = `${y}-${m}`;
+    if (currentKey > '2026-12') return '2026-12';
     const found = SEMESTER_MONTHS.find(sm => sm.id === currentKey);
     return found ? found.id : '2026-10';
   });
@@ -232,6 +233,10 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
   // Handle cell click in week grid to cycle status: Present -> Absent -> Excused -> Present
   const handleCellToggle = (studentId: number, dayISO: string, lesson: Lesson) => {
     if (!canEdit) return;
+    if (isSessionPeriod(dayISO)) {
+      toast.info('В период сессии отметки посещаемости не ставятся');
+      return;
+    }
     const record = getAttendance(dayISO, lesson.id);
     if (record.isCancelled) {
       toast.info('Пара отменена — отметки не ставятся');
@@ -696,9 +701,22 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
                           {/* Grid cells: Days x Pairs */}
                           {DAYS_OF_WEEK.map(dayName => {
                             const dayISO = getDayISODate(dayName, selectedWeek, activeReferenceDate);
+                            const isSessionDay = isSessionPeriod(dayISO);
                             const daySchedule = activeWeekSchedule.find(d => d.dayName === dayName);
 
                             return PAIRS.map(pairNum => {
+                              if (isSessionDay) {
+                                return (
+                                  <td
+                                    key={`${dayName}-${pairNum}`}
+                                    className="p-1 text-center border-r border-slate-200/60 dark:border-slate-800 text-slate-300 dark:text-slate-700 select-none text-[11px] cursor-default"
+                                    title="Экзаменационная сессия — отметки не ставятся"
+                                  >
+                                    —
+                                  </td>
+                                );
+                              }
+
                               const lesson = daySchedule?.lessons.find(l => getLessonSlotNumber(l) === pairNum && !isPhysicalEducationLesson(l));
 
                               if (!lesson) {

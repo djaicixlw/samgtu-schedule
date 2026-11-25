@@ -1,13 +1,27 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SCHEDULE_REGISTRY } from '../constants';
-import { registerScheduleAliases } from './scheduleLoader';
+import { registerScheduleAliases, setNodeArchiveDiskLoader, parseWeekData } from './scheduleLoader';
 
 /**
  * Preloads all schedule chunks synchronously in Node.js environments (test suites and audits).
  */
 export function preloadAllSchedulesSync(): void {
   try {
+    setNodeArchiveDiskLoader((windowStart, canonicalId) => {
+      const localPath = path.resolve(
+        process.cwd(),
+        'public',
+        'schedules',
+        'archive',
+        `block-from-week-${windowStart}`,
+        `${canonicalId}.json`
+      );
+      if (!fs.existsSync(localPath)) return null;
+      const raw = fs.readFileSync(localPath, 'utf8');
+      return parseWeekData(JSON.parse(raw));
+    });
+
     const schedulesDir = path.resolve(process.cwd(), 'public', 'schedules');
     if (!fs.existsSync(schedulesDir)) return;
 

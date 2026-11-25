@@ -1,4 +1,5 @@
 import type { Lesson } from '../types';
+import { safeGetItem, safeSetItem } from './safeStorage';
 
 /**
  * Per-lesson overrides must contain only what the starosta really changed.
@@ -233,12 +234,10 @@ const deletedOverridesKey = (gid: string) => `schedule_deleted_overrides_${Strin
 
 export function readDeletedOverrides(gid: string): Record<string, number> {
   try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(deletedOverridesKey(gid));
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-      }
+    const raw = safeGetItem(deletedOverridesKey(gid));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
     }
   } catch {}
   return {};
@@ -246,7 +245,7 @@ export function readDeletedOverrides(gid: string): Record<string, number> {
 
 export function recordDeletedOverride(gid: string, lessonId: string, at: number = Date.now()): void {
   try {
-    if (typeof localStorage === 'undefined' || !lessonId) return;
+    if (!lessonId) return;
     const cleanGid = String(gid || '').trim().toLowerCase();
     const all = readDeletedOverrides(cleanGid);
     all[lessonId] = at;
@@ -258,6 +257,6 @@ export function recordDeletedOverride(gid: string, lessonId: string, at: number 
       }
     }
     const entries = Object.entries(all).sort((a, b) => b[1] - a[1]).slice(0, 500);
-    localStorage.setItem(deletedOverridesKey(cleanGid), JSON.stringify(Object.fromEntries(entries)));
+    safeSetItem(deletedOverridesKey(cleanGid), JSON.stringify(Object.fromEntries(entries)), { component: 'lessonOverrides' });
   } catch {}
 }

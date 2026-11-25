@@ -111,9 +111,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
   const itemsRef = useRef<HomeworkItem[]>(items);
 
   const persistItems = (next: HomeworkItem[]) => {
-    try {
-      localStorage.setItem(`homework_${currentGroupId}`, JSON.stringify(next));
-    } catch (e) {}
+    safeSetItem(`homework_${currentGroupId}`, JSON.stringify(next), { component: 'homework' });
   };
 
   const hwPendingStore = useMemo(() => ({
@@ -320,9 +318,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
     // Save locally immediately
     itemsRef.current = updated;
     setItems(updated);
-    try {
-      localStorage.setItem(`homework_${currentGroupId}`, JSON.stringify(updated));
-    } catch (e) {}
+    safeSetItem(`homework_${currentGroupId}`, JSON.stringify(updated), { component: 'homework' });
 
     setIsModalOpen(false);
     toast.success(editingItem ? 'Задание обновлено' : 'Новое ДЗ опубликовано для группы!');
@@ -342,16 +338,16 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
     // 1. Record in tombstone list so seed and cloud polling can NEVER resurrect it!
     let deletedList: string[] = [];
     try {
-      deletedList = JSON.parse(localStorage.getItem(`deleted_hw_${currentGroupId}`) || '[]');
+      deletedList = JSON.parse(safeGetItem(`deleted_hw_${currentGroupId}`) || '[]');
       if (!deletedList.includes(id)) {
         deletedList.push(id);
-        localStorage.setItem(`deleted_hw_${currentGroupId}`, JSON.stringify(deletedList));
+        safeSetItem(`deleted_hw_${currentGroupId}`, JSON.stringify(deletedList), { component: 'homework' });
       }
     } catch (e) {}
 
     let freshItems: HomeworkItem[] = [];
     try {
-      const saved = localStorage.getItem(`homework_${currentGroupId}`);
+      const saved = safeGetItem(`homework_${currentGroupId}`);
       if (saved) freshItems = JSON.parse(saved);
     } catch (e) {}
     if (freshItems.length === 0 && items.length > 0) {
@@ -363,9 +359,7 @@ const HomeworkTracker: React.FC<HomeworkTrackerProps> = ({
     const updated = freshItems.filter(it => it.id !== id);
     itemsRef.current = updated;
     setItems(updated);
-    try {
-      localStorage.setItem(`homework_${currentGroupId}`, JSON.stringify(updated));
-    } catch (e) {}
+    safeSetItem(`homework_${currentGroupId}`, JSON.stringify(updated), { component: 'homework' });
 
     toast.info('Задание удалено');
 

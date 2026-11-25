@@ -272,6 +272,16 @@ export function scheduleUrl(id: string, base?: string): string {
  */
 const ARCHIVE_CACHE = new Map<string, WeekData | null>();
 
+type ArchiveDiskLoader = (windowStart: number, canonicalId: string) => WeekData | null;
+let nodeArchiveDiskLoader: ArchiveDiskLoader | null = null;
+
+/**
+ * Registers a Node.js disk loader for historical archive schedules (used in tests/scripts).
+ */
+export function setNodeArchiveDiskLoader(loader: ArchiveDiskLoader | null): void {
+  nodeArchiveDiskLoader = loader;
+}
+
 /**
  * Clears the archive schedule cache (used in tests).
  */
@@ -355,6 +365,14 @@ export function getArchiveScheduleSync(groupId: string, dateISO: string): WeekDa
   }
 
   // Node.js test environment sync read
+  if (nodeArchiveDiskLoader) {
+    try {
+      const parsed = nodeArchiveDiskLoader(start, canonicalId);
+      ARCHIVE_CACHE.set(cacheKey, parsed);
+      return parsed;
+    } catch {}
+  }
+
   if (typeof process !== 'undefined' && (process as any).versions?.node) {
     try {
       const fs = (globalThis as any).require ? (globalThis as any).require('fs') : undefined;

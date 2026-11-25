@@ -17,6 +17,9 @@
  * No imports from attendanceStorage on purpose (it imports this file): callers pass the base URL and headers.
  */
 
+import { logger } from './logger';
+import { safeSetItem, safeGetItem, safeRemoveItem } from './safeStorage';
+
 export type AttendanceMode = 'd1' | 'kv';
 
 export interface MirrorMonth {
@@ -87,12 +90,10 @@ const emptyMirror = (): Mirror => ({ rev: 0, months: {} });
 
 export function loadMirror(gid: string): Mirror {
   try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(mirrorKey(gid));
-      if (raw) {
-        const p = JSON.parse(raw);
-        if (p && typeof p.rev === 'number' && p.months && typeof p.months === 'object') return p as Mirror;
-      }
+    const raw = safeGetItem(mirrorKey(gid));
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (p && typeof p.rev === 'number' && p.months && typeof p.months === 'object') return p as Mirror;
     }
   } catch {}
   return emptyMirror();
@@ -100,15 +101,14 @@ export function loadMirror(gid: string): Mirror {
 
 export function saveMirror(gid: string, mirror: Mirror): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     const months = Object.keys(mirror.months).sort();
     for (const m of months.slice(0, Math.max(0, months.length - MAX_MIRROR_MONTHS))) delete mirror.months[m];
-    localStorage.setItem(mirrorKey(gid), JSON.stringify(mirror));
+    safeSetItem(mirrorKey(gid), JSON.stringify(mirror), { component: 'attendanceD1Client' });
   } catch {}
 }
 
 export function clearMirror(gid: string): void {
-  try { if (typeof localStorage !== 'undefined') localStorage.removeItem(mirrorKey(gid)); } catch {}
+  safeRemoveItem(mirrorKey(gid));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -167,14 +167,26 @@ export async function refreshServerMirror(ctx: ApiCtx, gid: string): Promise<Mir
       const params = new URLSearchParams({ gid, since: String(mirror.rev), limit: '5000' });
       const res = await fetch(`${ctx.base}/v3/att/changes?${params.toString()}`, { method: 'GET', headers: ctx.headers });
       const json: any = await res.json().catch(() => ({}));
-      if (res.status === 401) return { ok: false, mode: null, status: 401, error: json.error || 'Unauthorized' };
+      if (res.status === 401) {
+        logger.error('ATTENDANCE_D1', `refreshServerMirror unauthorized (HTTP 401) for ${gid}`);
+        return { ok: false, mode: null, status: 401, error: json.error || 'Unauthorized' };
+      }
       if (res.status === 409 || res.status === 404) {
         setAttendanceMode(gid, 'kv'); // not on D1 (409 NOT_D1) or an old worker without the route (404)
         return { ok: true, mode: 'kv' };
       }
-      if (!res.ok) return { ok: false, mode: null, status: res.status, error: json.error || `HTTP ${res.status}` };
+      if (!res.ok) {
+        const msg = json.error || `HTTP ${res.status}`;
+        if (res.status >= 500 || res.status === 403) {
+          logger.error('ATTENDANCE_D1', `refreshServerMirror failed for ${gid}: ${msg}`, { status: res.status });
+        } else {
+          logger.warn('ATTENDANCE_D1', `refreshServerMirror HTTP ${res.status} for ${gid}: ${msg}`);
+        }
+        return { ok: false, mode: null, status: res.status, error: msg };
+      }
       // A 200 that is not a change feed (captive portal, proxy, mock) must never be read as "the group is empty".
       if (typeof json.rev !== 'number' || !Array.isArray(json.marks) || !Array.isArray(json.states)) {
+        logger.error('ATTENDANCE_D1', `refreshServerMirror unexpected change feed response for ${gid}`);
         return { ok: false, mode: null, status: res.status, error: 'Unexpected change feed response' };
       }
 
@@ -190,6 +202,7 @@ export async function refreshServerMirror(ctx: ApiCtx, gid: string): Promise<Mir
       if (!json.more) {
         saveMirror(gid, mirror);
         setAttendanceMode(gid, 'd1');
+        logger.info('ATTENDANCE_D1', `refreshServerMirror synced for ${gid} (rev=${mirror.rev})`);
         const snapshot = mirror;
         return {
           ok: true,
@@ -201,8 +214,12 @@ export async function refreshServerMirror(ctx: ApiCtx, gid: string): Promise<Mir
         };
       }
     }
+    logger.error('ATTENDANCE_D1', `refreshServerMirror exceeded MAX_PAGES for ${gid}`);
     return { ok: false, mode: null, error: 'Change feed did not finish' };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE_D1', `refreshServerMirror network error for ${gid}`, err);
+    }
     return { ok: false, mode: null, error: err?.message || 'Network error' };
   }
 }
@@ -244,10 +261,20 @@ export async function pushMonthOps(
       if (res.ok) continue;
       if (res.status === 409 && json.code === 'NOT_D1') { setAttendanceMode(gid, 'kv'); return { ok: false, notD1: true, status: 409 }; }
       if (res.status === 404) { setAttendanceMode(gid, 'kv'); return { ok: false, notD1: true, status: 404 }; }
-      return { ok: false, status: res.status, error: json.error || `HTTP ${res.status}` };
+      const msg = json.error || `HTTP ${res.status}`;
+      if (res.status >= 500 || res.status === 401 || res.status === 403) {
+        logger.error('ATTENDANCE_D1', `pushMonthOps failed for ${gid} (${month}): ${msg}`, { status: res.status });
+      } else {
+        logger.warn('ATTENDANCE_D1', `pushMonthOps HTTP ${res.status} for ${gid} (${month}): ${msg}`);
+      }
+      return { ok: false, status: res.status, error: msg };
     }
+    logger.info('ATTENDANCE_D1', `pushMonthOps pushed ${ops.length} ops for ${gid} (${month})`);
     return { ok: true };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE_D1', `pushMonthOps network error for ${gid} (${month})`, err);
+    }
     return { ok: false, error: err?.message || 'Network error' };
   }
 }

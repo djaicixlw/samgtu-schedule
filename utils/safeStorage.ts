@@ -74,6 +74,7 @@ export function pruneForeignScheduleCache(): number {
       if (
         lower.startsWith('sched_cache_') ||
         lower.startsWith('schedule_cache_') ||
+        lower.startsWith('cached_schedule_') ||
         lower.startsWith('v1_schedule_cache_') ||
         lower.startsWith('schedule_chunk_') ||
         lower.startsWith('custom_schedule_')

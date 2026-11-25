@@ -133,31 +133,27 @@ export async function hashInviteCode(code: string): Promise<string> {
 
 export function getLocalStudents(groupId: string): Student[] {
   try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(`students_${groupId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          const all = parsed
-            .filter(s => s && typeof s === 'object' && typeof s.id === 'number')
-            .map(s => ({
-              id: s.id,
-              name: String(s.name || '').trim(),
-              ...(s.slot ? { slot: String(s.slot).trim().toUpperCase() } : {}),
-              ...(typeof s.isArchived === 'boolean' ? { isArchived: s.isArchived } : {})
-            }));
+    const raw = safeGetItem(`students_${groupId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const all = parsed
+          .filter(s => s && typeof s === 'object' && typeof s.id === 'number')
+          .map(s => ({
+            id: s.id,
+            name: String(s.name || '').trim(),
+            ...(s.slot ? { slot: String(s.slot).trim().toUpperCase() } : {}),
+            ...(typeof s.isArchived === 'boolean' ? { isArchived: s.isArchived } : {})
+          }));
 
-          const isAnon = (name: string) => /^Студент\s+\d+$/i.test(name.trim());
-          const realStudents = all.filter(s => !isAnon(s.name));
-          if (realStudents.length > 0 && realStudents.length < all.length) {
-            try {
-              localStorage.setItem(`students_${groupId}`, JSON.stringify(realStudents));
-            } catch {}
-            return realStudents;
-          }
-
-          return all;
+        const isAnon = (name: string) => /^Студент\s+\d+$/i.test(name.trim());
+        const realStudents = all.filter(s => !isAnon(s.name));
+        if (realStudents.length > 0 && realStudents.length < all.length) {
+          safeSetItem(`students_${groupId}`, JSON.stringify(realStudents), { component: 'attendanceStorage' });
+          return realStudents;
         }
+
+        return all;
       }
     }
   } catch (e) {
@@ -171,9 +167,7 @@ export function getLocalStudents(groupId: string): Student[] {
  */
 export function saveLocalStudents(groupId: string, students: Student[]): void {
   try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(`students_${groupId}`, JSON.stringify(students));
-    }
+    safeSetItem(`students_${groupId}`, JSON.stringify(students), { component: 'attendanceStorage' });
   } catch (e) {
     console.error(`Failed to save local students for ${groupId}:`, e);
   }
@@ -651,9 +645,15 @@ export async function linkStudentWithInvite(
       return { ok: false, error: 'Неверный или истекший код приглашения' };
     }
     if (res.status === 429) {
+      logger.warn('ATTENDANCE', 'linkStudentWithInvite rate limited (HTTP 429)');
       return { ok: false, error: 'Слишком много попыток, подождите 15 минут' };
     }
     if (!res.ok) {
+      if (res.status >= 500 || res.status === 401 || res.status === 403) {
+        logger.error('ATTENDANCE', `linkStudentWithInvite HTTP ${res.status}`);
+      } else {
+        logger.warn('ATTENDANCE', `linkStudentWithInvite HTTP ${res.status}`);
+      }
       return { ok: false, error: json.error || `HTTP ${res.status}` };
     }
     try {
@@ -671,8 +671,12 @@ export async function linkStudentWithInvite(
     } catch (e) {
       console.error('Failed to save student link to localStorage:', e);
     }
+    logger.info('ATTENDANCE', `linkStudentWithInvite linked student to ${json.gid}`);
     return { ok: true, gid: json.gid, slot: json.slot };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE', 'linkStudentWithInvite network failure', err);
+    }
     return { ok: false, error: err?.message || 'Network error' };
   }
 }
@@ -701,6 +705,11 @@ export async function fetchMyAttendanceV3(month?: string): Promise<{
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (res.status >= 500 || res.status === 401 || res.status === 403) {
+        logger.error('ATTENDANCE', `fetchMyAttendanceV3 HTTP ${res.status}`);
+      } else if (res.status !== 404) {
+        logger.warn('ATTENDANCE', `fetchMyAttendanceV3 HTTP ${res.status}`);
+      }
       return { ok: false, linked: false, error: json.error || `HTTP ${res.status}` };
     }
     return {
@@ -712,6 +721,9 @@ export async function fetchMyAttendanceV3(month?: string): Promise<{
       cancelled: json.cancelled
     };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE', 'fetchMyAttendanceV3 network failure', err);
+    }
     return { ok: false, linked: false, error: err?.message || 'Network error' };
   }
 }
@@ -736,11 +748,20 @@ export async function unlinkStudentV3(month?: string): Promise<{
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (res.status >= 500 || res.status === 401 || res.status === 403) {
+        logger.error('ATTENDANCE', `unlinkStudentV3 HTTP ${res.status}`);
+      } else {
+        logger.warn('ATTENDANCE', `unlinkStudentV3 HTTP ${res.status}`);
+      }
       return { ok: false, deleted: false, error: json.error || `HTTP ${res.status}` };
     }
     clearLocalStudentLink();
+    logger.info('ATTENDANCE', 'unlinkStudentV3 unlinked student');
     return { ok: true, deleted: Boolean(json.deleted) };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ATTENDANCE', 'unlinkStudentV3 network failure', err);
+    }
     return { ok: false, deleted: false, error: err?.message || 'Network error' };
   }
 }
@@ -1228,10 +1249,19 @@ export async function saveEncryptedRosterV3(
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (res.status >= 500 || res.status === 401 || res.status === 403 || res.status === 413) {
+        logger.error('ROSTER', `saveEncryptedRosterV3 HTTP ${res.status} for ${groupId}`);
+      } else {
+        logger.warn('ROSTER', `saveEncryptedRosterV3 HTTP ${res.status} for ${groupId}`);
+      }
       return { ok: false, error: json.error || `HTTP ${res.status}` };
     }
+    logger.info('ROSTER', `saveEncryptedRosterV3 saved for ${groupId} (ver=${json.ver ?? '?'})`);
     return { ok: true, ver: json.ver };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ROSTER', `saveEncryptedRosterV3 network failure for ${groupId}`, err);
+    }
     return { ok: false, error: err?.message || 'Network error' };
   }
 }
@@ -1251,10 +1281,18 @@ export async function fetchEncryptedRosterV3(
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (res.status >= 500 || res.status === 401 || res.status === 403) {
+        logger.error('ROSTER', `fetchEncryptedRosterV3 HTTP ${res.status} for ${groupId}`);
+      } else if (res.status !== 404) {
+        logger.warn('ROSTER', `fetchEncryptedRosterV3 HTTP ${res.status} for ${groupId}`);
+      }
       return { ok: false, error: json.error || `HTTP ${res.status}` };
     }
     return { ok: true, roster: json.roster };
   } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      logger.error('ROSTER', `fetchEncryptedRosterV3 network failure for ${groupId}`, err);
+    }
     return { ok: false, error: err?.message || 'Network error' };
   }
 }
@@ -1270,7 +1308,7 @@ export async function syncRosterToCloud(
   try {
     const canonicalGid = normalizeGroupId(groupId);
     if (!students || students.length === 0 || students.every(s => typeof s.name === 'string' && /^Студент\s+\d+$/i.test(s.name.trim()))) {
-      console.warn(`[syncRosterToCloud] Aborted sync for ${canonicalGid}: roster is empty or contains only dummy students`);
+      logger.warn('ROSTER', `syncRosterToCloud aborted for ${canonicalGid}: empty or dummy roster`);
       return false;
     }
     const code = accessCode || (typeof localStorage !== 'undefined' ? localStorage.getItem(`group_code_${canonicalGid}`) || localStorage.getItem('access_code') : '') || '';
@@ -1279,7 +1317,8 @@ export async function syncRosterToCloud(
     const encrypted = await encryptRosterE2EE(slotted, code);
     const res = await saveEncryptedRosterV3(canonicalGid, encrypted);
     return Boolean(res.ok);
-  } catch {
+  } catch (err: any) {
+    logger.error('ROSTER', `syncRosterToCloud failed for ${groupId}`, err);
     return false;
   }
 }
@@ -1299,6 +1338,7 @@ export async function restoreRosterFromCloud(
     }
     const decrypted = await decryptRosterE2EE(res.roster, accessCode);
     if (!decrypted || decrypted.length === 0) {
+      logger.warn('ROSTER', `restoreRosterFromCloud decryption failed for ${canonicalGid}`);
       return { ok: false, error: 'Не удалось расшифровать список студентов' };
     }
     const slotted = ensureGroupSlots(canonicalGid, decrypted);
@@ -1306,8 +1346,10 @@ export async function restoreRosterFromCloud(
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(`group_code_${canonicalGid}`, accessCode);
     }
+    logger.info('ROSTER', `restoreRosterFromCloud restored ${slotted.length} students for ${canonicalGid}`);
     return { ok: true, count: slotted.length };
   } catch (e: any) {
+    logger.error('ROSTER', `restoreRosterFromCloud failed for ${groupId}`, e);
     return { ok: false, error: e?.message || 'Ошибка восстановления ростера' };
   }
 }
@@ -1421,7 +1463,10 @@ export async function pullAttendanceSnapshotFromV3(
     if (getAttendanceMode(gid) !== 'kv') {
       mirror = await refreshServerMirror({ base: getAttendanceApiBase(), headers: getAuthHeaders(gid) }, gid);
       if (mirror.mode === 'kv') mirror = null;                          // group is not on D1: legacy month protocol
-      else if (!mirror.ok) return { records: Array.from(recordsByLesson.values()), fetchedMonths }; // feed failed
+      else if (!mirror.ok) {
+        logger.error('ATTENDANCE', `D1 mirror pull failed for ${gid}: ${mirror.error || 'unknown'}`, { status: mirror.status });
+        return { records: Array.from(recordsByLesson.values()), fetchedMonths }; // feed failed
+      }
     }
 
     for (const monthStr of monthsToFetch) {
