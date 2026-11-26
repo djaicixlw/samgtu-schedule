@@ -37,6 +37,18 @@ export interface ExportWordResult {
  * @param faculty Faculty / Institute descriptor
  * @returns Metadata object detailing execution result and delivery method
  */
+export function formatSemesterPrepositional(rawName?: string): string {
+  const trimmed = (rawName || '').trim();
+  if (!trimmed) return 'осеннем семестре 2026/2027 уч. г.';
+  let formatted = trimmed
+    .replace(/^осенний семестр\s+/i, 'осеннем семестре ')
+    .replace(/^весенний семестр\s+/i, 'весеннем семестре ');
+  if (/^\S+.*?\d{4}[\/-]\d{4}$/.test(formatted) && !/уч\./i.test(formatted)) {
+    formatted += ' уч. г.';
+  }
+  return formatted;
+}
+
 export const exportAttendanceToWord = async (
   records: AttendanceRecord[] | Record<string, AttendanceRecord>,
   students: Student[],
@@ -96,7 +108,7 @@ export const exportAttendanceToWord = async (
   const semConfig = getSemesterConfig();
   const semesterStart = semConfig.semesterStart || '2026-08-31';
   const semesterEnd = semConfig.blocks?.[semConfig.blocks.length - 1]?.end || '2026-12-31';
-  const semName = semConfig.semesterName || 'осеннем семестре 2026-2027 уч.г.';
+  const semName = formatSemesterPrepositional(semConfig.semesterName);
 
   // Restrict records strictly within semester boundaries [semesterStart, semesterEnd]
   const recordsList: AttendanceRecord[] = Array.isArray(records)

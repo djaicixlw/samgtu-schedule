@@ -20,6 +20,7 @@ export const LEGACY_CACHE_PREFIX = 'cached_schedule_';
 export interface ScheduleCacheEntry {
   data: WeekData;
   cachedAt: number;
+  semesterStart?: string;
 }
 
 export interface LoadScheduleOptions {
@@ -158,13 +159,18 @@ export function readCachedSchedule(canonicalId: string): { data: WeekData; cache
 
   // 1. Try v1 key
   const v1Key = getScheduleCacheKey(canonicalId);
+  const activeSemesterStart = getSemesterConfig().semesterStart;
   try {
     const rawV1 = storage.getItem(v1Key);
     if (rawV1) {
       const parsed = JSON.parse(rawV1);
-      const extracted = extractCachedSchedule(parsed);
-      if (extracted) {
-        return extracted;
+      if (parsed && typeof parsed.semesterStart === 'string' && activeSemesterStart && parsed.semesterStart !== activeSemesterStart) {
+        storage.removeItem(v1Key);
+      } else {
+        const extracted = extractCachedSchedule(parsed);
+        if (extracted) {
+          return extracted;
+        }
       }
     }
   } catch (e) {}
@@ -200,7 +206,8 @@ export function writeCachedSchedule(canonicalId: string, data: WeekData): void {
   const v1Key = getScheduleCacheKey(canonicalId);
   const entry: ScheduleCacheEntry = {
     data,
-    cachedAt: Date.now()
+    cachedAt: Date.now(),
+    semesterStart: getSemesterConfig().semesterStart
   };
 
   try {
@@ -295,6 +302,7 @@ export interface BlockWindowInfo {
   weeks: number[];
   blockId?: number;
   isCurrentBlock: boolean;
+  isPastSemesterBlock: boolean;
 }
 
 /**
@@ -302,14 +310,28 @@ export interface BlockWindowInfo {
  */
 export function getBlockWindowForDate(dateISO: string, config?: BlockConfig): BlockWindowInfo {
   const conf = config || getSemesterConfig();
-  const currentWindow = blockWindow(samaraISO(), conf);
+  const todayISO = samaraISO();
+  const currentWindow = blockWindow(todayISO, conf);
   const targetWindow = blockWindow(dateISO, conf);
+  const blocks = (conf.blocks || []).filter(b => b.start && b.end);
+  let currentBlock = blocks.find(b => todayISO >= b.start && todayISO <= b.end);
+  if (!currentBlock && blocks.length > 0) {
+    currentBlock = todayISO < blocks[0].start ? blocks[0] : blocks[blocks.length - 1];
+  }
+  const semesterStart = conf.semesterStart || '2026-08-31';
+  const isCurrentBlock = targetWindow.start === currentWindow.start;
+  const isPastSemesterBlock =
+    !isCurrentBlock &&
+    dateISO >= semesterStart &&
+    (!currentBlock || dateISO < currentBlock.start);
+
   return {
     start: targetWindow.start,
     end: targetWindow.start + 3,
     weeks: targetWindow.weeks,
     blockId: targetWindow.blockId,
-    isCurrentBlock: targetWindow.start === currentWindow.start
+    isCurrentBlock,
+    isPastSemesterBlock
   };
 }
 
@@ -354,8 +376,8 @@ export function createEmptyWeekData(): WeekData {
  */
 export function getArchiveScheduleSync(groupId: string, dateISO: string): WeekData | null {
   const canonicalId = getCanonicalScheduleId(groupId);
-  const { start, isCurrentBlock } = getBlockWindowForDate(dateISO);
-  if (isCurrentBlock) {
+  const { start, isPastSemesterBlock } = getBlockWindowForDate(dateISO);
+  if (!isPastSemesterBlock) {
     return SCHEDULE_REGISTRY[canonicalId] || null;
   }
 
@@ -410,10 +432,10 @@ export async function loadBlockScheduleForDate(
   options?: LoadScheduleOptions
 ): Promise<WeekData> {
   const canonicalId = getCanonicalScheduleId(groupId);
-  const { start, isCurrentBlock } = getBlockWindowForDate(dateISO);
+  const { start, isPastSemesterBlock } = getBlockWindowForDate(dateISO);
 
-  // 1. Current block: load current schedule
-  if (isCurrentBlock) {
+  // 1. Current or future block (never read stale past-semester archives for future dates): load current schedule
+  if (!isPastSemesterBlock) {
     const currentRes = await loadGroupSchedule(canonicalId, options);
     return (currentRes.ok ? currentRes.data : undefined) || SCHEDULE_REGISTRY[canonicalId] || createEmptyWeekData();
   }
@@ -731,6 +753,28 @@ async function fetchAndCacheChunk(
  * - { ok: true, data: WeekData } on success
  * - { ok: false, reason: 'not_found' | 'network' | 'invalid' | 'empty' | 'timeout' } on failure
  */
+/**
+ * Checks whether custom_schedule_<gid> belongs to the active semester.
+ * Stale custom schedules from a previous semester are evicted so Spring rollover shows fresh chunks.
+ */
+export function isCustomScheduleFreshForSemester(storage: Storage, canonicalId: string): boolean {
+  try {
+    const activeSem = getSemesterConfig().semesterStart || '2026-08-31';
+    const savedSem = storage.getItem(`custom_schedule_sem_${canonicalId}`);
+    if (savedSem && savedSem !== activeSem) {
+      storage.removeItem(`custom_schedule_${canonicalId}`);
+      storage.removeItem(`custom_schedule_sem_${canonicalId}`);
+      return false;
+    }
+    const isStandardGroup = Boolean(SCHEDULE_REGISTRY[canonicalId]) || /^(?:\d{2})?[a-z]+-\d+[a-z]?$/i.test(canonicalId);
+    if (!savedSem && activeSem > '2026-09-30' && isStandardGroup && canonicalId !== 'user-custom') {
+      storage.removeItem(`custom_schedule_${canonicalId}`);
+      return false;
+    }
+  } catch {}
+  return true;
+}
+
 export async function loadGroupSchedule(
   groupId: string,
   options?: LoadScheduleOptions
@@ -740,7 +784,7 @@ export async function loadGroupSchedule(
 
   // 1. Custom imported schedule check (localStorage custom_schedule_${canonicalId})
   const storage = getLocalStorage();
-  if (storage) {
+  if (storage && isCustomScheduleFreshForSemester(storage, canonicalId)) {
     try {
       const customSaved = storage.getItem(`custom_schedule_${canonicalId}`);
       if (customSaved) {

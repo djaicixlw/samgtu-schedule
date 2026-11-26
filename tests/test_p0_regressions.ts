@@ -529,64 +529,88 @@ console.log('\n12. 3-way merge (merge3) tests');
     const RAPID_GID = 'ingt-310';
     saveStaffToken(staffToken, RAPID_GID);
 
-    let mutationSeq = 0;
-    const seq1 = ++mutationSeq;
-    rapidStore.setItem(`schedule_dirty_${RAPID_GID}`, 'true');
-
-    const save1Overrides = {
-      '310-w1-tu-1': { note: 'Первое быстрое сохранение', updatedAt: Date.now() }
-    };
-    const p1 = pushGroupCloudData(
-      { scheduleOverrides: save1Overrides, deletedOverrides: readDeletedOverrides(RAPID_GID) },
-      RAPID_GID
-    ).then(ok => {
-      if (ok && mutationSeq === seq1) rapidStore.removeItem(`schedule_dirty_${RAPID_GID}`);
-      return ok;
+    const prevFetch = (globalThis as any).fetch;
+    let schedulePutCount = 0;
+    let releaseSecondPut!: () => void;
+    const secondPutGate = new Promise<void>(resolve => {
+      releaseSecondPut = resolve;
     });
-
-    // Immediately fire second save before first push resolves (using cumulative snapshot + new note)
-    const seq2 = ++mutationSeq;
-    const save2Overrides = {
-      ...save1Overrides,
-      '310-w1-tu-2': { note: 'Второе быстрое сохранение', updatedAt: Date.now() + 10 }
+    (globalThis as any).fetch = async (input: any, init?: any) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.includes(`/sync/schedule?groupId=${RAPID_GID}`) && (init?.method || 'GET').toUpperCase() === 'PUT') {
+        schedulePutCount++;
+        if (schedulePutCount === 2) {
+          await secondPutGate;
+        }
+      }
+      return prevFetch(input, init);
     };
-    const p2 = pushGroupCloudData(
-      { scheduleOverrides: save2Overrides, deletedOverrides: readDeletedOverrides(RAPID_GID) },
-      RAPID_GID
-    ).then(ok => {
-      if (ok && mutationSeq === seq2) rapidStore.removeItem(`schedule_dirty_${RAPID_GID}`);
-      return ok;
-    });
 
-    const ok1 = await p1;
-    assert(ok1, 'First rapid save succeeds');
-    assert(rapidStore.getItem(`schedule_dirty_${RAPID_GID}`) === 'true', 'Dirty flag is NOT cleared by superseded first rapid save');
+    try {
+      const baseTs = Date.now();
+      let mutationSeq = 0;
+      const seq1 = ++mutationSeq;
+      rapidStore.setItem(`schedule_dirty_${RAPID_GID}`, 'true');
 
-    const ok2 = await p2;
-    assert(ok2, 'Second rapid save succeeds');
-    assert(rapidStore.getItem(`schedule_dirty_${RAPID_GID}`) === null, 'Dirty flag IS cleared when latest rapid save finishes');
+      const save1Overrides = {
+        '310-w1-tu-1': { note: 'Первое быстрое сохранение', updatedAt: baseTs }
+      };
+      const p1 = pushGroupCloudData(
+        { scheduleOverrides: save1Overrides, deletedOverrides: readDeletedOverrides(RAPID_GID) },
+        RAPID_GID
+      ).then(ok => {
+        if (ok && mutationSeq === seq1) rapidStore.removeItem(`schedule_dirty_${RAPID_GID}`);
+        return ok;
+      });
 
-    const getAfterRapid = await worker.fetch(new Request(`${BASE}/sync/schedule?groupId=${RAPID_GID}`, { method: 'GET' }), env);
-    const rapidJson = await getAfterRapid.json();
-    const rapidSlice = rapidJson.byGroup[RAPID_GID];
-    assert(Boolean(rapidSlice?.overrides?.['310-w1-tu-1']), 'First rapid save override survived in KV');
-    assert(Boolean(rapidSlice?.overrides?.['310-w1-tu-2']), 'Second rapid save override survived in KV');
+      // Immediately fire second save while first push is in-flight (gated at fetch boundary)
+      const seq2 = ++mutationSeq;
+      const save2Overrides = {
+        ...save1Overrides,
+        '310-w1-tu-2': { note: 'Второе быстрое сохранение', updatedAt: baseTs + 10 }
+      };
+      const p2 = pushGroupCloudData(
+        { scheduleOverrides: save2Overrides, deletedOverrides: readDeletedOverrides(RAPID_GID) },
+        RAPID_GID
+      ).then(ok => {
+        if (ok && mutationSeq === seq2) rapidStore.removeItem(`schedule_dirty_${RAPID_GID}`);
+        return ok;
+      });
 
-    // Verify subjectTeachers + deletedOverrides push does not resurrect tombstoned override
-    recordDeletedOverride(RAPID_GID, '310-w1-tu-1', Date.now() + 100);
-    const { ['310-w1-tu-1']: _dropped, ...remainingOv } = save2Overrides;
-    const okTeachers = await pushGroupCloudData({
-      scheduleOverrides: remainingOv,
-      subjectTeachers: { 'Физика': 'Иванов И.И.' },
-      deletedOverrides: readDeletedOverrides(RAPID_GID)
-    }, RAPID_GID);
-    assert(okTeachers, 'Subject teachers push with deletedOverrides succeeds');
+      const ok1 = await p1;
+      assert(ok1, 'First rapid save succeeds');
+      assert(rapidStore.getItem(`schedule_dirty_${RAPID_GID}`) === 'true', 'Dirty flag is NOT cleared by superseded first rapid save');
 
-    const getAfterTeacher = await worker.fetch(new Request(`${BASE}/sync/schedule?groupId=${RAPID_GID}`, { method: 'GET' }), env);
-    const teacherJson = await getAfterTeacher.json();
-    const teacherSlice = teacherJson.byGroup[RAPID_GID];
-    assert(!teacherSlice?.overrides?.['310-w1-tu-1'], 'Tombstoned override does NOT resurrect after teacher push');
-    assert(Boolean(teacherSlice?.overrides?.['310-w1-tu-2']), 'Remaining override is preserved after teacher push');
+      releaseSecondPut();
+      const ok2 = await p2;
+      assert(ok2, 'Second rapid save succeeds');
+      assert(rapidStore.getItem(`schedule_dirty_${RAPID_GID}`) === null, 'Dirty flag IS cleared when latest rapid save finishes');
+
+      const getAfterRapid = await worker.fetch(new Request(`${BASE}/sync/schedule?groupId=${RAPID_GID}`, { method: 'GET' }), env);
+      const rapidJson = await getAfterRapid.json();
+      const rapidSlice = rapidJson.byGroup[RAPID_GID];
+      assert(Boolean(rapidSlice?.overrides?.['310-w1-tu-1']), 'First rapid save override survived in KV');
+      assert(Boolean(rapidSlice?.overrides?.['310-w1-tu-2']), 'Second rapid save override survived in KV');
+
+      // Verify subjectTeachers + deletedOverrides push does not resurrect tombstoned override
+      recordDeletedOverride(RAPID_GID, '310-w1-tu-1', Math.max(Date.now(), baseTs) + 100);
+      const { ['310-w1-tu-1']: _dropped, ...remainingOv } = save2Overrides;
+      const okTeachers = await pushGroupCloudData({
+        scheduleOverrides: remainingOv,
+        subjectTeachers: { 'Физика': 'Иванов И.И.' },
+        deletedOverrides: readDeletedOverrides(RAPID_GID)
+      }, RAPID_GID);
+      assert(okTeachers, 'Subject teachers push with deletedOverrides succeeds');
+
+      const getAfterTeacher = await worker.fetch(new Request(`${BASE}/sync/schedule?groupId=${RAPID_GID}`, { method: 'GET' }), env);
+      const teacherJson = await getAfterTeacher.json();
+      const teacherSlice = teacherJson.byGroup[RAPID_GID];
+      assert(!teacherSlice?.overrides?.['310-w1-tu-1'], 'Tombstoned override does NOT resurrect after teacher push');
+      assert(Boolean(teacherSlice?.overrides?.['310-w1-tu-2']), 'Remaining override is preserved after teacher push');
+    } finally {
+      releaseSecondPut();
+      (globalThis as any).fetch = prevFetch;
+    }
   }
 }
 

@@ -26,7 +26,27 @@ function assert(cond: boolean, msg: string) {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TMP_SYNC_STATE_PATH = path.join(os.tmpdir(), `samgtu-sync-state-${process.pid}-${Date.now()}.txt`);
+const TMP_SEMESTER_PATH = path.join(os.tmpdir(), `samgtu-semester-${process.pid}-${Date.now()}.json`);
 process.env.SYNC_STATE_PATH = TMP_SYNC_STATE_PATH;
+process.env.SEMESTER_CONFIG_PATH = TMP_SEMESTER_PATH;
+
+fs.writeFileSync(
+  TMP_SEMESTER_PATH,
+  JSON.stringify({
+    semesterName: 'Осенний семестр 2026/2027',
+    semesterStart: '2026-08-31',
+    cycleWeeks: 4,
+    sessionStart: '2027-01-01',
+    sessionEnd: '2027-01-31',
+    blocks: [
+      { id: 1, name: 'Блок 1 (31.08 - 27.09)', start: '2026-08-31', end: '2026-09-27' },
+      { id: 2, name: 'Блок 2 (28.09 - 25.10)', start: '2026-09-28', end: '2026-10-25' },
+      { id: 3, name: 'Блок 3 (26.10 - 22.11)', start: '2026-10-26', end: '2026-11-22' },
+      { id: 4, name: 'Блок 4 (23.11 - 31.12)', start: '2026-11-23', end: '2026-12-31' }
+    ]
+  }, null, 2),
+  'utf-8'
+);
 
 function resetSyncStateToBlock2() {
   fs.writeFileSync(
@@ -40,6 +60,9 @@ function cleanupTempSyncState() {
   try {
     if (fs.existsSync(TMP_SYNC_STATE_PATH)) {
       fs.unlinkSync(TMP_SYNC_STATE_PATH);
+    }
+    if (fs.existsSync(TMP_SEMESTER_PATH)) {
+      fs.unlinkSync(TMP_SEMESTER_PATH);
     }
   } catch {}
 }
@@ -215,8 +238,26 @@ console.log('\n6. Auto-apply mode (--apply) handles on-demand architecture witho
   }
 }
 
+console.log('\n7. January session pause (2027-01-05) exits cleanly with 0 portal calls');
+{
+  const prevToday = process.env.SYNC_TODAY;
+  let portalCalls = 0;
+  provider = (g, w) => { portalCalls++; return officialWeek(shipped[g], w); };
+  try {
+    process.env.SYNC_TODAY = '2027-01-05';
+    const r = await sync(['node', 'nightly_sync.ts', '--apply']);
+    assert(r.applied === false, 'Session period nightly sync returns applied=false');
+    assert(Object.keys(r.skipped).length === 0, 'Session period nightly sync produces no skipped-group alert spam');
+    assert(portalCalls === 0, `Session period nightly sync makes 0 portal calls (got ${portalCalls})`);
+  } finally {
+    process.env.SYNC_TODAY = prevToday;
+    provider = (g, w) => officialWeek(shipped[g], w);
+  }
+}
+
 cleanupTempSyncState();
 delete process.env.SYNC_STATE_PATH;
+delete process.env.SEMESTER_CONFIG_PATH;
 (https as any).get = realGet;
 (https as any).request = realRequest;
 

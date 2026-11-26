@@ -67,6 +67,7 @@ export function buildDayLessons({ daySchedule, dayName, week, currentGroupId, sc
         teacher: ov.teacher || '',
         order: orderNum,
         isCancelled: !!ov.isCancelled,
+        ...(ov.hours ? { hours: ov.hours } : {}),
         note: ov.note
       } as Lesson;
     });

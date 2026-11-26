@@ -66,11 +66,30 @@ export const DEFAULT_SEMESTER_CONFIG: SemesterConfig = generateDefaultSemesterCo
 
 let activeSemesterConfig: SemesterConfig = DEFAULT_SEMESTER_CONFIG;
 
+type SemesterDiskLoader = (customPath?: string) => SemesterConfig | null;
+let nodeSemesterDiskLoader: SemesterDiskLoader | null = null;
+
+/**
+ * Registers a Node.js disk loader for semester.json without importing Node builtins into the browser bundle.
+ */
+export function setNodeSemesterDiskLoader(loader: SemesterDiskLoader | null): void {
+  nodeSemesterDiskLoader = loader;
+}
+
 /**
  * Loads semester configuration from public/semester.json if available in Node environment,
  * or returns the active / default configuration.
  */
 export function loadSemesterConfig(customPath?: string): SemesterConfig {
+  if (nodeSemesterDiskLoader) {
+    try {
+      const loaded = nodeSemesterDiskLoader(customPath);
+      if (loaded) {
+        activeSemesterConfig = loaded;
+        return activeSemesterConfig;
+      }
+    } catch {}
+  }
   try {
     if (typeof process !== 'undefined' && process.versions?.node) {
       const req = (globalThis as any).require || (typeof require !== 'undefined' ? require : null);

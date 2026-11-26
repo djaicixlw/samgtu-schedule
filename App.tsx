@@ -22,7 +22,7 @@ import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
 import { getCanonicalGroupKey, normalizeSamgtuGroupName } from './utils/samgtuParser';
 import { normalizeGroupId } from './utils/groupId';
 import ScheduleState from './components/ScheduleState';
-import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason, isPhysicalEducationLesson } from './utils/scheduleLoader';
+import { loadGroupSchedule, isScheduleLoaded, reloadGroupSchedule, LoadFailReason, isPhysicalEducationLesson, isCustomScheduleFreshForSemester } from './utils/scheduleLoader';
 import { getLocalStudentLink, claimStaffRole, getLocalStudents, restoreRosterFromCloud, syncAttendanceRecordsToV3, unlinkStudentV3, clearGroupAccessCodes, saveStaffToken, getAttendanceApiBase } from './utils/attendanceStorage';
 import {
   LogIn, LogOut, Calendar, BookOpen, Bug, ClipboardCheck, Sun, Moon,
@@ -695,6 +695,7 @@ const App: React.FC = () => {
   }, [subjectTeachers]);
 
   const scheduleMutationSeqRef = useRef(0);
+  const examsMutationSeqRef = useRef(0);
 
   useEffect(() => {
     setSelectedWeek(currentWeek);
@@ -843,9 +844,12 @@ const App: React.FC = () => {
     return () => { isCancelled = true; };
   }, [currentGroupId]);
 
-  // Load custom imported schedule from localStorage if present
+  // Load custom imported schedule from localStorage if present and belonging to active semester
   useEffect(() => {
     try {
+      if (!isCustomScheduleFreshForSemester(localStorage, currentGroupId)) {
+        return;
+      }
       const savedSchedule = localStorage.getItem(`custom_schedule_${currentGroupId}`);
       if (savedSchedule) {
         let parsed = JSON.parse(savedSchedule);
@@ -909,6 +913,7 @@ const App: React.FC = () => {
       if (!isMounted) return;
       abortActiveRequest();
 
+      const pollExamsSeq = examsMutationSeqRef.current;
       const controller = new AbortController();
       activeController = controller;
 
@@ -947,11 +952,31 @@ const App: React.FC = () => {
               }
             } catch {}
           }
+          const isExamsDirty = safeGetItem(`exams_dirty_${currentGroupId}`) === 'true';
+          if (isExamsDirty) {
+            try {
+              const retryExamsOk = await pushGroupCloudData({
+                exams: getSavedExams(currentGroupId),
+                deletedExamIds: readDeletedExams(currentGroupId)
+              }, currentGroupId);
+              if (retryExamsOk && examsMutationSeqRef.current === pollExamsSeq) {
+                safeRemoveItem(`exams_dirty_${currentGroupId}`);
+              }
+            } catch {}
+          }
           const stillDirty = safeGetItem(`schedule_dirty_${currentGroupId}`) === 'true';
           const lastLocalEdit = Number(localStorage.getItem(`last_local_edit_${currentGroupId}`) || 0);
           const isRecentLocalEdit = Date.now() - lastLocalEdit < 30000;
           const cloudTimestamp = (cloud as any).lastUpdated ? new Date((cloud as any).lastUpdated).getTime() : 0;
           const shouldSkipOverrides = stillDirty || (isRecentLocalEdit && cloudTimestamp <= lastLocalEdit);
+
+          const stillExamsDirty = safeGetItem(`exams_dirty_${currentGroupId}`) === 'true';
+          const lastExamEdit = Number(safeGetItem(`last_exam_edit_${currentGroupId}`) || 0);
+          const isRecentExamEdit = Date.now() - lastExamEdit < 30000;
+          const shouldSkipExams =
+            stillExamsDirty ||
+            examsMutationSeqRef.current !== pollExamsSeq ||
+            (isRecentExamEdit && cloudTimestamp <= lastExamEdit);
 
           if (cloud.scheduleOverrides !== undefined && !shouldSkipOverrides) {
             const cleanOv = normalizeScheduleOverridesKeys(currentGroupId, sanitizeOverrides(cloud.scheduleOverrides, currentGroupId));
@@ -963,7 +988,7 @@ const App: React.FC = () => {
             setSubjectTeachers(cleanSt);
             safeSetItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt), { component: 'schedule' });
           }
-          if (cloud.exams !== undefined) {
+          if (cloud.exams !== undefined && !shouldSkipExams) {
             setExams(cloud.exams);
             try {
               saveLocalExams(currentGroupId, cloud.exams);
@@ -1061,6 +1086,22 @@ const App: React.FC = () => {
         }
       }
 
+      const refreshExamsSeq = examsMutationSeqRef.current;
+      const examsDirty = safeGetItem(`exams_dirty_${currentGroupId}`) === 'true';
+      if (examsDirty) {
+        try {
+          const retryExamsOk = await pushGroupCloudData({
+            exams: getSavedExams(currentGroupId),
+            deletedExamIds: readDeletedExams(currentGroupId)
+          }, currentGroupId);
+          if (retryExamsOk && examsMutationSeqRef.current === refreshExamsSeq) {
+            safeRemoveItem(`exams_dirty_${currentGroupId}`);
+          }
+        } catch (e) {
+          console.warn('Pre-refresh exams sync error:', e);
+        }
+      }
+
       // Clear HTTP/PWA caches without touching localStorage
       if (typeof window !== 'undefined' && 'caches' in window) {
         try {
@@ -1091,7 +1132,7 @@ const App: React.FC = () => {
             setSubjectTeachers(cleanSt);
             safeSetItem(`subject_teachers_${currentGroupId}`, JSON.stringify(cleanSt), { component: 'schedule' });
           }
-          if (cloud.exams !== undefined) {
+          if (cloud.exams !== undefined && safeGetItem(`exams_dirty_${currentGroupId}`) !== 'true') {
             setExams(cloud.exams);
             try {
               saveLocalExams(currentGroupId, cloud.exams);
@@ -1372,15 +1413,19 @@ const App: React.FC = () => {
     });
 
     if (cancelChanged) {
-      markAttendance(
-        isoDate,
-        targetLessonId,
-        existingAtt?.absentStudentIds || [],
-        existingAtt?.excusedStudentIds || [],
-        Boolean(normalizedUpdatedLesson.isCancelled),
-        undefined,
-        false
-      );
+      if (isSessionPeriod(isoDate)) {
+        toast.info('В период сессии отметки посещаемости закрыты');
+      } else {
+        markAttendance(
+          isoDate,
+          targetLessonId,
+          existingAtt?.absentStudentIds || [],
+          existingAtt?.excusedStudentIds || [],
+          Boolean(normalizedUpdatedLesson.isCancelled),
+          undefined,
+          false
+        );
+      }
     }
 
     let pushPromise: Promise<boolean>;
@@ -1585,7 +1630,7 @@ const App: React.FC = () => {
     const dayName = targetDay?.dayName || 'Понедельник';
     const isoDate = getDayISODate(dayName, selectedWeek);
     const existingAtt = attendanceRecords.find(r => r.date === isoDate && (r.lessonId === targetLessonId || r.lessonId === lessonId));
-    if (existingAtt && existingAtt.isCancelled) {
+    if (existingAtt && existingAtt.isCancelled && !isSessionPeriod(isoDate)) {
       markAttendance(isoDate, targetLessonId, existingAtt.absentStudentIds, existingAtt.excusedStudentIds || [], false, undefined, false);
     }
 
@@ -1608,14 +1653,20 @@ const App: React.FC = () => {
       toast.error('Только староста группы или администратор могут редактировать экзамены');
       return;
     }
+    const seq = ++examsMutationSeqRef.current;
     const updated = [...exams.filter(e => e.id !== exam.id), exam];
     setExams(updated);
     saveLocalExams(currentGroupId, updated);
+    safeSetItem(`exams_dirty_${currentGroupId}`, 'true', { component: 'exams' });
+    safeSetItem(`last_exam_edit_${currentGroupId}`, String(Date.now()), { component: 'exams' });
     const ok = await pushGroupCloudData({
       exams: updated,
       deletedExamIds: readDeletedExams(currentGroupId)
     }, currentGroupId);
     if (ok) {
+      if (examsMutationSeqRef.current === seq) {
+        safeRemoveItem(`exams_dirty_${currentGroupId}`);
+      }
       logger.info('EXAMS', `Exam saved and synced for ${currentGroupId}: ${exam.subject}`);
       toast.success('Экзамен сохранён');
     } else {
@@ -1629,15 +1680,21 @@ const App: React.FC = () => {
       toast.error('Только староста группы или администратор могут удалять экзамены');
       return;
     }
+    const seq = ++examsMutationSeqRef.current;
     const updated = exams.filter(e => e.id !== examId);
     setExams(updated);
     saveLocalExams(currentGroupId, updated);
     recordDeletedExam(currentGroupId, examId);
+    safeSetItem(`exams_dirty_${currentGroupId}`, 'true', { component: 'exams' });
+    safeSetItem(`last_exam_edit_${currentGroupId}`, String(Date.now()), { component: 'exams' });
     const ok = await pushGroupCloudData({
       exams: updated,
       deletedExamIds: readDeletedExams(currentGroupId)
     }, currentGroupId);
     if (ok) {
+      if (examsMutationSeqRef.current === seq) {
+        safeRemoveItem(`exams_dirty_${currentGroupId}`);
+      }
       logger.info('EXAMS', `Exam deleted and synced for ${currentGroupId}: ${examId}`);
       toast.success('Экзамен удалён');
     } else {
@@ -1655,10 +1712,9 @@ const App: React.FC = () => {
       if (!day || !day.dayName) return { dayName: 'Понедельник', lessons: [] };
       const isoDate = getDayISODate(day.dayName, selectedWeek);
 
-      const semesterStart = getSemesterConfig().semesterStart;
-
-      // До начала занятий (день старта семестрового цикла) - 0 пар
-      if (isoDate === semesterStart) {
+      // Исторический день до начала занятий осеннего семестра 2026 (31 августа) - 0 пар;
+      // в весеннем семестре первый понедельник является обычным учебным днем.
+      if (isoDate === '2026-08-31') {
         return {
           dayName: day.dayName,
           lessons: []
@@ -1667,7 +1723,7 @@ const App: React.FC = () => {
 
       let sourceLessons = Array.isArray(day.lessons) ? day.lessons : [];
       // Для последующих циклов 1-й недели понедельник берется из числителя (Неделя 3) если пуст
-      if (day.dayName === 'Понедельник' && sourceLessons.length === 0 && isoDate !== semesterStart) {
+      if (day.dayName === 'Понедельник' && sourceLessons.length === 0 && isoDate !== '2026-08-31') {
         const w3Mon = SCHEDULE_REGISTRY[currentGroupId]?.[3]?.find(d => d.dayName === 'Понедельник');
         if (w3Mon && Array.isArray(w3Mon.lessons) && w3Mon.lessons.length > 0) {
           sourceLessons = w3Mon.lessons;

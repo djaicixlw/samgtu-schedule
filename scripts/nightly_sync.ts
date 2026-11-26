@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { SAMGTU_GROUP_MAP } from '../utils/samgtuGroupMap';
 import { SCHEDULE_REGISTRY } from '../constants';
 import { blockWindow } from '../utils/officialSchedule';
-import { loadSemesterConfig, samaraISO } from '../utils/samaraDate';
+import { isSessionPeriod, loadSemesterConfig, samaraISO, setSemesterConfig, setNodeSemesterDiskLoader, SemesterConfig } from '../utils/samaraDate';
 import { Lesson, DaySchedule } from '../types';
 import { TIME_SLOTS, DAY_NAMES, DAY_CODES, GROUP_ID_PREFIXES, parseCellName, findExistingTeacher, serializeGroupSchedule, serializeIngt310InsideRegistry } from './sync_official_schedule';
 
@@ -139,18 +139,50 @@ export async function runNightlySync(): Promise<SyncResult> {
 
   // The portal publishes a new set of subjects every block (4 weeks); the app's 4-week cycle is built from the
   // portal weeks of the CURRENT block (e.g. weeks 9..12 for block 3), not from fixed weeks 1..8.
-  const semester = loadSemesterConfig();
+  const semPath = process.env.SEMESTER_CONFIG_PATH
+    ? path.resolve(process.env.SEMESTER_CONFIG_PATH)
+    : path.resolve(__dirname, '../public/semester.json');
+  setNodeSemesterDiskLoader((customPath) => {
+    const p = customPath ? path.resolve(customPath) : semPath;
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf8')) as SemesterConfig;
+  });
+  let semester = loadSemesterConfig(semPath);
+  if (fs.existsSync(semPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(semPath, 'utf8')) as SemesterConfig;
+      if (parsed && parsed.semesterStart) {
+        setSemesterConfig(parsed);
+        semester = parsed;
+      }
+    } catch {}
+  }
+
   const todayISO = process.env.SYNC_TODAY || samaraISO();
+  if (isSessionPeriod(todayISO, semester) && process.env.FORCE_SYNC_IN_SESSION !== 'true') {
+    console.log(`🎓 Сегодня ${todayISO}: идёт экзаменационная сессия. Ночная автосверка регулярного расписания поставлена на паузу (локальные файлы сохранены).`);
+    return { diffs: {}, skipped: {}, applied: false };
+  }
+
   const window = blockWindow(todayISO, semester);
   const schedulesDirForMeta = path.resolve(__dirname, '../public/schedules');
   const metaPath = process.env.SYNC_STATE_PATH
     ? path.resolve(process.env.SYNC_STATE_PATH)
     : path.join(schedulesDirForMeta, '_sync-state.txt'); // not *.json: loaders read every *.json in this folder as a schedule
   let previousWindowStart: number | null = null;
-  try { previousWindowStart = JSON.parse(fs.readFileSync(metaPath, 'utf8')).windowStart ?? null; } catch {}
-  const blockChanged = previousWindowStart !== null && previousWindowStart !== window.start;
+  let previousSemesterStart: string | null = null;
+  try {
+    const rawMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    previousWindowStart = rawMeta.windowStart ?? null;
+    previousSemesterStart = typeof rawMeta.semesterStart === 'string' ? rawMeta.semesterStart : null;
+  } catch {}
+  const semesterChanged =
+    (previousSemesterStart !== null && previousSemesterStart !== semester.semesterStart) ||
+    (previousSemesterStart === null && previousWindowStart !== null && window.start === 1 && previousWindowStart >= 13);
+  const blockChanged = !semesterChanged && previousWindowStart !== null && previousWindowStart !== window.start;
+  const isNewCycleWindow = blockChanged || semesterChanged;
   console.log(`📅 Сегодня ${todayISO}: блок ${window.blockId ?? '?'}, недели портала ${window.weeks.join(', ')}` +
-    (blockChanged ? ` (НОВЫЙ БЛОК: расписание было с недели ${previousWindowStart})` : ''));
+    (semesterChanged ? ` (НОВЫЙ СЕМЕСТР: ${semester.semesterStart})` : blockChanged ? ` (НОВЫЙ БЛОК: расписание было с недели ${previousWindowStart})` : ''));
   const updatedSchedules: Record<string, Record<number, DaySchedule[]>> = {};
   let totalParsedLessonsAcrossAll = 0;
 
@@ -287,11 +319,17 @@ export async function runNightlySync(): Promise<SyncResult> {
       continue;
     }
 
-    if (!blockChanged && existingTotalLessons >= MIN_EXISTING_FOR_SHRINK_CHECK && groupParsedLessons < existingTotalLessons * MIN_KEPT_SHARE) {
+    if (!isNewCycleWindow && existingTotalLessons >= MIN_EXISTING_FOR_SHRINK_CHECK && groupParsedLessons < existingTotalLessons * MIN_KEPT_SHARE) {
       const reason = `портал вернул ${groupParsedLessons} пар вместо ${existingTotalLessons} (меньше ${Math.round(MIN_KEPT_SHARE * 100)}%)`;
       console.warn(`  🛡️ [Защита] ${conf.name}: ${reason}. Похоже на неполные данные, расписание не тронуто.`);
       skipped[groupId] = reason;
       continue;
+    }
+
+    if (!isNewCycleWindow) {
+      const perWeek = applyPerWeekGuards(groupWeeks, existingGroupSchedule);
+      for (const w of perWeek.warnings) console.warn(w);
+      Object.assign(groupWeeks, perWeek.weeks);
     }
 
     totalParsedLessonsAcrossAll += groupParsedLessons;
@@ -445,13 +483,16 @@ export async function runNightlySync(): Promise<SyncResult> {
     if (!fs.existsSync(schedulesDir)) {
       fs.mkdirSync(schedulesDir, { recursive: true });
     }
-    if (blockChanged) {
+    if (blockChanged && !semesterChanged) {
       // keep the previous block's template: past attendance must still be readable against it
       const archiveDir = path.join(schedulesDir, 'archive', `block-from-week-${previousWindowStart}`);
       fs.mkdirSync(archiveDir, { recursive: true });
       for (const file of fs.readdirSync(schedulesDir)) {
         if (file.endsWith('.json')) {
-          fs.copyFileSync(path.join(schedulesDir, file), path.join(archiveDir, file));
+          const destPath = path.join(archiveDir, file);
+          if (!fs.existsSync(destPath)) {
+            fs.copyFileSync(path.join(schedulesDir, file), destPath);
+          }
         }
       }
     }
@@ -464,8 +505,8 @@ export async function runNightlySync(): Promise<SyncResult> {
       const jsonPath = path.join(schedulesDir, `${gid}.json`);
       fs.writeFileSync(jsonPath, JSON.stringify(sched, null, 2), 'utf-8');
     }
-    if (Object.keys(skipped).length === 0) {
-      fs.writeFileSync(metaPath, JSON.stringify({ windowStart: window.start, blockId: window.blockId ?? null, updatedAt: todayISO }, null, 2) + '\n', 'utf-8');
+    if (Object.keys(skipped).length === 0 || (isNewCycleWindow && Object.keys(updatedSchedules).length > 0)) {
+      fs.writeFileSync(metaPath, JSON.stringify({ windowStart: window.start, blockId: window.blockId ?? null, semesterStart: semester.semesterStart, updatedAt: todayISO }, null, 2) + '\n', 'utf-8');
     }
     console.log(`✅ public/schedules/*.json (${Object.keys(updatedSchedules).length} файлов) успешно обновлены!`);
 

@@ -16,8 +16,13 @@ import {
 } from '../utils/attendanceStorage';
 import { toast } from 'sonner';
 import { SCHEDULE_REGISTRY } from '../constants';
-import { getSemesterWeek, getDayName } from '../utils/samaraDate';
-import { isPhysicalEducationLesson, isPhysicalEducationLessonId } from '../utils/scheduleLoader';
+import { getSemesterWeek, getDayName, samaraISO, getSemesterConfig } from '../utils/samaraDate';
+import {
+  isPhysicalEducationLesson,
+  isPhysicalEducationLessonId,
+  getArchiveScheduleSync,
+  loadBlockScheduleForDate
+} from '../utils/scheduleLoader';
 import { Lesson } from '../types';
 
 interface MyAbsencesModalProps {
@@ -35,26 +40,41 @@ interface AbsenceEntry {
   subject?: string;
 }
 
+/**
+ * Resolves "MM-DD" or "YYYY-MM-DD" absence key into a full ISO date in the active half-year.
+ * During Jan–Jul (e.g. Jan winter session), Aug–Dec marks belong to the previous calendar year.
+ */
+export function resolveAbsenceDateISO(dateStr: string, nowISO?: string): string {
+  const refISO = nowISO || samaraISO();
+  const [samaraY, samaraM] = refISO.split('-').map(Number);
+  const parts = dateStr.split('-').map(Number);
+  let yr = samaraY;
+  let mo = 1;
+  let da = 1;
+  if (parts.length === 3) {
+    yr = parts[0];
+    mo = parts[1];
+    da = parts[2];
+  } else if (parts.length === 2) {
+    mo = parts[0];
+    da = parts[1];
+    if (mo >= 8 && samaraM < 8) {
+      yr = samaraY - 1;
+    }
+  }
+  return `${yr}-${String(mo).padStart(2, '0')}-${String(da).padStart(2, '0')}`;
+}
+
 function resolveLessonDetails(gid: string, dateStr: string, pairNum: string): { lesson?: Lesson; isPE: boolean; hours: number } {
   try {
-    const curYear = new Date().getFullYear();
-    const parts = dateStr.split('-').map(Number);
-    let yr = curYear;
-    let mo = 1;
-    let da = 1;
-    if (parts.length === 3) {
-      yr = parts[0];
-      mo = parts[1];
-      da = parts[2];
-    } else if (parts.length === 2) {
-      mo = parts[0];
-      da = parts[1];
-    }
+    const iso = resolveAbsenceDateISO(dateStr);
+    const [yr, mo, da] = iso.split('-').map(Number);
     const dt = new Date(yr, mo - 1, da, 12, 0, 0);
     const week = getSemesterWeek(dt, gid);
     const dayName = getDayName(dt);
 
-    let scheduleDays = (SCHEDULE_REGISTRY as any)[gid]?.[week];
+    const archiveSched = getArchiveScheduleSync(gid, iso);
+    let scheduleDays = archiveSched?.[week] || (SCHEDULE_REGISTRY as any)[gid]?.[week];
     if (!scheduleDays) {
       try {
         const cached = localStorage.getItem(`sched_cache_v1:${gid}`);
@@ -139,6 +159,18 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
   const [cancelledList, setCancelledList] = useState<string[]>([]);
   const [isLinked, setIsLinked] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [archiveTick, setArchiveTick] = useState(0);
+
+  useEffect(() => {
+    if (!isOpen || !gid) return;
+    let cancelled = false;
+    const blocks = getSemesterConfig().blocks || [];
+    Promise.all(blocks.map(b => loadBlockScheduleForDate(gid, b.start).catch(() => null)))
+      .then(() => {
+        if (!cancelled) setArchiveTick(t => t + 1);
+      });
+    return () => { cancelled = true; };
+  }, [isOpen, gid]);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -229,7 +261,7 @@ const MyAbsencesModal: React.FC<MyAbsencesModalProps> = ({
       unexcusedPairs: unexcusedP,
       excusedPairs: excusedP
     };
-  }, [marks, cancelledList, gid]);
+  }, [marks, cancelledList, gid, archiveTick]);
 
   // Group absences by date, sorted descending
   const groupedAbsences = useMemo(() => {

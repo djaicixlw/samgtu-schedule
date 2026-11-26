@@ -122,11 +122,11 @@ console.log(`  Academic span: ${semesterStart} to ${semesterEnd} (${durationDays
 
 check(durationDays >= 90 && durationDays <= 180, `Semester span (${durationDays} days) is within normal half-year limits (90-180 days)`);
 
-// Autumn semester 2026: starts late August / early September 2026
-// Academic half-year ends before Spring semester starts (no later than mid-February 2027)
-check(semesterStart >= '2026-08-15' && semesterStart <= '2026-09-15', `Semester start (${semesterStart}) falls in autumn academic window`);
-check(semesterEnd <= '2027-02-15', `Semester end (${semesterEnd}) does not exceed the academic half-year (<= 2027-02-15)`);
-check(semesterEnd >= '2026-12-15', `Semester end (${semesterEnd}) spans full instructional autumn semester`);
+// Academic half-year invariants (semester-agnostic for Autumn and Spring configs)
+check(/^\d{4}-\d{2}-\d{2}$/.test(semesterStart) && /^\d{4}-\d{2}-\d{2}$/.test(semesterEnd) && semesterStart < semesterEnd, `Semester bounds (${semesterStart}..${semesterEnd}) are valid ISO dates`);
+const startMonth = Number(semesterStart.slice(5, 7));
+check([1, 2, 8, 9].includes(startMonth), `Semester start month (${startMonth}) falls in Autumn (Aug/Sep) or Spring (Jan/Feb) start window`);
+check(parsedConfig.blocks[0].start === semesterStart && lastBlock.end === semesterEnd, `Block boundaries align with semesterStart and semesterEnd`);
 
 // -----------------------------------------------------------------------------
 // 5. Preload Bootstrap Simulation & Resilience

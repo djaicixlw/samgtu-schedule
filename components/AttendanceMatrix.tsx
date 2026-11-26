@@ -11,8 +11,11 @@ import {
   getDayCalendarDate,
   getWeekDateRange,
   STUDENTS_REGISTRY,
-  isSessionPeriod
+  isSessionPeriod,
+  samaraISO
 } from '../attendance';
+import { getSemesterConfig, SemesterConfig } from '../utils/samaraDate';
+import { safeGetItem } from '../utils/safeStorage';
 import { SCHEDULE_REGISTRY, AVAILABLE_GROUPS } from '../constants';
 import { Lesson, Student, WeekData } from '../types';
 import { getLocalStudents } from '../utils/attendanceStorage';
@@ -64,12 +67,64 @@ function getLessonSlotNumber(lesson: Lesson): number {
   return 1;
 }
 
-const SEMESTER_MONTHS = [
-  { id: '2026-09', name: 'Сентябрь', refDate: '2026-09-15' },
-  { id: '2026-10', name: 'Октябрь', refDate: '2026-10-15' },
-  { id: '2026-11', name: 'Ноябрь', refDate: '2026-11-15' },
-  { id: '2026-12', name: 'Декабрь', refDate: '2026-12-15' }
-] as const;
+export interface SemesterMatrixPeriod {
+  id: string;
+  name: string;
+  refDate: string;
+  weeks: number[];
+}
+
+const FULL_RU_MONTHS = [
+  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+];
+
+export function buildSemesterMatrixPeriods(config: SemesterConfig = getSemesterConfig()): SemesterMatrixPeriod[] {
+  const semesterStart = config.semesterStart || '2026-08-31';
+  const semesterEnd = config.blocks?.[config.blocks.length - 1]?.end || '2026-12-31';
+  const [y0, m0, d0] = semesterStart.split('-').map(Number);
+  const [y1, m1, d1] = semesterEnd.split('-').map(Number);
+  const startUtc = Date.UTC(y0, (m0 || 1) - 1, d0 || 1);
+  const endUtc = Date.UTC(y1, (m1 || 1) - 1, d1 || 1);
+  const isoFromUtc = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+  const periods: SemesterMatrixPeriod[] = [];
+  for (let cycleIdx = 0; cycleIdx < 6; cycleIdx++) {
+    const cycleMonUtc = startUtc + cycleIdx * 28 * 86400000;
+    const cycleMonISO = isoFromUtc(cycleMonUtc);
+    if (cycleMonISO > semesterEnd || isSessionPeriod(cycleMonISO, config)) break;
+
+    if (cycleIdx < 4) {
+      const midUtc = cycleMonUtc + 14 * 86400000;
+      const midDate = new Date(midUtc);
+      const midISO = isoFromUtc(midUtc);
+      periods.push({
+        id: midISO.slice(0, 7),
+        name: FULL_RU_MONTHS[midDate.getUTCMonth()],
+        refDate: midISO,
+        weeks: [1, 2, 3, 4]
+      });
+    } else {
+      const weeks = [1, 2, 3, 4].filter(w => {
+        const wMonISO = isoFromUtc(cycleMonUtc + (w - 1) * 7 * 86400000);
+        return wMonISO <= semesterEnd && !isSessionPeriod(wMonISO, config);
+      });
+      if (weeks.length > 0) {
+        const lastWeekSatUtc = Math.min(endUtc, cycleMonUtc + (weeks[weeks.length - 1] - 1) * 7 * 86400000 + 5 * 86400000);
+        const startDay = new Date(cycleMonUtc).getUTCDate();
+        const endDay = new Date(lastWeekSatUtc).getUTCDate();
+        const monMonth = new Date(cycleMonUtc).getUTCMonth();
+        periods.push({
+          id: `${cycleMonISO.slice(0, 7)}-tail`,
+          name: `${FULL_RU_MONTHS[monMonth]} (${startDay}–${endDay})`,
+          refDate: cycleMonISO,
+          weeks
+        });
+      }
+    }
+  }
+  return periods;
+}
 
 export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
   currentGroupId,
@@ -85,6 +140,8 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
   // Semester view submode: Cumulative blocks or Subject breakdown
   const [summaryView, setSummaryView] = useState<'cumulative' | 'subjects'>('cumulative');
 
+  const semesterPeriods = useMemo(() => buildSemesterMatrixPeriods(), []);
+
   // Week selection (1..4)
   const currentWeekNumber = useMemo(() => {
     try {
@@ -96,19 +153,34 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
 
   const [selectedWeek, setSelectedWeek] = useState<number>(currentWeekNumber);
   const [selectedMonth, setSelectedMonth] = useState<string>(() => {
-    const now = new Date();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const y = now.getFullYear();
-    const currentKey = `${y}-${m}`;
-    if (currentKey > '2026-12') return '2026-12';
-    const found = SEMESTER_MONTHS.find(sm => sm.id === currentKey);
-    return found ? found.id : '2026-10';
+    const periods = buildSemesterMatrixPeriods();
+    const todayISO = samaraISO();
+    const semEnd = getSemesterConfig().blocks?.slice(-1)[0]?.end || '2026-12-31';
+    const tail = periods.find(p => p.id.endsWith('-tail') && todayISO >= p.refDate && todayISO <= semEnd);
+    if (tail) return tail.id;
+    const currentKey = todayISO.slice(0, 7);
+    const exact = periods.find(p => p.id === currentKey);
+    if (exact) return exact.id;
+    if (todayISO > semEnd) {
+      const mainMonths = periods.filter(p => !p.id.endsWith('-tail'));
+      return (mainMonths[mainMonths.length - 1] || periods[periods.length - 1])?.id || '2026-12';
+    }
+    return periods[0]?.id || '2026-09';
   });
 
-  const activeReferenceDate = useMemo(() => {
-    const m = SEMESTER_MONTHS.find(sm => sm.id === selectedMonth);
-    return m ? m.refDate : undefined;
-  }, [selectedMonth]);
+  const activePeriod = useMemo(
+    () => semesterPeriods.find(sm => sm.id === selectedMonth) || semesterPeriods[0],
+    [semesterPeriods, selectedMonth]
+  );
+
+  const activeReferenceDate = activePeriod?.refDate;
+  const availableWeeks = activePeriod?.weeks || [1, 2, 3, 4];
+
+  useEffect(() => {
+    if (!availableWeeks.includes(selectedWeek)) {
+      setSelectedWeek(availableWeeks[0] || 1);
+    }
+  }, [availableWeeks, selectedWeek]);
 
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -150,26 +222,30 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
       .catch(() => {});
   }, [currentGroupId]);
 
-  // Archive schedules for past blocks (Block 2: start=5, Block 3: start=9)
+  // Archive schedules for past blocks of the active semester
   const [archiveBlocks, setArchiveBlocks] = useState<Record<number, WeekData>>(() => {
     const initial: Record<number, WeekData> = {};
-    const b2 = getArchiveScheduleSync(currentGroupId, '2026-10-15');
-    if (b2) initial[5] = b2;
-    const b3 = getArchiveScheduleSync(currentGroupId, '2026-11-10');
-    if (b3) initial[9] = b3;
+    for (const b of BLOCKS) {
+      const sched = getArchiveScheduleSync(currentGroupId, b.start);
+      if (sched) {
+        const { start, isPastSemesterBlock } = getBlockWindowForDate(b.start);
+        if (isPastSemesterBlock) initial[start] = sched;
+      }
+    }
     return initial;
   });
 
   useEffect(() => {
     let cancelled = false;
     const loadArchives = async () => {
-      const datesToLoad = ['2026-10-15', '2026-11-10'];
+      const datesToLoad = BLOCKS.map(b => b.start);
       const loaded: Record<number, WeekData> = {};
       for (const d of datesToLoad) {
         try {
+          const { start, isPastSemesterBlock } = getBlockWindowForDate(d);
+          if (!isPastSemesterBlock) continue;
           const sched = await loadBlockScheduleForDate(currentGroupId, d);
           if (sched) {
-            const { start } = getBlockWindowForDate(d);
             loaded[start] = sched;
           }
         } catch {}
@@ -183,6 +259,17 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
       cancelled = true;
     };
   }, [currentGroupId]);
+
+  const scheduleOverrides = useMemo<Record<string, Partial<Lesson>>>(() => {
+    try {
+      const raw = safeGetItem(`schedule_overrides_${currentGroupId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {}
+    return {};
+  }, [currentGroupId, refreshTrigger]);
 
   // Map lessonId to Lesson object across all weeks (including archive blocks)
   const { lessonMap, groupSubjects } = useMemo(() => {
@@ -265,12 +352,17 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
       statusLabel = 'Присутствует';
     }
 
-    markAttendance(dayISO, lesson.id, nextAbsent, nextExcused, false, lesson.hours || record.hours || 2);
+    const lessonHours = scheduleOverrides[lesson.id]?.hours || lesson.hours || record.hours || 2;
+    markAttendance(dayISO, lesson.id, nextAbsent, nextExcused, false, lessonHours);
     toast.success(`${studentName}: ${statusLabel}`, { duration: 1500 });
   };
 
   // Pre-calculate cumulative hours for each student across blocks and subjects
   const studentCumulativeStats = useMemo(() => {
+    const semConfig = getSemesterConfig();
+    const semesterStart = semConfig.semesterStart || '2026-08-31';
+    const semesterEnd = semConfig.blocks?.[semConfig.blocks.length - 1]?.end || '2026-12-31';
+
     return activeStudents.map(student => {
       // 4 blocks: [Block1, Block2, Block3, Block4]
       const blockAbs = [0, 0, 0, 0];
@@ -279,6 +371,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
 
       records.forEach(rec => {
         if (rec.isCancelled) return;
+        if (!rec.date || rec.date < semesterStart || rec.date > semesterEnd) return;
 
         // Resolve lesson specifically by the record's date and archive block
         let lesson: Lesson | undefined;
@@ -308,7 +401,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
         if (!isAbsent && !isExcused) return;
 
         const subjName = lesson?.subject?.trim() || 'Другое';
-        const hours = lesson?.hours || rec.hours || 2;
+        const hours = scheduleOverrides[rec.lessonId]?.hours || lesson?.hours || rec.hours || 2;
 
         // Track per-subject hours
         if (!subjectHours[subjName]) {
@@ -371,7 +464,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
         subjectHours
       };
     });
-  }, [activeStudents, records, lessonMap, archiveBlocks, selectedSubject]);
+  }, [activeStudents, records, lessonMap, archiveBlocks, selectedSubject, currentGroupId, scheduleOverrides]);
 
   // Filtered stats for active search query
   const filteredCumulativeStats = useMemo(() => {
@@ -417,8 +510,8 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
             ? scheduleData
             : (SCHEDULE_REGISTRY[currentGroupId] || {});
           if (activeReferenceDate) {
-            const { start, isCurrentBlock } = getBlockWindowForDate(activeReferenceDate);
-            if (!isCurrentBlock && archiveBlocks[start]) {
+            const { start, isPastSemesterBlock } = getBlockWindowForDate(activeReferenceDate);
+            if (isPastSemesterBlock && archiveBlocks[start]) {
               activeSchedule = archiveBlocks[start];
             }
           }
@@ -429,7 +522,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
             if (!lesson) return;
             const rec = getAttendance(dayISO, lesson.id);
             if (rec.isCancelled) return;
-            const lessonHours = lesson.hours || rec?.hours || 2;
+            const lessonHours = scheduleOverrides[lesson.id]?.hours || lesson.hours || rec?.hours || 2;
             if ((rec.excusedStudentIds || []).includes(student.id)) {
               excusedHours += lessonHours;
             } else if (rec.absentStudentIds.includes(student.id)) {
@@ -472,20 +565,27 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
     }
   };
 
-  // Active weekly schedule for the selected week
+  // Active weekly schedule for the selected week (with scheduleOverrides hours merged)
   const activeWeekSchedule = useMemo(() => {
     let active = (scheduleData && Object.keys(scheduleData).length > 0)
       ? scheduleData
       : (SCHEDULE_REGISTRY[currentGroupId] || {});
 
     if (activeReferenceDate) {
-      const { start, isCurrentBlock } = getBlockWindowForDate(activeReferenceDate);
-      if (!isCurrentBlock && archiveBlocks[start]) {
+      const { start, isPastSemesterBlock } = getBlockWindowForDate(activeReferenceDate);
+      if (isPastSemesterBlock && archiveBlocks[start]) {
         active = archiveBlocks[start];
       }
     }
-    return active[selectedWeek] || [];
-  }, [scheduleData, archiveBlocks, activeReferenceDate, currentGroupId, selectedWeek]);
+    const days = active[selectedWeek] || [];
+    return days.map(day => ({
+      ...day,
+      lessons: (day.lessons || []).map(l => {
+        const ovHours = scheduleOverrides[l.id]?.hours;
+        return ovHours ? { ...l, hours: ovHours } : l;
+      })
+    }));
+  }, [scheduleData, archiveBlocks, activeReferenceDate, currentGroupId, selectedWeek, scheduleOverrides]);
 
   return (
     <div className="space-y-5">
@@ -552,7 +652,7 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
             {/* Month Selector Chips */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mr-1 shrink-0">Месяц:</span>
-              {SEMESTER_MONTHS.map(m => {
+              {semesterPeriods.map(m => {
                 const isSelected = selectedMonth === m.id;
                 return (
                   <button
@@ -585,9 +685,9 @@ export const AttendanceMatrix: React.FC<AttendanceMatrixProps> = ({
               </div>
 
               <div className="flex items-center gap-1.5">
-                {[1, 2, 3, 4].map(w => {
+                {availableWeeks.map(w => {
                   const isSelected = selectedWeek === w;
-                  const isCurrent = currentWeekNumber === w;
+                  const isCurrent = currentWeekNumber === w && !activePeriod?.id.endsWith('-tail');
                   return (
                     <button
                       key={w}

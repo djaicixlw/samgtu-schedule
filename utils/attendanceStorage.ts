@@ -681,9 +681,50 @@ export async function linkStudentWithInvite(
   }
 }
 
+async function fetchSingleMyAttendanceMonth(
+  base: string,
+  headers: Record<string, string>,
+  month?: string
+): Promise<{
+  ok: boolean;
+  linked: boolean;
+  gid?: string;
+  slot?: string;
+  marks?: Record<string, 'e' | 'u'>;
+  cancelled?: string[];
+  error?: string;
+}> {
+  const url = month
+    ? `${base}/v3/me?month=${encodeURIComponent(month)}`
+    : `${base}/v3/me`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status >= 500 || res.status === 401 || res.status === 403) {
+      logger.error('ATTENDANCE', `fetchMyAttendanceV3 HTTP ${res.status}`);
+    } else if (res.status !== 404) {
+      logger.warn('ATTENDANCE', `fetchMyAttendanceV3 HTTP ${res.status}`);
+    }
+    return { ok: false, linked: false, error: json.error || `HTTP ${res.status}` };
+  }
+  return {
+    ok: true,
+    linked: Boolean(json.linked),
+    gid: json.gid,
+    slot: json.slot,
+    marks: json.marks,
+    cancelled: json.cancelled
+  };
+}
+
 /**
  * Fetch current student's attendance records and status from Cloudflare Worker.
  * GET /v3/me
+ * In January (winter exam session), worker default omits autumn months, so query
+ * Dec first (1 request for unlinked students) and fetch Aug-Nov in parallel only if linked.
  */
 export async function fetchMyAttendanceV3(month?: string): Promise<{
   ok: boolean;
@@ -696,29 +737,50 @@ export async function fetchMyAttendanceV3(month?: string): Promise<{
 }> {
   try {
     const base = getAttendanceApiBase();
-    const url = month
-      ? `${base}/v3/me?month=${encodeURIComponent(month)}`
-      : `${base}/v3/me`;
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: getAuthHeaders()
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      if (res.status >= 500 || res.status === 401 || res.status === 403) {
-        logger.error('ATTENDANCE', `fetchMyAttendanceV3 HTTP ${res.status}`);
-      } else if (res.status !== 404) {
-        logger.warn('ATTENDANCE', `fetchMyAttendanceV3 HTTP ${res.status}`);
-      }
-      return { ok: false, linked: false, error: json.error || `HTTP ${res.status}` };
+    const headers = getAuthHeaders();
+
+    if (month) {
+      return await fetchSingleMyAttendanceMonth(base, headers, month);
     }
+
+    const samaraNow = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    const curYear = samaraNow.getUTCFullYear();
+    const curMonth = samaraNow.getUTCMonth() + 1;
+
+    if (curMonth !== 1) {
+      return await fetchSingleMyAttendanceMonth(base, headers);
+    }
+
+    const autumnYear = curYear - 1;
+    const decRes = await fetchSingleMyAttendanceMonth(base, headers, `${autumnYear}-12`);
+    if (!decRes.ok || !decRes.linked) {
+      return decRes;
+    }
+
+    const prevMonths = ['08', '09', '10', '11'].map(m => `${autumnYear}-${m}`);
+    const restResults = await Promise.all(
+      prevMonths.map(m => fetchSingleMyAttendanceMonth(base, headers, m))
+    );
+
+    const mergedMarks: Record<string, 'e' | 'u'> = { ...(decRes.marks || {}) };
+    const mergedCancelled = new Set<string>(decRes.cancelled || []);
+
+    for (const r of restResults) {
+      if (r.ok && r.linked) {
+        if (r.marks) Object.assign(mergedMarks, r.marks);
+        if (Array.isArray(r.cancelled)) {
+          r.cancelled.forEach(c => mergedCancelled.add(c));
+        }
+      }
+    }
+
     return {
       ok: true,
-      linked: Boolean(json.linked),
-      gid: json.gid,
-      slot: json.slot,
-      marks: json.marks,
-      cancelled: json.cancelled
+      linked: true,
+      gid: decRes.gid,
+      slot: decRes.slot,
+      marks: mergedMarks,
+      cancelled: Array.from(mergedCancelled)
     };
   } catch (err: any) {
     if (err?.name !== 'AbortError') {

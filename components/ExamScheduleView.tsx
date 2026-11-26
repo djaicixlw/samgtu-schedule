@@ -125,7 +125,6 @@ export const ExamScheduleView: React.FC<ExamScheduleViewProps> = ({
     try {
       await onSaveExam(examItem);
       setIsModalOpen(false);
-      toast.success(editingExam ? 'Экзамен обновлён' : 'Экзамен добавлен');
     } catch {
       toast.error('Не удалось сохранить экзамен');
     }
@@ -135,7 +134,6 @@ export const ExamScheduleView: React.FC<ExamScheduleViewProps> = ({
     if (!window.confirm('Удалить этот экзамен из расписания группы?')) return;
     try {
       await onDeleteExam(id);
-      toast.success('Экзамен удалён');
     } catch {
       toast.error('Не удалось удалить экзамен');
     }

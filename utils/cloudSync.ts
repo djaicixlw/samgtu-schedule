@@ -56,6 +56,37 @@ export function recordDeletedExam(gid: string, examId: string): void {
   } catch {}
 }
 
+export function mergeDeletedExamIds(
+  gid: string,
+  incoming?: Record<string, number> | string[]
+): Set<string> {
+  const cleanGid = String(gid || '').trim().toLowerCase();
+  const merged = readDeletedExams(cleanGid);
+  let changed = false;
+  if (Array.isArray(incoming)) {
+    for (const id of incoming) {
+      const key = String(id || '').trim();
+      if (key && !merged[key]) {
+        merged[key] = Date.now();
+        changed = true;
+      }
+    }
+  } else if (incoming && typeof incoming === 'object') {
+    for (const [id, ts] of Object.entries(incoming)) {
+      const key = String(id || '').trim();
+      const numTs = Number(ts) || Date.now();
+      if (key && (!merged[key] || numTs > merged[key])) {
+        merged[key] = numTs;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    safeSetItem(`deleted_exams_${cleanGid}`, JSON.stringify(merged), { component: 'cloudSync' });
+  }
+  return new Set(Object.keys(merged));
+}
+
 export function getSavedExams(gid: string): ExamItem[] {
   try {
     const raw = safeGetItem(`exams_${String(gid || '').trim().toLowerCase()}`);
@@ -569,15 +600,16 @@ export const fetchGroupCloudData = async (force: boolean = false, groupId = 'ing
             safeSetItem(`subject_teachers_${groupId}`, JSON.stringify(cloudSubjectTeachers), { component: 'cloudSync' });
           }
 
-          let cloudExams: ExamItem[] = [];
-          if (d.byGroup && d.byGroup[groupId]) {
-            const gData = d.byGroup[groupId];
-            if (Array.isArray(gData.exams)) cloudExams = gData.exams;
-          } else if (Array.isArray(d.exams)) {
-            cloudExams = d.exams;
-          }
-          if (cloudExams.length > 0) {
-            saveLocalExams(groupId, cloudExams);
+          const gDataForExams = d.byGroup && d.byGroup[groupId] ? d.byGroup[groupId] : d;
+          const hasCloudExams = Boolean(gDataForExams && Array.isArray(gDataForExams.exams));
+          const deletedExamsSet = mergeDeletedExamIds(groupId, gDataForExams?.deletedExamIds);
+          const isExamsDirty = safeGetItem(`exams_dirty_${groupId}`) === 'true';
+          if (hasCloudExams && !isExamsDirty) {
+            const cleanExams = (gDataForExams.exams as ExamItem[]).filter(e => e && e.id && !deletedExamsSet.has(String(e.id)));
+            saveLocalExams(groupId, cleanExams);
+          } else if (deletedExamsSet.size > 0 && !isExamsDirty) {
+            const localFiltered = getSavedExams(groupId).filter(e => e && e.id && !deletedExamsSet.has(String(e.id)));
+            saveLocalExams(groupId, localFiltered);
           }
         }
       }
@@ -935,8 +967,10 @@ export const syncOfficialGroupSchedule = async (
   }
 
   try {
+    const semStart = getSemesterConfig().semesterStart || '2026-08-31';
     localStorage.setItem(`custom_schedule_${groupId}`, JSON.stringify(weekData));
-    localStorage.setItem(`sched_cache_v1:${groupId}`, JSON.stringify({ data: weekData, cachedAt: Date.now() }));
+    localStorage.setItem(`custom_schedule_sem_${groupId}`, semStart);
+    localStorage.setItem(`sched_cache_v1:${groupId}`, JSON.stringify({ data: weekData, cachedAt: Date.now(), semesterStart: semStart }));
   } catch (e) {}
 
   return { ok: true, message: `Успешно загружено ${totalLessons} пар из СамГТУ на все 4 недели (недели портала: ${[1, 2, 3, 4].map(c => usedWeeks[c]).sort((a, b) => a - b).join(', ')})`, weekData };

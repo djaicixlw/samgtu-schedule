@@ -18,9 +18,14 @@ import {
 } from '../attendance';
 import {
   getSemesterConfig,
+  setSemesterConfig,
   isSessionPeriod
 } from '../utils/samaraDate';
-import { exportAttendanceToWord } from '../utils/exportWord';
+import { exportAttendanceToWord, formatSemesterPrepositional } from '../utils/exportWord';
+import { resolveAbsenceDateISO } from '../components/MyAbsencesModal';
+import { buildSemesterMatrixPeriods } from '../components/AttendanceMatrix';
+import { fetchMyAttendanceV3 } from '../utils/attendanceStorage';
+import { fetchGroupCloudData, saveLocalExams, getSavedExams } from '../utils/cloudSync';
 import worker, { createStaffToken, WORKER_VERSION } from '../cloudflare-worker.js';
 import { createTelegramInitData } from './worker_test_helpers';
 import { ExamItem, Student, GroupConfig } from '../types';
@@ -387,6 +392,175 @@ async function runSuite() {
     assert.strictEqual(dataAfterDel.exams.length, 1, 'Only 1 exam should remain after deletion');
     assert.strictEqual(dataAfterDel.exams[0].id, 'exam-2', 'Remaining exam must be exam-2');
     assert(dataAfterDel.deletedExamIds && (dataAfterDel.deletedExamIds['exam-1'] || (Array.isArray(dataAfterDel.deletedExamIds) && dataAfterDel.deletedExamIds.includes('exam-1'))), 'Tombstone must be recorded');
+  });
+
+  // ============================================================
+  // 5. PRE-SESSION REHEARSAL & SPRING ROLLOVER REGRESSIONS
+  // ============================================================
+  console.log('\n--- 5. Pre-Session Rehearsal & Spring Rollover Regressions ---');
+
+  check('MyAbsencesModal resolves autumn MM-DD marks to previous year during Jan session', () => {
+    assert.strictEqual(resolveAbsenceDateISO('10-15', '2027-01-15'), '2026-10-15');
+    assert.strictEqual(resolveAbsenceDateISO('03-15', '2027-04-10'), '2027-03-15');
+  });
+
+  check('Word export formats semester name in prepositional case', () => {
+    assert.strictEqual(
+      formatSemesterPrepositional('Осенний семестр 2026/2027'),
+      'осеннем семестре 2026/2027 уч. г.'
+    );
+    assert.strictEqual(
+      formatSemesterPrepositional('Весенний семестр 2026/2027'),
+      'весеннем семестре 2026/2027 уч. г.'
+    );
+  });
+
+  await check('fetchMyAttendanceV3 in Jan queries Dec first (1 req if unlinked) and merges Aug-Nov if linked', async () => {
+    const origNow = Date.now;
+    const origFetch = globalThis.fetch;
+    const calls: string[] = [];
+    let linkedState = false;
+    Date.now = () => Date.UTC(2027, 0, 15, 10, 0, 0);
+    (globalThis as any).fetch = async (input: any) => {
+      const urlStr = typeof input === 'string' ? input : input.url;
+      calls.push(urlStr);
+      const u = new URL(urlStr);
+      const m = u.searchParams.get('month') || '';
+      if (!linkedState) {
+        return new Response(JSON.stringify({ ok: true, linked: false }), { status: 200 });
+      }
+      const marks = m === '2026-10' ? { '10-15.1': 'u' } : m === '2026-12' ? { '12-03.2': 'e' } : {};
+      const cancelled = m === '2026-11' ? ['11-05.3'] : [];
+      return new Response(JSON.stringify({ ok: true, linked: true, gid: 'ingt-310', slot: 'SLOT01', marks, cancelled }), { status: 200 });
+    };
+    try {
+      const unlinkedRes = await fetchMyAttendanceV3();
+      assert.strictEqual(unlinkedRes.ok, true);
+      assert.strictEqual(unlinkedRes.linked, false);
+      assert.strictEqual(calls.length, 1, `Unlinked student in Jan must make only 1 request (got ${calls.length})`);
+      assert(calls[0].includes('month=2026-12'), 'First January /v3/me call must probe 2026-12');
+
+      calls.length = 0;
+      linkedState = true;
+      const linkedRes = await fetchMyAttendanceV3();
+      assert.strictEqual(linkedRes.ok, true);
+      assert.strictEqual(linkedRes.linked, true);
+      assert.strictEqual(calls.length, 5, `Linked student in Jan must query 2026-08..2026-12 (got ${calls.length})`);
+      assert.strictEqual(linkedRes.marks?.['10-15.1'], 'u');
+      assert.strictEqual(linkedRes.marks?.['12-03.2'], 'e');
+      assert(linkedRes.cancelled?.includes('11-05.3'), 'Merged cancelled keys must include 2026-11');
+    } finally {
+      Date.now = origNow;
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  await check('fetchGroupCloudData wipes zombie last exam on exams:[] while respecting exams_dirty_', async () => {
+    const origFetch = globalThis.fetch;
+    const origLS = (globalThis as any).localStorage;
+    const store = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => { store.set(k, String(v)); },
+      removeItem: (k: string) => { store.delete(k); },
+      clear: () => { store.clear(); },
+      get length() { return store.size; },
+      key: (i: number) => Array.from(store.keys())[i] ?? null
+    };
+    (globalThis as any).fetch = async (input: any) => {
+      const urlStr = typeof input === 'string' ? input : input.url;
+      if (urlStr.includes('/sync/schedule')) {
+        return new Response(JSON.stringify({
+          byGroup: {
+            'ingt-310': {
+              overrides: {},
+              teachers: {},
+              exams: [],
+              deletedExamIds: { 'ex-zombie': Date.now() },
+              ver: 10
+            }
+          }
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ byGroup: { 'ingt-310': { items: [], deletedIds: [] } } }), { status: 200 });
+    };
+    try {
+      saveLocalExams('ingt-310', [{
+        id: 'ex-zombie',
+        date: '2027-01-12',
+        time: '09:00',
+        subject: 'Зомби-экзамен',
+        type: 'Экзамен',
+        location: '101'
+      }]);
+      const resClean = await fetchGroupCloudData(true, 'ingt-310');
+      assert.strictEqual(resClean?.exams?.length, 0, 'Zombie last exam must be cleared when server returns exams: []');
+      assert.strictEqual(getSavedExams('ingt-310').length, 0, 'localStorage exams_ingt-310 must be cleared');
+
+      // Now verify offline dirty exam is preserved while exams_dirty_ is set
+      saveLocalExams('ingt-310', [{
+        id: 'ex-local',
+        date: '2027-01-20',
+        time: '10:00',
+        subject: 'Офлайн экзамен',
+        type: 'Зачёт',
+        location: '202'
+      }]);
+      store.set('exams_dirty_ingt-310', 'true');
+      const resDirty = await fetchGroupCloudData(true, 'ingt-310');
+      assert.strictEqual(resDirty?.exams?.length, 1, 'Pending local exam must be preserved when exams_dirty_ is true');
+      assert.strictEqual(resDirty?.exams?.[0]?.id, 'ex-local');
+    } finally {
+      globalThis.fetch = origFetch;
+      (globalThis as any).localStorage = origLS;
+    }
+  });
+
+  await check('AttendanceMatrix periods include Dec 21-31 & Spring 2027, and Spring future dates skip Autumn archives', async () => {
+    const origConfig = getSemesterConfig();
+    const origNow = Date.now;
+    try {
+      const autumnPeriods = buildSemesterMatrixPeriods(origConfig);
+      assert(autumnPeriods.some(p => p.id === '2026-12-tail' && p.weeks.join(',') === '1,2'), 'Autumn periods must include Dec 21-31 tail');
+
+      const springConfig = {
+        semesterName: 'Весенний семестр 2026/2027',
+        semesterStart: '2027-02-08',
+        cycleWeeks: 4,
+        sessionStart: '2027-06-01',
+        sessionEnd: '2027-06-30',
+        blocks: [
+          { id: 1, name: 'Блок 1', start: '2027-02-08', end: '2027-03-07' },
+          { id: 2, name: 'Блок 2', start: '2027-03-08', end: '2027-04-04' },
+          { id: 3, name: 'Блок 3', start: '2027-04-05', end: '2027-05-02' },
+          { id: 4, name: 'Блок 4', start: '2027-05-03', end: '2027-05-30' }
+        ]
+      };
+      const springPeriods = buildSemesterMatrixPeriods(springConfig);
+      assert.strictEqual(springPeriods.map(p => p.id).join(','), '2027-02,2027-03,2027-04,2027-05', 'Spring periods must cover Feb-May');
+
+      setSemesterConfig(springConfig);
+      Date.now = () => Date.UTC(2027, 1, 10, 10, 0, 0); // 2027-02-10
+      clearArchiveCache();
+      const futureSpringInfo = getBlockWindowForDate('2027-03-15', springConfig);
+      assert.strictEqual(futureSpringInfo.isPastSemesterBlock, false, 'Future Spring block must not be marked as past archive');
+      const futureSpringSched = await loadBlockScheduleForDate('ingt-310', '2027-03-15');
+      const collect = (sched: any) => {
+        const s = new Set<string>();
+        for (const days of Object.values(sched || {}) as any[]) {
+          for (const d of days || []) for (const l of d.lessons || []) s.add(l.subject);
+        }
+        return s;
+      };
+      assert(
+        !collect(futureSpringSched).has('Актуальные вопросы профессиональной деятельности и построение карьеры'),
+        'Future Spring date must NOT load stale Autumn block-from-week-5/9 archive'
+      );
+    } finally {
+      Date.now = origNow;
+      setSemesterConfig(origConfig);
+      clearArchiveCache();
+    }
   });
 
   console.log(`\n============================================================`);

@@ -14,21 +14,36 @@ console.log('   Target Groups: 3-ИНГТ-110 (ingt-310), 3-ИНГТ-113 (ingt-3
 console.log('================================================================================\n');
 
 // Mock browser globals for Node.js headless environment
-if (typeof (globalThis as any).window === 'undefined') {
+const hadWindow = typeof (globalThis as any).window !== 'undefined';
+const hadDocument = typeof (globalThis as any).document !== 'undefined';
+if (!hadWindow) {
   (globalThis as any).window = globalThis;
 }
-if (typeof (globalThis as any).document === 'undefined') {
+if (!hadDocument) {
   (globalThis as any).document = {
     createElement: () => ({ style: {}, appendChild: () => {}, click: () => {} }),
     body: { appendChild: () => {}, removeChild: () => {} }
   };
 }
-if (typeof (globalThis as any).window.URL === 'undefined') {
+const hadWindowUrl = typeof (globalThis as any).window.URL !== 'undefined';
+if (!hadWindowUrl) {
   (globalThis as any).window.URL = {
     createObjectURL: () => 'blob:mock-url',
     revokeObjectURL: () => {}
   };
 }
+
+const originalFetch = globalThis.fetch;
+(globalThis as any).fetch = async (input: RequestInfo | URL): Promise<Response> => {
+  const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+  if (urlStr.endsWith('/export-doc')) {
+    return new Response('{}', {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  throw new Error(`Unexpected external network call in test_attendance_word_export_verification: ${urlStr}`);
+};
 
 async function runEndToEndVerification() {
   const groupsToTest = ['ingt-310', 'ingt-313', 'faid-310'];
@@ -190,4 +205,15 @@ try {
 } catch (err) {
   console.error('Domain verification failed:', err);
   process.exit(1);
+} finally {
+  globalThis.fetch = originalFetch;
+  if (!hadWindowUrl && (globalThis as any).window) {
+    delete (globalThis as any).window.URL;
+  }
+  if (!hadDocument) {
+    delete (globalThis as any).document;
+  }
+  if (!hadWindow) {
+    delete (globalThis as any).window;
+  }
 }
